@@ -1,0 +1,10 @@
+[package]
+name = "modeler-mesh"
+description = "Editable polygon mesh with validation and undo/redo. No graphics or UI code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# This crate deliberately has no dependencies. See spec section 5.
+[dependencies]
