@@ -90,6 +90,11 @@ impl Camera {
         ]
     }
 
+    /// The direction from the target toward the camera.
+    pub fn toward_camera(&self) -> [f32; 3] {
+        self.rotation_rows()[2]
+    }
+
     /// The grid plane to draw from this angle.
     pub fn grid_plane(&self) -> GridPlane {
         const LIMIT: f32 = 0.01;
@@ -403,6 +408,13 @@ mod tests {
         assert_eq!(camera(0.0, 30.0).grid_plane(), GridPlane::Ground);
         assert_eq!(camera(45.0, 0.0).grid_plane(), GridPlane::Ground);
         assert_eq!(Camera::default().grid_plane(), GridPlane::Ground);
+    }
+
+    #[test]
+    fn toward_camera_points_at_the_camera() {
+        assert_near(camera(0.0, 0.0).toward_camera(), [0.0, -1.0, 0.0]);
+        assert_near(camera(90.0, 0.0).toward_camera(), [1.0, 0.0, 0.0]);
+        assert_near(camera(0.0, 90.0).toward_camera(), [0.0, 0.0, 1.0]);
     }
 
     #[test]

@@ -546,6 +546,8 @@ fn errors_have_readable_messages() {
         MeshError::JoinWouldRepeatVertex(v[0]),
         MeshError::EditInProgress,
         MeshError::NoEditInProgress,
+        MeshError::InvalidPrimitive,
+        MeshError::InvalidScale,
         MeshError::IdsExhausted,
     ];
     let messages: Vec<String> = errors.iter().map(|error| error.to_string()).collect();

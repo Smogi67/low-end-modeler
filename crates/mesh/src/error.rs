@@ -58,6 +58,10 @@ pub enum MeshError {
     EditInProgress,
     /// The operation needs an open edit, but none is running.
     NoEditInProgress,
+    /// A primitive's size or segment count is out of range.
+    InvalidPrimitive,
+    /// An export scale must be a positive number.
+    InvalidScale,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -98,6 +102,8 @@ impl fmt::Display for MeshError {
             }
             Self::EditInProgress => write!(f, "another edit is already running"),
             Self::NoEditInProgress => write!(f, "no edit is running"),
+            Self::InvalidPrimitive => write!(f, "that shape's size or detail is out of range"),
+            Self::InvalidScale => write!(f, "the export scale must be a positive number"),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

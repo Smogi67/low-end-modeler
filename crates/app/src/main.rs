@@ -1,31 +1,29 @@
-//! The desktop app. Stage 2: a window with a 3D grid and a Blender-style camera.
-//!
-//! Spec section 4 requires near 0% CPU when idle, so the main loop sleeps until
-//! the system sends an event, and draws only if that event changed something.
+//! The desktop app: opens the window and runs the main loop. See `app.rs` for the rest.
 
 // Release builds open no console window. Errors appear in a message box.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app;
 mod camera;
 mod controls;
+mod export;
 mod grid;
+mod imgui_gl;
 mod renderer;
+mod scene;
+mod ui;
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
 
-use camera::Camera;
-use controls::{Button, Drag, Modifiers, drag_for};
+use app::App;
 use renderer::Renderer;
 use sdl2::event::{Event, WindowEvent};
-use sdl2::keyboard::{Keycode, Mod};
 use sdl2::messagebox::{MessageBoxFlag, show_simple_message_box};
-use sdl2::mouse::{MouseButton, MouseWheelDirection};
 use sdl2::video::{GLProfile, SwapInterval};
 
 const APP_NAME: &str = "Low-End Modeler";
-const VIEW_STEP_DEGREES: f32 = 15.0;
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -74,36 +72,6 @@ impl Log {
             let _ = writeln!(file, "{text}");
         }
     }
-}
-
-fn modifiers(state: Mod) -> Modifiers {
-    Modifiers {
-        shift: state.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD),
-        ctrl: state.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD),
-        alt: state.intersects(Mod::LALTMOD | Mod::RALTMOD),
-    }
-}
-
-/// Numpad views as in Blender, and F keys for keyboards without a numpad. Returns true if the key changed the camera.
-fn apply_view_key(camera: &mut Camera, key: Keycode, mods: Modifiers) -> bool {
-    match key {
-        Keycode::KP_1 | Keycode::F1 if mods.ctrl => camera.set_view(180.0, 0.0),
-        Keycode::KP_1 | Keycode::F1 => camera.set_view(0.0, 0.0),
-        Keycode::KP_3 | Keycode::F3 if mods.ctrl => camera.set_view(-90.0, 0.0),
-        Keycode::KP_3 | Keycode::F3 => camera.set_view(90.0, 0.0),
-        Keycode::KP_7 | Keycode::F7 if mods.ctrl => camera.set_view(0.0, -90.0),
-        Keycode::KP_7 | Keycode::F7 => camera.set_view(0.0, 90.0),
-        Keycode::KP_5 | Keycode::F5 => camera.orthographic = !camera.orthographic,
-        Keycode::KP_4 => camera.orbit_degrees(-VIEW_STEP_DEGREES, 0.0),
-        Keycode::KP_6 => camera.orbit_degrees(VIEW_STEP_DEGREES, 0.0),
-        Keycode::KP_8 => camera.orbit_degrees(0.0, VIEW_STEP_DEGREES),
-        Keycode::KP_2 => camera.orbit_degrees(0.0, -VIEW_STEP_DEGREES),
-        Keycode::KP_PLUS => camera.zoom_steps(1.0),
-        Keycode::KP_MINUS => camera.zoom_steps(-1.0),
-        Keycode::Home => *camera = Camera::default(),
-        _ => return false,
-    }
-    true
 }
 
 fn run() -> Result<(), String> {
@@ -161,23 +129,11 @@ fn run() -> Result<(), String> {
         ))
         .map_err(|error| error.to_string())?;
 
+    let app = RefCell::new(App::new(renderer)?);
+
     // Windows pauses this thread's main loop while a window edge is being dragged,
-    // and only keeps delivering events to the watch below. So the drawing code is
-    // shared, and window events draw straight from the watch.
-    let camera = Cell::new(Camera::default());
-    let frames = Cell::new(0u64);
-    let draw = || {
-        let camera = camera.get();
-        let (width, height) = window.drawable_size();
-        let (width, height) = (width as i32, height as i32);
-        let aspect = width as f32 / height.max(1) as f32;
-        renderer.render(
-            width,
-            height,
-            &camera.view_projection(aspect),
-            camera.grid_plane(),
-        );
-    };
+    // and only keeps delivering events to the watch below, so window events draw
+    // from there. The main loop never holds `app` while waiting for events.
     let _resize_watch = sdl.event()?.add_event_watch(|event| {
         if let Event::Window {
             win_event:
@@ -187,107 +143,56 @@ fn run() -> Result<(), String> {
                 | WindowEvent::Maximized,
             ..
         } = event
+            && let Ok(mut app) = app.try_borrow_mut()
         {
-            draw();
+            app.draw(&window);
             window.gl_swap_window();
-            frames.set(frames.get() + 1);
         }
     });
 
-    let mut drag: Option<Drag> = None;
-    let mut needs_redraw = true;
-    let mut reported_gl_error = false;
     let mouse = sdl.mouse();
     let keyboard = sdl.keyboard();
     let mut events = sdl.event_pump()?;
+    let mut reported_gl_error = false;
 
     'main: loop {
-        if needs_redraw {
-            draw();
+        let wants_frame = app.borrow().wants_frame();
+        if wants_frame {
+            let mut app = app.borrow_mut();
+            app.draw(&window);
             if let Some(path) = &screenshot_path {
-                let (width, height) = window.drawable_size();
-                let (width, height) = (width as i32, height as i32);
-                save_ppm(path, width, height, &renderer.read_pixels(width, height))?;
+                // The panel only takes its final shape after a first frame.
+                app.draw(&window);
+                let (width, height, pixels) = app.read_pixels(&window);
+                save_ppm(path, width, height, &pixels)?;
                 log.line(&format!("Screenshot saved to {path}"));
                 break 'main;
             }
             window.gl_swap_window();
-            frames.set(frames.get() + 1);
-            needs_redraw = false;
-            if !reported_gl_error && let Some(code) = renderer.error_code() {
+            if !reported_gl_error && let Some(code) = app.gl_error() {
                 log.line(&format!("OpenGL error code: {code:#x}"));
                 reported_gl_error = true;
             }
         }
 
-        // Sleeps here until something happens. Then everything else that is
-        // already waiting is handled too, so a fast drag draws only one frame.
-        let first = events.wait_event();
-        let mut next = Some(first);
+        // Sleeps here until something happens, unless more frames are wanted. Then
+        // everything else already waiting is handled too, so a fast drag draws once.
+        let mut next = if wants_frame && app.borrow().wants_frame() {
+            events.poll_event()
+        } else {
+            Some(events.wait_event())
+        };
         while let Some(event) = next {
-            match event {
-                Event::Quit { .. } => break 'main,
-                Event::MouseButtonDown { mouse_btn, .. } if drag.is_none() => {
-                    let button = match mouse_btn {
-                        MouseButton::Left => Button::Left,
-                        MouseButton::Middle => Button::Middle,
-                        MouseButton::Right => Button::Right,
-                        _ => Button::Other,
-                    };
-                    drag = drag_for(button, modifiers(keyboard.mod_state()));
-                    if drag.is_some() {
-                        // Keeps the drag going if the mouse leaves the window.
-                        mouse.capture(true);
-                    }
-                }
-                Event::MouseButtonUp { .. } if drag.is_some() => {
-                    drag = None;
-                    mouse.capture(false);
-                }
-                Event::MouseMotion { xrel, yrel, .. } => {
-                    let (dx, dy) = (xrel as f32, yrel as f32);
-                    let mut changed = camera.get();
-                    match drag {
-                        Some(Drag::Orbit) => changed.orbit_pixels(dx, dy),
-                        Some(Drag::Pan) => {
-                            let height = window.drawable_size().1 as f32;
-                            changed.pan_pixels(dx, dy, height);
-                        }
-                        Some(Drag::Zoom) => changed.zoom_pixels(dy),
-                        None => {}
-                    }
-                    camera.set(changed);
-                    if drag.is_some() && (xrel != 0 || yrel != 0) {
-                        needs_redraw = true;
-                    }
-                }
-                Event::MouseWheel { y, direction, .. } if y != 0 => {
-                    let steps = if direction == MouseWheelDirection::Flipped {
-                        -y
-                    } else {
-                        y
-                    };
-                    let mut changed = camera.get();
-                    changed.zoom_steps(steps as f32);
-                    camera.set(changed);
-                    needs_redraw = true;
-                }
-                Event::KeyDown {
-                    keycode: Some(key),
-                    keymod,
-                    ..
-                } => {
-                    let mut changed = camera.get();
-                    needs_redraw |= apply_view_key(&mut changed, key, modifiers(keymod));
-                    camera.set(changed);
-                }
-                _ => {}
+            if let Event::Quit { .. } = event {
+                break 'main;
             }
+            app.borrow_mut()
+                .handle_event(&event, &mouse, keyboard.mod_state());
             next = events.poll_event();
         }
     }
 
-    log.line(&format!("Frames drawn: {}", frames.get()));
+    log.line(&format!("Frames drawn: {}", app.borrow().frames_drawn()));
     Ok(())
 }
 
@@ -299,98 +204,4 @@ fn save_ppm(path: &str, width: i32, height: i32, bottom_up_rgb: &[u8]) -> Result
         bytes.extend_from_slice(row);
     }
     std::fs::write(path, bytes).map_err(|error| format!("Could not save {path}: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NONE: Modifiers = Modifiers {
-        shift: false,
-        ctrl: false,
-        alt: false,
-    };
-    const CTRL: Modifiers = Modifiers {
-        shift: false,
-        ctrl: true,
-        alt: false,
-    };
-
-    #[test]
-    fn numpad_views_match_blender() {
-        let mut camera = Camera::default();
-        assert!(apply_view_key(&mut camera, Keycode::KP_1, NONE));
-        assert_eq!((camera.yaw, camera.pitch), (0.0, 0.0));
-        assert!(apply_view_key(&mut camera, Keycode::KP_3, NONE));
-        assert_eq!(camera.yaw, 90f32.to_radians());
-        assert!(apply_view_key(&mut camera, Keycode::KP_7, NONE));
-        assert_eq!(camera.pitch, 90f32.to_radians());
-        assert!(apply_view_key(&mut camera, Keycode::KP_1, CTRL));
-        assert_eq!(camera.yaw, 180f32.to_radians());
-        assert!(apply_view_key(&mut camera, Keycode::KP_3, CTRL));
-        assert_eq!(camera.yaw, (-90f32).to_radians());
-        assert!(apply_view_key(&mut camera, Keycode::KP_7, CTRL));
-        assert_eq!(camera.pitch, (-90f32).to_radians());
-    }
-
-    #[test]
-    fn f_keys_do_the_same_as_the_numpad() {
-        for (numpad, f_key, mods) in [
-            (Keycode::KP_1, Keycode::F1, NONE),
-            (Keycode::KP_3, Keycode::F3, NONE),
-            (Keycode::KP_7, Keycode::F7, NONE),
-            (Keycode::KP_5, Keycode::F5, NONE),
-            (Keycode::KP_1, Keycode::F1, CTRL),
-            (Keycode::KP_3, Keycode::F3, CTRL),
-            (Keycode::KP_7, Keycode::F7, CTRL),
-        ] {
-            let (mut a, mut b) = (Camera::default(), Camera::default());
-            assert!(apply_view_key(&mut a, numpad, mods));
-            assert!(apply_view_key(&mut b, f_key, mods));
-            assert_eq!(a, b);
-            assert_ne!(a, Camera::default());
-        }
-    }
-
-    #[test]
-    fn numpad_5_toggles_orthographic() {
-        let mut camera = Camera::default();
-        assert!(apply_view_key(&mut camera, Keycode::KP_5, NONE));
-        assert!(camera.orthographic);
-        assert!(apply_view_key(&mut camera, Keycode::KP_5, NONE));
-        assert!(!camera.orthographic);
-    }
-
-    #[test]
-    fn stepping_keys_turn_the_view_and_home_resets_it() {
-        let mut camera = Camera::default();
-        let start = camera;
-        apply_view_key(&mut camera, Keycode::KP_6, NONE);
-        assert!(camera.yaw > start.yaw);
-        apply_view_key(&mut camera, Keycode::KP_4, NONE);
-        apply_view_key(&mut camera, Keycode::KP_8, NONE);
-        assert!(camera.pitch > start.pitch);
-        apply_view_key(&mut camera, Keycode::KP_2, NONE);
-        apply_view_key(&mut camera, Keycode::KP_PLUS, NONE);
-        assert!(camera.distance < start.distance);
-        apply_view_key(&mut camera, Keycode::KP_MINUS, NONE);
-        apply_view_key(&mut camera, Keycode::Home, NONE);
-        assert_eq!(camera, start);
-    }
-
-    #[test]
-    fn other_keys_do_not_ask_for_a_redraw() {
-        let mut camera = Camera::default();
-        let start = camera;
-        assert!(!apply_view_key(&mut camera, Keycode::A, NONE));
-        assert_eq!(camera, start);
-    }
-
-    #[test]
-    fn modifier_keys_on_either_side_count() {
-        assert!(modifiers(Mod::LSHIFTMOD).shift && modifiers(Mod::RSHIFTMOD).shift);
-        assert!(modifiers(Mod::LCTRLMOD).ctrl && modifiers(Mod::RCTRLMOD).ctrl);
-        assert!(modifiers(Mod::LALTMOD).alt && modifiers(Mod::RALTMOD).alt);
-        assert_eq!(modifiers(Mod::NUMMOD), NONE);
-    }
 }

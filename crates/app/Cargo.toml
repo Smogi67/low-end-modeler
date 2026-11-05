@@ -7,7 +7,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+modeler-mesh = { path = "../mesh" }
 glow = "0.18"
+imgui = "0.12"
 sdl2 = { version = "0.38", default-features = false }
 
 # On Windows, build SDL2 from source and link it into the .exe, so test builds

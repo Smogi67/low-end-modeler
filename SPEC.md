@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 2 code written and working on Linux with software graphics. The Windows build and a test on the owner's laptop are still needed. See section 11.**
-Next step: **Finish Stage 2 once the owner's laptop test passes, then Stage 3.**
+Status: **Stage 3 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop test and a Roblox import are still needed. See section 11.**
+Next step: **After the owner's test and Roblox import pass, Stage 4, selection modes and transforms.**
 
 ## 1. Goal
 
@@ -96,6 +96,15 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **Grid:** it lies on the ground, except in level views along an axis (such as front and right), where it stands upright, as in Blender.
 - **Dear ImGui:** not added yet, because Stage 2 needs no UI. Check the bindings work with OpenGL 2.1 when the first UI is added.
 - **Log file:** `low-end-modeler.log` beside the .exe records the OpenGL details and any errors. The title bar shows the OpenGL version too.
+
+### Decisions made in Stage 3
+
+- **UI library:** the `imgui` crate (0.12, last released 2024) with `imgui_gl.rs`, a small OpenGL 2.1 renderer written here, and direct SDL event handling. The ready-made `imgui-glow-renderer` and `imgui-sdl2-support` crates need older `glow` and `sdl2` versions than this app uses.
+- **Primitives and triangulation:** in `crates/mesh`, with faces wound outward. Triangulation uses ear clipping, which handles concave n-gons.
+- **One mesh for now:** added shapes all go into one mesh, and undo is the only way to remove one until Stage 4. Separate objects are not built yet, so OBJ export writes one mesh.
+- **OBJ export:** triangulated, one normal per face, and Z up becomes Y up by a rotation, so winding stays correct. Files go in an `exports` folder beside the .exe. A native save dialog can come in Stage 8.
+- **Roblox limits:** export warns above 20,000 triangles per mesh and on open edges, but does not block. Back faces draw red, so inside-out faces are easy to see.
+- **Not done yet:** the whole mesh is re-sent to the graphics card after each change. This is fine for adding shapes, but Stage 4's transforms must send only what changed (section 4, rule 3), and must also use the list of changed elements noted in section 5.
 
 ## 6. Feature scope
 
@@ -206,6 +215,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-05 | 2 | First Windows build through GitHub Actions passed: all tests pass on Windows and the .exe is 3.01 MB. The first build failed because current CMake rejects the bundled SDL2's old version setting, fixed in the workflow | Not yet, waiting for the owner's test |
 | 2026-11-06 | 2 | After the owner's feedback: right drag turns and middle drag slides with no keys held, and F keys added for views | Partly: the first build opened, and the owner has not yet reported the full test |
 | 2026-11-06 | 2 | Laptop reports OpenGL 3.1.0, Build 9.17.10.4459, Intel HD Graphics 3000. The owner saw the picture stretch while dragging the window edge, because Windows pauses the main loop during a resize. Window events now draw from an SDL event watch. | Fix not yet confirmed |
+| 2026-11-06 | 3 | Seven primitives, flat-shaded display with edges, tool panel, undo and redo buttons and shortcuts, triangle counter, and OBJ export added. Run on Linux with OpenGL limited to 2.1 using simulated clicks: all shapes, undo, redo, and export worked, and idle CPU measured 0.00% | Not yet |
 
 ## 12. Open questions
 

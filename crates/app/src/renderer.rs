@@ -5,15 +5,20 @@ use glow::HasContext;
 
 use crate::camera::Mat4;
 use crate::grid::{FLOATS_PER_VERTEX, GridPlane, grid_vertices};
+use crate::scene::{FLOATS_PER_EDGE_VERTEX, FLOATS_PER_TRIANGLE_VERTEX};
 
 const VERTEX_SHADER: &str = r#"#version 120
 attribute vec3 a_position;
 attribute vec3 a_color;
 uniform mat4 u_view_projection;
+uniform float u_depth_bias;
 varying vec3 v_color;
 void main() {
     v_color = a_color;
     gl_Position = u_view_projection * vec4(a_position, 1.0);
+    // Pushes grid lines back slightly, so one lying exactly on a face does not look
+    // like an edge of that face.
+    gl_Position.z += u_depth_bias * gl_Position.w;
 }
 "#;
 
@@ -24,17 +29,62 @@ void main() {
 }
 "#;
 
+const MESH_VERTEX_SHADER: &str = r#"#version 120
+attribute vec3 a_position;
+attribute vec3 a_normal;
+uniform mat4 u_view_projection;
+varying vec3 v_normal;
+void main() {
+    v_normal = a_normal;
+    gl_Position = u_view_projection * vec4(a_position, 1.0);
+}
+"#;
+
+const MESH_FRAGMENT_SHADER: &str = r#"#version 120
+uniform vec3 u_light;
+varying vec3 v_normal;
+void main() {
+    // The light follows the camera. A face seen from behind turns red, which shows
+    // inside-out faces at a glance.
+    vec3 color = gl_FrontFacing ? vec3(0.62, 0.62, 0.64) : vec3(0.55, 0.16, 0.16);
+    float side = gl_FrontFacing ? 1.0 : -1.0;
+    float light = max(dot(normalize(v_normal) * side, u_light), 0.0);
+    gl_FragColor = vec4(color * (0.35 + 0.65 * light), 1.0);
+}
+"#;
+
 const POSITION_ATTRIBUTE: u32 = 0;
 const COLOR_ATTRIBUTE: u32 = 1;
 const BACKGROUND: [f32; 3] = [0.19, 0.19, 0.19];
+const EDGE_COLOR: [f32; 3] = [0.05, 0.05, 0.05];
+const GRID_DEPTH_BIAS: f32 = 0.0002;
 
 pub struct Renderer {
     gl: glow::Context,
     program: glow::Program,
     view_projection: Option<glow::UniformLocation>,
+    depth_bias: Option<glow::UniformLocation>,
     grid_buffer: glow::Buffer,
     /// Vertices in one plane of the grid.
     grid_vertex_count: i32,
+    mesh_program: glow::Program,
+    mesh_view_projection: Option<glow::UniformLocation>,
+    mesh_light: Option<glow::UniformLocation>,
+    triangle_buffer: glow::Buffer,
+    triangle_vertex_count: i32,
+    edge_buffer: glow::Buffer,
+    edge_vertex_count: i32,
+}
+
+/// One view's camera settings, for drawing.
+pub struct View {
+    pub view_projection: Mat4,
+    pub light: [f32; 3],
+    pub plane: GridPlane,
+}
+
+fn as_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
 /// What the graphics driver reports. Written to the log and the title bar, so the
@@ -84,58 +134,145 @@ impl Renderer {
                 ));
             }
 
-            let program = create_program(&gl)?;
+            let program = create_program(
+                &gl,
+                VERTEX_SHADER,
+                FRAGMENT_SHADER,
+                &[
+                    (POSITION_ATTRIBUTE, "a_position"),
+                    (COLOR_ATTRIBUTE, "a_color"),
+                ],
+            )?;
+            let mesh_program = create_program(
+                &gl,
+                MESH_VERTEX_SHADER,
+                MESH_FRAGMENT_SHADER,
+                &[
+                    (POSITION_ATTRIBUTE, "a_position"),
+                    (COLOR_ATTRIBUTE, "a_normal"),
+                ],
+            )?;
             let view_projection = gl.get_uniform_location(program, "u_view_projection");
 
             // All three grid planes share one buffer, one after another.
             let vertices: Vec<f32> = GridPlane::ALL.into_iter().flat_map(grid_vertices).collect();
-            let bytes: Vec<u8> = vertices.iter().flat_map(|v| v.to_ne_bytes()).collect();
             let grid_buffer = gl.create_buffer()?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(grid_buffer));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(&vertices), glow::STATIC_DRAW);
 
             gl.enable(glow::DEPTH_TEST);
             gl.clear_color(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0);
 
             let renderer = Self {
-                gl,
+                depth_bias: gl.get_uniform_location(program, "u_depth_bias"),
+                mesh_view_projection: gl.get_uniform_location(mesh_program, "u_view_projection"),
+                mesh_light: gl.get_uniform_location(mesh_program, "u_light"),
+                triangle_buffer: gl.create_buffer()?,
+                triangle_vertex_count: 0,
+                edge_buffer: gl.create_buffer()?,
+                edge_vertex_count: 0,
+                mesh_program,
                 program,
                 view_projection,
                 grid_buffer,
                 grid_vertex_count: (vertices.len() / FLOATS_PER_VERTEX / GridPlane::ALL.len())
                     as i32,
+                gl,
             };
             Ok((renderer, info))
         }
     }
 
-    pub fn render(&self, width: i32, height: i32, view_projection: &Mat4, plane: GridPlane) {
+    pub fn gl(&self) -> &glow::Context {
+        &self.gl
+    }
+
+    /// Replaces the mesh data on the graphics card.
+    pub fn upload_mesh(&mut self, triangles: &[f32], edges: &[f32]) {
+        unsafe {
+            let gl = &self.gl;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.triangle_buffer));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(triangles), glow::DYNAMIC_DRAW);
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(edges), glow::DYNAMIC_DRAW);
+        }
+        self.triangle_vertex_count = (triangles.len() / FLOATS_PER_TRIANGLE_VERTEX) as i32;
+        self.edge_vertex_count = (edges.len() / FLOATS_PER_EDGE_VERTEX) as i32;
+    }
+
+    pub fn render(&self, width: i32, height: i32, view: &View) {
         let gl = &self.gl;
+        let size = size_of::<f32>() as i32;
         unsafe {
             gl.viewport(0, 0, width, height);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            gl.use_program(Some(self.program));
-            gl.uniform_matrix_4_f32_slice(self.view_projection.as_ref(), false, view_projection);
 
-            let stride = (FLOATS_PER_VERTEX * size_of::<f32>()) as i32;
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.grid_buffer));
             gl.enable_vertex_attrib_array(POSITION_ATTRIBUTE);
             gl.enable_vertex_attrib_array(COLOR_ATTRIBUTE);
-            gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
-            gl.vertex_attrib_pointer_f32(
-                COLOR_ATTRIBUTE,
-                3,
-                glow::FLOAT,
+
+            // The grid.
+            gl.use_program(Some(self.program));
+            gl.uniform_matrix_4_f32_slice(
+                self.view_projection.as_ref(),
                 false,
-                stride,
-                (3 * size_of::<f32>()) as i32,
+                &view.view_projection,
             );
-            let first = GridPlane::ALL.iter().position(|&p| p == plane).unwrap_or(0) as i32;
+            gl.uniform_1_f32(self.depth_bias.as_ref(), GRID_DEPTH_BIAS);
+            let stride = FLOATS_PER_VERTEX as i32 * size;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.grid_buffer));
+            gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
+            gl.vertex_attrib_pointer_f32(COLOR_ATTRIBUTE, 3, glow::FLOAT, false, stride, 3 * size);
+            let first = GridPlane::ALL
+                .iter()
+                .position(|&p| p == view.plane)
+                .unwrap_or(0) as i32;
             gl.draw_arrays(
                 glow::LINES,
                 first * self.grid_vertex_count,
                 self.grid_vertex_count,
             );
+
+            // Faces, pushed back slightly so that their edges show cleanly on top.
+            if self.triangle_vertex_count > 0 {
+                gl.use_program(Some(self.mesh_program));
+                gl.uniform_matrix_4_f32_slice(
+                    self.mesh_view_projection.as_ref(),
+                    false,
+                    &view.view_projection,
+                );
+                let [x, y, z] = view.light;
+                gl.uniform_3_f32(self.mesh_light.as_ref(), x, y, z);
+                let stride = FLOATS_PER_TRIANGLE_VERTEX as i32 * size;
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.triangle_buffer));
+                gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
+                gl.vertex_attrib_pointer_f32(
+                    COLOR_ATTRIBUTE,
+                    3,
+                    glow::FLOAT,
+                    false,
+                    stride,
+                    3 * size,
+                );
+                gl.enable(glow::POLYGON_OFFSET_FILL);
+                gl.polygon_offset(1.0, 1.0);
+                gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
+                gl.disable(glow::POLYGON_OFFSET_FILL);
+            }
+
+            // Edges, using the grid's shader with one fixed color.
+            if self.edge_vertex_count > 0 {
+                gl.use_program(Some(self.program));
+                gl.uniform_1_f32(self.depth_bias.as_ref(), 0.0);
+                gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);
+                let [r, g, b] = EDGE_COLOR;
+                gl.vertex_attrib_3_f32(COLOR_ATTRIBUTE, r, g, b);
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
+                gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, 0, 0);
+                gl.draw_arrays(glow::LINES, 0, self.edge_vertex_count);
+            }
+
+            gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);
+            gl.disable_vertex_attrib_array(POSITION_ATTRIBUTE);
         }
     }
 
@@ -166,13 +303,20 @@ impl Renderer {
     }
 }
 
-unsafe fn create_program(gl: &glow::Context) -> Result<glow::Program, String> {
+/// # Safety
+/// The OpenGL context must be current on this thread.
+pub unsafe fn create_program(
+    gl: &glow::Context,
+    vertex_shader: &str,
+    fragment_shader: &str,
+    attributes: &[(u32, &str)],
+) -> Result<glow::Program, String> {
     unsafe {
         let program = gl.create_program()?;
         let mut shaders = Vec::new();
         for (kind, source) in [
-            (glow::VERTEX_SHADER, VERTEX_SHADER),
-            (glow::FRAGMENT_SHADER, FRAGMENT_SHADER),
+            (glow::VERTEX_SHADER, vertex_shader),
+            (glow::FRAGMENT_SHADER, fragment_shader),
         ] {
             let shader = gl.create_shader(kind)?;
             gl.shader_source(shader, source);
@@ -186,8 +330,9 @@ unsafe fn create_program(gl: &glow::Context) -> Result<glow::Program, String> {
             gl.attach_shader(program, shader);
             shaders.push(shader);
         }
-        gl.bind_attrib_location(program, POSITION_ATTRIBUTE, "a_position");
-        gl.bind_attrib_location(program, COLOR_ATTRIBUTE, "a_color");
+        for (location, name) in attributes {
+            gl.bind_attrib_location(program, *location, name);
+        }
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
             return Err(format!(
