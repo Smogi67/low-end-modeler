@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 1 code complete and passing its automated tests on Linux. Not yet compiled for Windows. See section 11.**
-Next step: **Stage 2, window, viewport, camera, grid, and the GitHub Actions build.**
+Status: **Stage 2 code written and working on Linux with software graphics. The Windows build and a test on the owner's laptop are still needed. See section 11.**
+Next step: **Finish Stage 2 once the owner's laptop test passes, then Stage 3.**
 
 ## 1. Goal
 
@@ -82,6 +82,18 @@ The code is in `crates/mesh`. The top of `crates/mesh/src/lib.rs` explains the d
 - **Using it:** `Document` owns the mesh and gives out `&mut Mesh` only during an edit, so a change cannot bypass history. Use `Document::edit` for one-shot tools, and `begin_edit`, `commit_edit`, and `cancel_edit` for drags.
 - **Built only as low-level edits so far:** add and remove, split edge, split face, join faces, flip face. User-facing tools and merge belong to their own stages.
 - **Still to add when its stage arrives:** selection fields on elements (Stage 4), and a list of changed elements for partial redraws (Stage 3). History holds one mesh for now; a step must grow to hold several when multiple objects arrive.
+
+### Decisions made in Stage 2
+
+The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/low-end-modeler. Each push to `main` builds the .exe with GitHub Actions.
+
+- **Rendering:** GLSL 1.20 shaders and vertex buffers only, which are both part of OpenGL 2.1. All OpenGL calls are in `renderer.rs`.
+- **Idle use:** the main loop sleeps until an event arrives, and draws only if that event changed something.
+- **Axes:** Z is up, as in Blender. Roblox uses Y up, so Stage 3's export must convert this.
+- **Camera controls:** middle drag orbits, Shift + middle drag pans, Ctrl + middle drag zooms, and the wheel zooms. Alt + left drag stands in for the middle button on touchpads. Numpad 1, 3, and 7 give front, right, and top views (add Ctrl for the opposite side), 5 switches to orthographic, and 2, 4, 6, 8 turn the view. Home resets it.
+- **Linking:** on Windows, SDL2 and the C runtime are built into the .exe. Review this when designing the dependency installer (section 6).
+- **Dear ImGui:** not added yet, because Stage 2 needs no UI. Check the bindings work with OpenGL 2.1 when the first UI is added.
+- **Log file:** `low-end-modeler.log` beside the .exe records the OpenGL details and any errors. The title bar shows the OpenGL version too.
 
 ## 6. Feature scope
 
@@ -187,6 +199,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-05 | 1 | Mesh structure, validation, undo/redo, and 113 automated tests added. All pass on Linux, including a 450,000-step random test. Planted-bug testing: about 350 bugs tried; only 2 uncaught, and neither changes behavior. Not yet compiled for Windows, because the Windows target could not be downloaded in the build environment. Stage 2's GitHub Actions build must confirm this. | No. There is no app to run until Stage 2 |
 | 2026-11-05 | Planning | Owner's dependency installer decision recorded in section 6 and added to Stage 8 | Not applicable |
 | 2026-11-05 | Planning | Laptop details recorded in sections 2 and 12 | Not applicable |
+| 2026-11-05 | 2 | Window, OpenGL 2.1 viewport, camera, grid, and GitHub Actions build added. Run on Linux with software graphics using simulated mouse and keyboard input: orbit, pan, wheel zoom, top view, and resizing all worked, and idle CPU measured 0.00% | Not yet |
 
 ## 12. Open questions
 

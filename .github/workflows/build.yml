@@ -1,0 +1,42 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Build the .exe
+        run: cargo build --release --package low-end-modeler
+
+      - name: Check the .exe size
+        shell: pwsh
+        run: |
+          $size = (Get-Item target/release/low-end-modeler.exe).Length
+          $megabytes = [math]::Round($size / 1MB, 2)
+          Write-Output "Size: $megabytes MB"
+          if ($size -gt 10MB) { Write-Output "::warning::The .exe is over the 10 MB goal: $megabytes MB" }
+
+      - name: Upload the .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: low-end-modeler-windows
+          path: target/release/low-end-modeler.exe
+          if-no-files-found: error
