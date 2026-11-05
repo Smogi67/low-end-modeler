@@ -88,6 +88,11 @@ impl ImguiGl {
     }
 
     pub fn render(&self, gl: &glow::Context, draw_data: &imgui::DrawData, height: i32) {
+        // Dear ImGui hides a new window on its first frame, leaving nothing to draw.
+        // Its list pointer is null then, which draw_lists must not be given.
+        if draw_data.draw_lists_count() == 0 {
+            return;
+        }
         let stride = size_of::<DrawVert>() as i32;
         // SAFETY: the context is current. Each slice view below covers exactly the
         // live data of a plain Copy array, for just the duration of the upload.

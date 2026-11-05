@@ -6,6 +6,7 @@
 mod app;
 mod camera;
 mod controls;
+mod editor;
 mod export;
 mod grid;
 mod imgui_gl;

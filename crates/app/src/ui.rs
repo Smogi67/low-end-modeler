@@ -1,6 +1,6 @@
 //! The tool panel, built with Dear ImGui.
 
-use imgui::{Condition, Drag, Ui, WindowFlags};
+use imgui::{Condition, Drag, SliderFlags, Ui, WindowFlags};
 use modeler_mesh::{MAX_SUBDIVISIONS, Primitive};
 
 pub const PANEL_MARGIN: f32 = 8.0;
@@ -40,6 +40,18 @@ impl Shape {
         }
     }
 
+    fn uses(self, setting: Setting) -> bool {
+        match setting {
+            Setting::Segments => matches!(
+                self,
+                Shape::Cone | Shape::Cylinder | Shape::UvSphere | Shape::Circle
+            ),
+            Setting::Rings => self == Shape::UvSphere,
+            Setting::Subdivisions => self == Shape::Icosphere,
+            Setting::Cuts => self == Shape::Grid,
+        }
+    }
+
     /// The name shown beside Undo and Redo.
     pub fn edit_label(self) -> &'static str {
         match self {
@@ -52,6 +64,15 @@ impl Shape {
             Shape::Circle => "Add Circle",
         }
     }
+}
+
+/// Sliders that only some shapes use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setting {
+    Segments,
+    Rings,
+    Subdivisions,
+    Cuts,
 }
 
 /// The values the panel edits.
@@ -128,6 +149,7 @@ pub struct PanelInfo<'a> {
     pub vertices: usize,
     pub faces: usize,
     pub warnings: &'a [String],
+    pub adjusting: Option<Shape>,
     pub undo_label: Option<&'static str>,
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
@@ -171,25 +193,41 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
             }
             ui.new_line();
 
-            let width = PANEL_WIDTH - 100.0;
+            // Every label in a window must be different. Dear ImGui builds IDs from
+            // them, and two widgets sharing an ID can crash it.
+            ui.separator();
+            match info.adjusting {
+                Some(shape) => ui.text(format!("Changing: {}", shape.name())),
+                None => ui.text("Next shape's settings"),
+            }
+            let width = PANEL_WIDTH - 110.0;
+            let shape = info.adjusting;
+            let applies = |setting: Setting| shape.is_none_or(|s| s.uses(setting));
+
             ui.set_next_item_width(width);
             Drag::new("Size")
                 .range(0.01, 1000.0)
                 .speed(0.05)
+                .flags(SliderFlags::ALWAYS_CLAMP)
                 .build(ui, &mut state.size);
-            ui.set_next_item_width(width);
-            ui.slider("Segments", 3, 64, &mut state.segments);
-            ui.set_next_item_width(width);
-            ui.slider("Rings", 2, 32, &mut state.rings);
-            ui.set_next_item_width(width);
-            ui.slider(
-                "Icosphere",
-                0,
-                MAX_SUBDIVISIONS.min(5) as i32,
+            let int_slider = |label: &str, setting, max, value: &mut i32, min| {
+                let disabled = ui.begin_disabled(!applies(setting));
+                ui.set_next_item_width(width);
+                ui.slider_config(label, min, max)
+                    .flags(SliderFlags::ALWAYS_CLAMP)
+                    .build(value);
+                disabled.end();
+            };
+            int_slider("Segments", Setting::Segments, 64, &mut state.segments, 3);
+            int_slider("Rings", Setting::Rings, 32, &mut state.rings, 2);
+            int_slider(
+                "Subdivisions",
+                Setting::Subdivisions,
+                MAX_SUBDIVISIONS.min(4) as i32,
                 &mut state.subdivisions,
+                0,
             );
-            ui.set_next_item_width(width);
-            ui.slider("Grid cuts", 1, 64, &mut state.cuts);
+            int_slider("Grid cuts", Setting::Cuts, 64, &mut state.cuts, 1);
             ui.set_next_item_width(width);
             ui.input_float3("Location", &mut state.location).build();
 
@@ -264,7 +302,7 @@ mod tests {
 
     #[test]
     fn the_slider_ends_are_all_valid_shapes() {
-        for (segments, rings, subdivisions, cuts) in [(3, 2, 0, 1), (64, 32, 2, 64)] {
+        for (segments, rings, subdivisions, cuts) in [(3, 2, 0, 1), (64, 32, 4, 64)] {
             let state = PanelState {
                 segments,
                 rings,
@@ -279,6 +317,93 @@ mod tests {
                 mesh.validate().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn each_shape_uses_the_right_sliders() {
+        let uses = |s: Shape| {
+            [
+                Setting::Segments,
+                Setting::Rings,
+                Setting::Subdivisions,
+                Setting::Cuts,
+            ]
+            .map(|setting| s.uses(setting))
+        };
+        assert_eq!(uses(Shape::Cube), [false, false, false, false]);
+        assert_eq!(uses(Shape::Cone), [true, false, false, false]);
+        assert_eq!(uses(Shape::Cylinder), [true, false, false, false]);
+        assert_eq!(uses(Shape::UvSphere), [true, true, false, false]);
+        assert_eq!(uses(Shape::Icosphere), [false, false, true, false]);
+        assert_eq!(uses(Shape::Grid), [false, false, false, true]);
+        assert_eq!(uses(Shape::Circle), [true, false, false, false]);
+    }
+
+    /// Clicks and drags all over the panel, with no window or graphics card. Two widgets
+    /// sharing an ID crashed the app when clicked, and this would crash the same way.
+    #[test]
+    fn clicking_and_dragging_everywhere_on_the_panel_is_safe() {
+        let mut context = imgui::Context::create();
+        context.set_ini_filename(None);
+        context.fonts().build_rgba32_texture();
+        context.io_mut().display_size = [1024.0, 640.0];
+        context.io_mut().delta_time = 1.0 / 60.0;
+        let warnings = vec!["A warning".to_string()];
+
+        let mut clicked_actions = 0;
+        for adjusting in [None, Some(Shape::Cube), Some(Shape::Icosphere)] {
+            let info = PanelInfo {
+                triangles: 12,
+                vertices: 8,
+                faces: 6,
+                warnings: &warnings,
+                adjusting,
+                undo_label: Some("Add Cube"),
+                redo_label: Some("Add Cube"),
+                export_folder: "exports",
+            };
+            let mut state = PanelState {
+                message: "Saved".to_string(),
+                ..Default::default()
+            };
+            let mut frame = |context: &mut imgui::Context, state: &mut PanelState| {
+                let ui = context.new_frame();
+                let (action, _) = panel(ui, state, &info);
+                context.render();
+                clicked_actions += usize::from(action.is_some());
+            };
+            frame(&mut context, &mut state);
+            frame(&mut context, &mut state);
+            for y in (0..640).step_by(5) {
+                for x in (10..PANEL_WIDTH as i32).step_by(25) {
+                    let (x, y) = (x as f32, y as f32);
+                    let io = context.io_mut();
+                    io.add_mouse_pos_event([x, y]);
+                    frame(&mut context, &mut state);
+                    context
+                        .io_mut()
+                        .add_mouse_button_event(imgui::MouseButton::Left, true);
+                    frame(&mut context, &mut state);
+                    context.io_mut().add_mouse_pos_event([x + 15.0, y]);
+                    frame(&mut context, &mut state);
+                    context
+                        .io_mut()
+                        .add_mouse_button_event(imgui::MouseButton::Left, false);
+                    frame(&mut context, &mut state);
+                    // Text fields would otherwise keep the keyboard between clicks.
+                    frame(&mut context, &mut state);
+                }
+            }
+            assert!(state.size.is_finite() && state.size > 0.0);
+            assert!((3..=64).contains(&state.segments));
+            assert!((2..=32).contains(&state.rings));
+            assert!((0..=4).contains(&state.subdivisions));
+            assert!((1..=64).contains(&state.cuts));
+        }
+        assert!(
+            clicked_actions > 0,
+            "the test must really reach the buttons"
+        );
     }
 
     #[test]

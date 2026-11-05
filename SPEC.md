@@ -104,6 +104,8 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **One mesh for now:** added shapes all go into one mesh, and undo is the only way to remove one until Stage 4. Separate objects are not built yet, so OBJ export writes one mesh.
 - **OBJ export:** triangulated, one normal per face, and Z up becomes Y up by a rotation, so winding stays correct. Files go in an `exports` folder beside the .exe. A native save dialog can come in Stage 8.
 - **Roblox limits:** export warns above 20,000 triangles per mesh and on open edges, but does not block. Back faces draw red, so inside-out faces are easy to see.
+- **Adjusting the newest shape (owner's request):** the panel's values change the shape just added, like Blender's Adjust Last Operation, without adding undo steps. This stops after undo or redo.
+- **ImGui labels:** every label in a window must be unique. A shared ID crashes the app when clicked, and `clicking_and_dragging_everywhere_on_the_panel_is_safe` in `ui.rs` guards against it.
 - **Not done yet:** the whole mesh is re-sent to the graphics card after each change. This is fine for adding shapes, but Stage 4's transforms must send only what changed (section 4, rule 3), and must also use the list of changed elements noted in section 5.
 
 ## 6. Feature scope
@@ -216,6 +218,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 2 | After the owner's feedback: right drag turns and middle drag slides with no keys held, and F keys added for views | Partly: the first build opened, and the owner has not yet reported the full test |
 | 2026-11-06 | 2 | Laptop reports OpenGL 3.1.0, Build 9.17.10.4459, Intel HD Graphics 3000. The owner saw the picture stretch while dragging the window edge, because Windows pauses the main loop during a resize. Window events now draw from an SDL event watch. | Fix not yet confirmed |
 | 2026-11-06 | 3 | Seven primitives, flat-shaded display with edges, tool panel, undo and redo buttons and shortcuts, triangle counter, and OBJ export added. Run on Linux with OpenGL limited to 2.1 using simulated clicks: all shapes, undo, redo, and export worked, and idle CPU measured 0.00% | Not yet |
+| 2026-11-06 | 3 | The owner reported a crash when changing the Icosphere slider, and that changing values did not affect shapes. Reproduced the crash: the slider and the shape button shared a label, so a shared ID hit an out-of-range mouse button in Dear ImGui. Labels are now unique. Panel values now adjust the newest shape. Also fixed a null draw list on the first frame | Fix not yet confirmed |
 
 ## 12. Open questions
 

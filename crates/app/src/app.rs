@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
-use modeler_mesh::{Document, Mesh};
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::{MouseButton, MouseUtil, MouseWheelDirection};
@@ -16,6 +15,7 @@ use sdl2::video::Window;
 
 use crate::camera::Camera;
 use crate::controls::{Button, Drag, Modifiers, drag_for};
+use crate::editor::Editor;
 use crate::export::{warnings, write_obj};
 use crate::imgui_gl::ImguiGl;
 use crate::renderer::{Renderer, View};
@@ -30,7 +30,7 @@ pub struct App {
     renderer: Renderer,
     imgui: imgui::Context,
     imgui_gl: ImguiGl,
-    document: Document,
+    editor: Editor,
     state: PanelState,
     camera: Camera,
     drag: Option<Drag>,
@@ -62,7 +62,7 @@ impl App {
             renderer,
             imgui,
             imgui_gl,
-            document: Document::new(Mesh::new()),
+            editor: Editor::new(),
             state: PanelState::default(),
             camera: Camera::default(),
             drag: None,
@@ -106,14 +106,16 @@ impl App {
         io.delta_time = (now - self.last_frame).as_secs_f32().max(0.001);
         self.last_frame = now;
 
-        let mesh = self.document.mesh();
+        let document = self.editor.document();
+        let mesh = document.mesh();
         let info = PanelInfo {
             triangles: mesh.triangle_count(),
             vertices: mesh.vertex_count(),
             faces: mesh.face_count(),
             warnings: &self.warnings,
-            undo_label: self.document.undo_label(),
-            redo_label: self.document.redo_label(),
+            adjusting: self.editor.adjusting(),
+            undo_label: document.undo_label(),
+            redo_label: document.redo_label(),
             export_folder: &self.export_folder_text,
         };
         let ui = self.imgui.new_frame();
@@ -121,11 +123,19 @@ impl App {
         self.panel_height = panel_height;
         let draw_data = self.imgui.render();
 
-        // The action's result appears in the frames that follow.
+        // Results appear in the frames that follow.
+        match self.editor.adjust(&self.state) {
+            Ok(true) => {
+                self.mesh_changed = true;
+                self.frames_wanted = self.frames_wanted.max(UI_SETTLE_FRAMES);
+            }
+            Ok(false) => {}
+            Err(error) => self.state.message = format!("Could not change the shape: {error}"),
+        }
         if let Some(action) = action {
             Self::apply_action(
                 action,
-                &mut self.document,
+                &mut self.editor,
                 &mut self.state,
                 &self.export_folder,
                 &mut self.mesh_changed,
@@ -133,7 +143,7 @@ impl App {
             self.frames_wanted = self.frames_wanted.max(UI_SETTLE_FRAMES);
         }
         if self.mesh_changed {
-            let mesh = self.document.mesh();
+            let mesh = self.editor.document().mesh();
             self.renderer
                 .upload_mesh(&triangle_vertices(mesh), &edge_vertices(mesh));
             self.warnings = warnings(mesh.triangle_count(), mesh.open_edge_count());
@@ -161,27 +171,21 @@ impl App {
 
     fn apply_action(
         action: Action,
-        document: &mut Document,
+        editor: &mut Editor,
         state: &mut PanelState,
         export_folder: &std::path::Path,
         mesh_changed: &mut bool,
     ) {
         match action {
-            Action::Add(shape) => {
-                let primitive = state.primitive(shape);
-                let center = state.location;
-                match document.edit(shape.edit_label(), |mesh| {
-                    mesh.add_primitive(primitive, center).map(|_| ())
-                }) {
-                    Ok(()) => *mesh_changed = true,
-                    Err(error) => state.message = format!("Could not add the shape: {error}"),
-                }
-            }
-            Action::Undo => *mesh_changed |= document.undo().is_some(),
-            Action::Redo => *mesh_changed |= document.redo().is_some(),
+            Action::Add(shape) => match editor.add(shape, state) {
+                Ok(()) => *mesh_changed = true,
+                Err(error) => state.message = format!("Could not add the shape: {error}"),
+            },
+            Action::Undo => *mesh_changed |= editor.undo(),
+            Action::Redo => *mesh_changed |= editor.redo(),
             Action::Export => {
                 state.message = match write_obj(
-                    document.mesh(),
+                    editor.document().mesh(),
                     export_folder,
                     &state.file_name,
                     state.scale,
@@ -291,7 +295,7 @@ impl App {
         };
         Self::apply_action(
             action,
-            &mut self.document,
+            &mut self.editor,
             &mut self.state,
             &self.export_folder,
             &mut self.mesh_changed,
