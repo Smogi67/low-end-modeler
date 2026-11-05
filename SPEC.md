@@ -200,6 +200,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-05 | Planning | Owner's dependency installer decision recorded in section 6 and added to Stage 8 | Not applicable |
 | 2026-11-05 | Planning | Laptop details recorded in sections 2 and 12 | Not applicable |
 | 2026-11-05 | 2 | Window, OpenGL 2.1 viewport, camera, grid, and GitHub Actions build added. Run on Linux with software graphics using simulated mouse and keyboard input: orbit, pan, wheel zoom, top view, and resizing all worked, and idle CPU measured 0.00% | Not yet |
+| 2026-11-05 | 2 | First Windows build through GitHub Actions passed: all tests pass on Windows and the .exe is 3.01 MB. The first build failed because current CMake rejects the bundled SDL2's old version setting, fixed in the workflow | Not yet, waiting for the owner's test |
 
 ## 12. Open questions
 
@@ -207,7 +208,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] Graphics chip as reported: Intel(R) HD Graphics Family
 - [x] Windows version: Windows 10 Home 64-bit, so Stage 2 builds a 64-bit .exe
 - [ ] Confirm the graphics chip supports OpenGL 2.1 (first Stage 2 build on the laptop)
-- [ ] Owner has a GitHub account
+- [x] Owner has a GitHub account (Smogi67)
 - [ ] Check Roblox's current mesh requirements before Stage 3
 - [ ] List the real dependencies of the .exe for the installer (once the Stage 2 build exists)
-- [ ] Confirm the mesh crate compiles and its tests pass on Windows (first GitHub Actions run, Stage 2)
+- [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
