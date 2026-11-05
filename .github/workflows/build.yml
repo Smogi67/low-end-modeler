@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # The SDL2 source bundled by the sdl2 crate asks for a CMake version older than
+  # current CMake still accepts. This lets the current CMake build it anyway.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 jobs:
   build:
     runs-on: windows-latest
