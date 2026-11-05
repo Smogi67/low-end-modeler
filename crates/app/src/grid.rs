@@ -7,9 +7,41 @@ const EXTENT: i32 = 50;
 const MAJOR_EVERY: i32 = 10;
 const MINOR: [f32; 3] = [0.30, 0.30, 0.30];
 const MAJOR: [f32; 3] = [0.42, 0.42, 0.42];
-/// The X axis is red and the Y axis green, as in Blender.
+/// The X axis is red, Y green and Z blue, as in Blender.
 const X_AXIS: [f32; 3] = [0.80, 0.25, 0.28];
 const Y_AXIS: [f32; 3] = [0.45, 0.70, 0.20];
+const Z_AXIS: [f32; 3] = [0.30, 0.50, 0.90];
+
+/// Which plane the grid lies in. It stays on the ground, except in level views
+/// along an axis, where a flat grid would be seen edge-on as a single line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridPlane {
+    Ground,
+    /// Upright, facing the front and back views.
+    FrontBack,
+    /// Upright, facing the right and left views.
+    Side,
+}
+
+impl GridPlane {
+    pub const ALL: [GridPlane; 3] = [GridPlane::Ground, GridPlane::FrontBack, GridPlane::Side];
+
+    fn position(self, u: f32, v: f32) -> [f32; 3] {
+        match self {
+            GridPlane::Ground => [u, v, 0.0],
+            GridPlane::FrontBack => [u, 0.0, v],
+            GridPlane::Side => [0.0, u, v],
+        }
+    }
+
+    fn axis_colors(self) -> ([f32; 3], [f32; 3]) {
+        match self {
+            GridPlane::Ground => (X_AXIS, Y_AXIS),
+            GridPlane::FrontBack => (X_AXIS, Z_AXIS),
+            GridPlane::Side => (Y_AXIS, Z_AXIS),
+        }
+    }
+}
 
 fn color_for(line: i32, axis_color: [f32; 3]) -> [f32; 3] {
     if line == 0 {
@@ -21,23 +53,24 @@ fn color_for(line: i32, axis_color: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// A flat grid on the Z = 0 plane, one unit per square.
-pub fn grid_vertices() -> Vec<f32> {
+/// A flat grid in the given plane, one unit per square.
+pub fn grid_vertices(plane: GridPlane) -> Vec<f32> {
     let lines = (2 * EXTENT + 1) as usize;
     let mut out = Vec::with_capacity(lines * 2 * 2 * FLOATS_PER_VERTEX);
     let limit = EXTENT as f32;
+    let (u_color, v_color) = plane.axis_colors();
     for line in -EXTENT..=EXTENT {
         let at = line as f32;
-        // Runs along X at this Y. The line through Y = 0 is the X axis.
-        let color = color_for(line, X_AXIS);
-        for x in [-limit, limit] {
-            out.extend_from_slice(&[x, at, 0.0]);
+        // Runs along the plane's first axis. The line through zero is that axis.
+        let color = color_for(line, u_color);
+        for u in [-limit, limit] {
+            out.extend_from_slice(&plane.position(u, at));
             out.extend_from_slice(&color);
         }
-        // Runs along Y at this X. The line through X = 0 is the Y axis.
-        let color = color_for(line, Y_AXIS);
-        for y in [-limit, limit] {
-            out.extend_from_slice(&[at, y, 0.0]);
+        // Runs along the plane's second axis.
+        let color = color_for(line, v_color);
+        for v in [-limit, limit] {
+            out.extend_from_slice(&plane.position(at, v));
             out.extend_from_slice(&color);
         }
     }
@@ -48,44 +81,65 @@ pub fn grid_vertices() -> Vec<f32> {
 mod tests {
     use super::*;
 
-    fn vertices() -> Vec<[f32; 6]> {
-        grid_vertices()
+    fn vertices(plane: GridPlane) -> Vec<[f32; 6]> {
+        grid_vertices(plane)
             .chunks_exact(FLOATS_PER_VERTEX)
             .map(|v| v.try_into().unwrap())
             .collect()
     }
 
     #[test]
-    fn has_two_ends_for_each_of_404_half_lines() {
-        assert_eq!(grid_vertices().len(), 404 * FLOATS_PER_VERTEX);
+    fn every_plane_has_404_line_ends() {
+        for plane in GridPlane::ALL {
+            assert_eq!(grid_vertices(plane).len(), 404 * FLOATS_PER_VERTEX);
+        }
     }
 
     #[test]
-    fn lies_flat_within_its_extent() {
-        for v in vertices() {
-            assert_eq!(v[2], 0.0);
-            assert!(v[0].abs() <= 50.0 && v[1].abs() <= 50.0);
+    fn each_plane_is_flat_on_its_own_axis_and_within_its_extent() {
+        for (plane, flat_axis) in [
+            (GridPlane::Ground, 2),
+            (GridPlane::FrontBack, 1),
+            (GridPlane::Side, 0),
+        ] {
+            for v in vertices(plane) {
+                assert_eq!(v[flat_axis], 0.0);
+                assert!(v[..3].iter().all(|c| c.abs() <= 50.0));
+            }
         }
     }
 
     #[test]
     fn each_line_is_straight_and_one_color() {
-        for line in vertices().chunks_exact(2) {
-            let (a, b) = (line[0], line[1]);
-            assert_eq!(a[3..], b[3..]);
-            assert!((a[0] == b[0]) != (a[1] == b[1]), "{a:?} {b:?}");
-            assert_eq!((a[0] - b[0]).abs() + (a[1] - b[1]).abs(), 100.0);
+        for plane in GridPlane::ALL {
+            for line in vertices(plane).chunks_exact(2) {
+                let (a, b) = (line[0], line[1]);
+                assert_eq!(a[3..], b[3..]);
+                let changed = (0..3).filter(|&i| a[i] != b[i]).count();
+                assert_eq!(changed, 1, "{a:?} {b:?}");
+            }
         }
     }
 
+    /// Each colored line must run along the world axis its color stands for.
     #[test]
     fn axes_are_colored_along_the_right_directions() {
-        let lines: Vec<_> = vertices().chunks_exact(2).map(|l| [l[0], l[1]]).collect();
-        let x_axis: Vec<_> = lines.iter().filter(|l| l[0][3..] == X_AXIS).collect();
-        let y_axis: Vec<_> = lines.iter().filter(|l| l[0][3..] == Y_AXIS).collect();
-        assert_eq!((x_axis.len(), y_axis.len()), (1, 1));
-        assert!(x_axis[0][0][1] == 0.0 && x_axis[0][1][1] == 0.0);
-        assert!(y_axis[0][0][0] == 0.0 && y_axis[0][1][0] == 0.0);
+        for (plane, axes) in [
+            (GridPlane::Ground, [(X_AXIS, 0), (Y_AXIS, 1)]),
+            (GridPlane::FrontBack, [(X_AXIS, 0), (Z_AXIS, 2)]),
+            (GridPlane::Side, [(Y_AXIS, 1), (Z_AXIS, 2)]),
+        ] {
+            let all = vertices(plane);
+            for (color, axis) in axes {
+                let lines: Vec<_> = all.chunks_exact(2).filter(|l| l[0][3..] == color).collect();
+                assert_eq!(lines.len(), 1, "{plane:?}");
+                for other in (0..3).filter(|&i| i != axis) {
+                    assert_eq!(lines[0][0][other], 0.0);
+                    assert_eq!(lines[0][1][other], 0.0);
+                }
+                assert_eq!((lines[0][0][axis] - lines[0][1][axis]).abs(), 100.0);
+            }
+        }
     }
 
     #[test]

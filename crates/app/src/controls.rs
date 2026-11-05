@@ -1,5 +1,6 @@
-//! Which camera action a mouse button starts. Blender's controls, plus Alt + left
-//! drag for touchpads without a middle button.
+//! Which camera action a mouse button starts. Chosen by the owner: right drag turns
+//! and middle drag slides, with no keys held. Plain left stays free for selecting
+//! (Stage 4), and Alt + left drag covers touchpads.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Drag {
@@ -12,6 +13,7 @@ pub enum Drag {
 pub enum Button {
     Left,
     Middle,
+    Right,
     Other,
 }
 
@@ -23,19 +25,14 @@ pub struct Modifiers {
 }
 
 pub fn drag_for(button: Button, modifiers: Modifiers) -> Option<Drag> {
-    let camera_button = match button {
-        Button::Middle => true,
-        Button::Left => modifiers.alt,
-        Button::Other => false,
-    };
-    if !camera_button {
-        None
-    } else if modifiers.shift {
-        Some(Drag::Pan)
-    } else if modifiers.ctrl {
-        Some(Drag::Zoom)
-    } else {
-        Some(Drag::Orbit)
+    match button {
+        Button::Right => Some(Drag::Orbit),
+        Button::Middle if modifiers.ctrl => Some(Drag::Zoom),
+        Button::Middle => Some(Drag::Pan),
+        Button::Left if modifiers.alt && modifiers.shift => Some(Drag::Pan),
+        Button::Left if modifiers.alt && modifiers.ctrl => Some(Drag::Zoom),
+        Button::Left if modifiers.alt => Some(Drag::Orbit),
+        Button::Left | Button::Other => None,
     }
 }
 
@@ -50,29 +47,25 @@ mod tests {
     };
     const SHIFT: Modifiers = Modifiers {
         shift: true,
-        ctrl: false,
-        alt: false,
+        ..NONE
     };
-    const CTRL: Modifiers = Modifiers {
-        shift: false,
-        ctrl: true,
-        alt: false,
-    };
-    const ALT: Modifiers = Modifiers {
-        shift: false,
-        ctrl: false,
-        alt: true,
-    };
+    const CTRL: Modifiers = Modifiers { ctrl: true, ..NONE };
+    const ALT: Modifiers = Modifiers { alt: true, ..NONE };
 
     #[test]
-    fn middle_button_works_like_blender() {
-        assert_eq!(drag_for(Button::Middle, NONE), Some(Drag::Orbit));
-        assert_eq!(drag_for(Button::Middle, SHIFT), Some(Drag::Pan));
-        assert_eq!(drag_for(Button::Middle, CTRL), Some(Drag::Zoom));
+    fn mouse_buttons_work_without_any_keys() {
+        assert_eq!(drag_for(Button::Right, NONE), Some(Drag::Orbit));
+        assert_eq!(drag_for(Button::Middle, NONE), Some(Drag::Pan));
     }
 
     #[test]
-    fn alt_left_stands_in_for_the_middle_button() {
+    fn ctrl_with_the_middle_button_zooms() {
+        assert_eq!(drag_for(Button::Middle, CTRL), Some(Drag::Zoom));
+        assert_eq!(drag_for(Button::Middle, SHIFT), Some(Drag::Pan));
+    }
+
+    #[test]
+    fn alt_left_still_works_on_touchpads() {
         assert_eq!(drag_for(Button::Left, ALT), Some(Drag::Orbit));
         let alt_shift = Modifiers { shift: true, ..ALT };
         assert_eq!(drag_for(Button::Left, alt_shift), Some(Drag::Pan));
@@ -81,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_left_and_other_buttons_leave_the_camera_alone() {
+    fn plain_left_stays_free_for_selecting() {
         assert_eq!(drag_for(Button::Left, NONE), None);
         assert_eq!(drag_for(Button::Left, SHIFT), None);
         assert_eq!(drag_for(Button::Other, ALT), None);

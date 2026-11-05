@@ -90,8 +90,10 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **Rendering:** GLSL 1.20 shaders and vertex buffers only, which are both part of OpenGL 2.1. All OpenGL calls are in `renderer.rs`.
 - **Idle use:** the main loop sleeps until an event arrives, and draws only if that event changed something.
 - **Axes:** Z is up, as in Blender. Roblox uses Y up, so Stage 3's export must convert this.
-- **Camera controls:** middle drag orbits, Shift + middle drag pans, Ctrl + middle drag zooms, and the wheel zooms. Alt + left drag stands in for the middle button on touchpads. Numpad 1, 3, and 7 give front, right, and top views (add Ctrl for the opposite side), 5 switches to orthographic, and 2, 4, 6, 8 turn the view. Home resets it.
+- **Camera controls (owner's choice, replaces Blender's here):** right drag turns the view and middle drag (holding the wheel) slides it, with no keys held. The wheel zooms, and Ctrl + middle drag also zooms. Plain left stays free for selecting in Stage 4. Alt + left drag turns the view on touchpads, and Alt + Shift + left drag slides it.
+- **View keys:** F1, F3, and F7 or numpad 1, 3, and 7 give front, right, and top views (add Ctrl for the opposite side). F5 or numpad 5 switches to orthographic. Numpad 2, 4, 6, and 8 turn the view, and Home resets it.
 - **Linking:** on Windows, SDL2 and the C runtime are built into the .exe. Review this when designing the dependency installer (section 6).
+- **Grid:** it lies on the ground, except in level views along an axis (such as front and right), where it stands upright, as in Blender.
 - **Dear ImGui:** not added yet, because Stage 2 needs no UI. Check the bindings work with OpenGL 2.1 when the first UI is added.
 - **Log file:** `low-end-modeler.log` beside the .exe records the OpenGL details and any errors. The title bar shows the OpenGL version too.
 
@@ -177,6 +179,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 
 - **Effort setting:** The owner asked to be told when to change Aufwand. Say which setting to use **before** starting each stage. The AI cannot change it or see the current setting.
 - **Testing:** The owner tests on the real laptop and reports back. Do not ask them to do unit testing or debugging by hand. Tell them exactly what to try for each build.
+- **Owner's keyboard:** a compact 60% keyboard with no numpad, where F keys and Home need Fn. Every shortcut must work on it, so never make a numpad key the only way to do something.
 - **Assumed experience:** Give exact, step-by-step instructions for anything done outside the app, such as GitHub setup. Do not assume programming experience.
 - **Recommendations:** The owner wants recommendations based on technical merit, not on their preferences, unless they say otherwise.
 - **Writing style:** Keep messages short, and lead with what they need to do or know. They often read on a phone.
@@ -201,6 +204,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-05 | Planning | Laptop details recorded in sections 2 and 12 | Not applicable |
 | 2026-11-05 | 2 | Window, OpenGL 2.1 viewport, camera, grid, and GitHub Actions build added. Run on Linux with software graphics using simulated mouse and keyboard input: orbit, pan, wheel zoom, top view, and resizing all worked, and idle CPU measured 0.00% | Not yet |
 | 2026-11-05 | 2 | First Windows build through GitHub Actions passed: all tests pass on Windows and the .exe is 3.01 MB. The first build failed because current CMake rejects the bundled SDL2's old version setting, fixed in the workflow | Not yet, waiting for the owner's test |
+| 2026-11-06 | 2 | After the owner's feedback: right drag turns and middle drag slides with no keys held, and F keys added for views | Partly: the first build opened, and the owner has not yet reported the full test |
 
 ## 12. Open questions
 

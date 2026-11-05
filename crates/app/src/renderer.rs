@@ -4,7 +4,7 @@
 use glow::HasContext;
 
 use crate::camera::Mat4;
-use crate::grid::{FLOATS_PER_VERTEX, grid_vertices};
+use crate::grid::{FLOATS_PER_VERTEX, GridPlane, grid_vertices};
 
 const VERTEX_SHADER: &str = r#"#version 120
 attribute vec3 a_position;
@@ -33,6 +33,7 @@ pub struct Renderer {
     program: glow::Program,
     view_projection: Option<glow::UniformLocation>,
     grid_buffer: glow::Buffer,
+    /// Vertices in one plane of the grid.
     grid_vertex_count: i32,
 }
 
@@ -86,7 +87,8 @@ impl Renderer {
             let program = create_program(&gl)?;
             let view_projection = gl.get_uniform_location(program, "u_view_projection");
 
-            let vertices = grid_vertices();
+            // All three grid planes share one buffer, one after another.
+            let vertices: Vec<f32> = GridPlane::ALL.into_iter().flat_map(grid_vertices).collect();
             let bytes: Vec<u8> = vertices.iter().flat_map(|v| v.to_ne_bytes()).collect();
             let grid_buffer = gl.create_buffer()?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(grid_buffer));
@@ -100,13 +102,14 @@ impl Renderer {
                 program,
                 view_projection,
                 grid_buffer,
-                grid_vertex_count: (vertices.len() / FLOATS_PER_VERTEX) as i32,
+                grid_vertex_count: (vertices.len() / FLOATS_PER_VERTEX / GridPlane::ALL.len())
+                    as i32,
             };
             Ok((renderer, info))
         }
     }
 
-    pub fn render(&self, width: i32, height: i32, view_projection: &Mat4) {
+    pub fn render(&self, width: i32, height: i32, view_projection: &Mat4, plane: GridPlane) {
         let gl = &self.gl;
         unsafe {
             gl.viewport(0, 0, width, height);
@@ -127,7 +130,12 @@ impl Renderer {
                 stride,
                 (3 * size_of::<f32>()) as i32,
             );
-            gl.draw_arrays(glow::LINES, 0, self.grid_vertex_count);
+            let first = GridPlane::ALL.iter().position(|&p| p == plane).unwrap_or(0) as i32;
+            gl.draw_arrays(
+                glow::LINES,
+                first * self.grid_vertex_count,
+                self.grid_vertex_count,
+            );
         }
     }
 

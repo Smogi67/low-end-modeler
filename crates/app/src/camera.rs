@@ -1,6 +1,8 @@
 //! The viewport camera: a turntable orbit around a target point, with Z up as in
 //! Blender. This file has no graphics code, so it is tested without a window.
 
+use crate::grid::GridPlane;
+
 /// Matrices are column-major, which is the layout OpenGL expects.
 pub type Mat4 = [f32; 16];
 
@@ -86,6 +88,20 @@ impl Camera {
             [-sin_yaw * cos_tilt, cos_yaw * cos_tilt, -sin_tilt],
             [-sin_yaw * sin_tilt, cos_yaw * sin_tilt, cos_tilt],
         ]
+    }
+
+    /// The grid plane to draw from this angle.
+    pub fn grid_plane(&self) -> GridPlane {
+        const LIMIT: f32 = 0.01;
+        if self.pitch.sin().abs() > LIMIT {
+            GridPlane::Ground
+        } else if self.yaw.sin().abs() < LIMIT {
+            GridPlane::FrontBack
+        } else if self.yaw.cos().abs() < LIMIT {
+            GridPlane::Side
+        } else {
+            GridPlane::Ground
+        }
     }
 
     pub fn view_matrix(&self) -> Mat4 {
@@ -374,6 +390,19 @@ mod tests {
                 assert!(far_corner[2].abs() <= 1.0, "{distance} {far_corner:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_grid_stands_upright_only_in_level_views_along_an_axis() {
+        assert_eq!(camera(0.0, 0.0).grid_plane(), GridPlane::FrontBack);
+        assert_eq!(camera(180.0, 0.0).grid_plane(), GridPlane::FrontBack);
+        assert_eq!(camera(90.0, 0.0).grid_plane(), GridPlane::Side);
+        assert_eq!(camera(-90.0, 0.0).grid_plane(), GridPlane::Side);
+        assert_eq!(camera(0.0, 90.0).grid_plane(), GridPlane::Ground);
+        assert_eq!(camera(0.0, -90.0).grid_plane(), GridPlane::Ground);
+        assert_eq!(camera(0.0, 30.0).grid_plane(), GridPlane::Ground);
+        assert_eq!(camera(45.0, 0.0).grid_plane(), GridPlane::Ground);
+        assert_eq!(Camera::default().grid_plane(), GridPlane::Ground);
     }
 
     #[test]

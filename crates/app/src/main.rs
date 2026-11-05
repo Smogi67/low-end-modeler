@@ -83,16 +83,16 @@ fn modifiers(state: Mod) -> Modifiers {
     }
 }
 
-/// Numpad views, as in Blender. Returns true if the key changed the camera.
+/// Numpad views as in Blender, and F keys for keyboards without a numpad. Returns true if the key changed the camera.
 fn apply_view_key(camera: &mut Camera, key: Keycode, mods: Modifiers) -> bool {
     match key {
-        Keycode::KP_1 if mods.ctrl => camera.set_view(180.0, 0.0),
-        Keycode::KP_1 => camera.set_view(0.0, 0.0),
-        Keycode::KP_3 if mods.ctrl => camera.set_view(-90.0, 0.0),
-        Keycode::KP_3 => camera.set_view(90.0, 0.0),
-        Keycode::KP_7 if mods.ctrl => camera.set_view(0.0, -90.0),
-        Keycode::KP_7 => camera.set_view(0.0, 90.0),
-        Keycode::KP_5 => camera.orthographic = !camera.orthographic,
+        Keycode::KP_1 | Keycode::F1 if mods.ctrl => camera.set_view(180.0, 0.0),
+        Keycode::KP_1 | Keycode::F1 => camera.set_view(0.0, 0.0),
+        Keycode::KP_3 | Keycode::F3 if mods.ctrl => camera.set_view(-90.0, 0.0),
+        Keycode::KP_3 | Keycode::F3 => camera.set_view(90.0, 0.0),
+        Keycode::KP_7 | Keycode::F7 if mods.ctrl => camera.set_view(0.0, -90.0),
+        Keycode::KP_7 | Keycode::F7 => camera.set_view(0.0, 90.0),
+        Keycode::KP_5 | Keycode::F5 => camera.orthographic = !camera.orthographic,
         Keycode::KP_4 => camera.orbit_degrees(-VIEW_STEP_DEGREES, 0.0),
         Keycode::KP_6 => camera.orbit_degrees(VIEW_STEP_DEGREES, 0.0),
         Keycode::KP_8 => camera.orbit_degrees(0.0, VIEW_STEP_DEGREES),
@@ -174,7 +174,12 @@ fn run() -> Result<(), String> {
             let (width, height) = window.drawable_size();
             let (width, height) = (width as i32, height as i32);
             let aspect = width as f32 / height.max(1) as f32;
-            renderer.render(width, height, &camera.view_projection(aspect));
+            renderer.render(
+                width,
+                height,
+                &camera.view_projection(aspect),
+                camera.grid_plane(),
+            );
             if let Some(path) = &screenshot_path {
                 save_ppm(path, width, height, &renderer.read_pixels(width, height))?;
                 log.line(&format!("Screenshot saved to {path}"));
@@ -208,6 +213,7 @@ fn run() -> Result<(), String> {
                     let button = match mouse_btn {
                         MouseButton::Left => Button::Left,
                         MouseButton::Middle => Button::Middle,
+                        MouseButton::Right => Button::Right,
                         _ => Button::Other,
                     };
                     drag = drag_for(button, modifiers(keyboard.mod_state()));
@@ -301,6 +307,25 @@ mod tests {
         assert_eq!(camera.yaw, (-90f32).to_radians());
         assert!(apply_view_key(&mut camera, Keycode::KP_7, CTRL));
         assert_eq!(camera.pitch, (-90f32).to_radians());
+    }
+
+    #[test]
+    fn f_keys_do_the_same_as_the_numpad() {
+        for (numpad, f_key, mods) in [
+            (Keycode::KP_1, Keycode::F1, NONE),
+            (Keycode::KP_3, Keycode::F3, NONE),
+            (Keycode::KP_7, Keycode::F7, NONE),
+            (Keycode::KP_5, Keycode::F5, NONE),
+            (Keycode::KP_1, Keycode::F1, CTRL),
+            (Keycode::KP_3, Keycode::F3, CTRL),
+            (Keycode::KP_7, Keycode::F7, CTRL),
+        ] {
+            let (mut a, mut b) = (Camera::default(), Camera::default());
+            assert!(apply_view_key(&mut a, numpad, mods));
+            assert!(apply_view_key(&mut b, f_key, mods));
+            assert_eq!(a, b);
+            assert_ne!(a, Camera::default());
+        }
     }
 
     #[test]
