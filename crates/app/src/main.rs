@@ -11,6 +11,7 @@ mod controls;
 mod grid;
 mod renderer;
 
+use std::cell::Cell;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -160,10 +161,41 @@ fn run() -> Result<(), String> {
         ))
         .map_err(|error| error.to_string())?;
 
-    let mut camera = Camera::default();
+    // Windows pauses this thread's main loop while a window edge is being dragged,
+    // and only keeps delivering events to the watch below. So the drawing code is
+    // shared, and window events draw straight from the watch.
+    let camera = Cell::new(Camera::default());
+    let frames = Cell::new(0u64);
+    let draw = || {
+        let camera = camera.get();
+        let (width, height) = window.drawable_size();
+        let (width, height) = (width as i32, height as i32);
+        let aspect = width as f32 / height.max(1) as f32;
+        renderer.render(
+            width,
+            height,
+            &camera.view_projection(aspect),
+            camera.grid_plane(),
+        );
+    };
+    let _resize_watch = sdl.event()?.add_event_watch(|event| {
+        if let Event::Window {
+            win_event:
+                WindowEvent::Exposed
+                | WindowEvent::SizeChanged(..)
+                | WindowEvent::Restored
+                | WindowEvent::Maximized,
+            ..
+        } = event
+        {
+            draw();
+            window.gl_swap_window();
+            frames.set(frames.get() + 1);
+        }
+    });
+
     let mut drag: Option<Drag> = None;
     let mut needs_redraw = true;
-    let mut frames: u64 = 0;
     let mut reported_gl_error = false;
     let mouse = sdl.mouse();
     let keyboard = sdl.keyboard();
@@ -171,22 +203,16 @@ fn run() -> Result<(), String> {
 
     'main: loop {
         if needs_redraw {
-            let (width, height) = window.drawable_size();
-            let (width, height) = (width as i32, height as i32);
-            let aspect = width as f32 / height.max(1) as f32;
-            renderer.render(
-                width,
-                height,
-                &camera.view_projection(aspect),
-                camera.grid_plane(),
-            );
+            draw();
             if let Some(path) = &screenshot_path {
+                let (width, height) = window.drawable_size();
+                let (width, height) = (width as i32, height as i32);
                 save_ppm(path, width, height, &renderer.read_pixels(width, height))?;
                 log.line(&format!("Screenshot saved to {path}"));
                 break 'main;
             }
             window.gl_swap_window();
-            frames += 1;
+            frames.set(frames.get() + 1);
             needs_redraw = false;
             if !reported_gl_error && let Some(code) = renderer.error_code() {
                 log.line(&format!("OpenGL error code: {code:#x}"));
@@ -201,14 +227,6 @@ fn run() -> Result<(), String> {
         while let Some(event) = next {
             match event {
                 Event::Quit { .. } => break 'main,
-                Event::Window {
-                    win_event:
-                        WindowEvent::Exposed
-                        | WindowEvent::SizeChanged(..)
-                        | WindowEvent::Restored
-                        | WindowEvent::Maximized,
-                    ..
-                } => needs_redraw = true,
                 Event::MouseButtonDown { mouse_btn, .. } if drag.is_none() => {
                     let button = match mouse_btn {
                         MouseButton::Left => Button::Left,
@@ -228,15 +246,17 @@ fn run() -> Result<(), String> {
                 }
                 Event::MouseMotion { xrel, yrel, .. } => {
                     let (dx, dy) = (xrel as f32, yrel as f32);
+                    let mut changed = camera.get();
                     match drag {
-                        Some(Drag::Orbit) => camera.orbit_pixels(dx, dy),
+                        Some(Drag::Orbit) => changed.orbit_pixels(dx, dy),
                         Some(Drag::Pan) => {
                             let height = window.drawable_size().1 as f32;
-                            camera.pan_pixels(dx, dy, height);
+                            changed.pan_pixels(dx, dy, height);
                         }
-                        Some(Drag::Zoom) => camera.zoom_pixels(dy),
+                        Some(Drag::Zoom) => changed.zoom_pixels(dy),
                         None => {}
                     }
+                    camera.set(changed);
                     if drag.is_some() && (xrel != 0 || yrel != 0) {
                         needs_redraw = true;
                     }
@@ -247,7 +267,9 @@ fn run() -> Result<(), String> {
                     } else {
                         y
                     };
-                    camera.zoom_steps(steps as f32);
+                    let mut changed = camera.get();
+                    changed.zoom_steps(steps as f32);
+                    camera.set(changed);
                     needs_redraw = true;
                 }
                 Event::KeyDown {
@@ -255,7 +277,9 @@ fn run() -> Result<(), String> {
                     keymod,
                     ..
                 } => {
-                    needs_redraw |= apply_view_key(&mut camera, key, modifiers(keymod));
+                    let mut changed = camera.get();
+                    needs_redraw |= apply_view_key(&mut changed, key, modifiers(keymod));
+                    camera.set(changed);
                 }
                 _ => {}
             }
@@ -263,7 +287,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    log.line(&format!("Frames drawn: {frames}"));
+    log.line(&format!("Frames drawn: {}", frames.get()));
     Ok(())
 }
 

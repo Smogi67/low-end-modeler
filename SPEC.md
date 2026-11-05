@@ -20,10 +20,10 @@ It is not a Blender replacement. If a feature does not help someone model and ex
 | CPU | Intel Core i3-2328M, 2.2 GHz, 2 cores, 4 threads |
 | RAM | 4 GB DDR3 (3.8 GB usable). 87% was already in use with a browser open |
 | Disk | Hard disk (HDD), seen at 100% activity. Keep startup and disk access light |
-| GPU | Integrated Intel, reported as "Intel(R) HD Graphics Family", driver 9.17.10.4459, Direct3D feature level 10_1. Likely HD Graphics 3000, based on the CPU model |
+| GPU | Intel HD Graphics 3000, OpenGL 3.1.0, driver 9.17.10.4459 |
 | Screen | 1920 x 1080 |
 
-OpenGL 2.1 support is expected for this chip but not yet confirmed on the laptop. The first Stage 2 build must report the real OpenGL version. Do not assume a graphics feature newer than OpenGL 2.1 is available.
+Do not assume a graphics feature newer than OpenGL 2.1 is available.
 
 ## 3. Technical decisions
 
@@ -205,14 +205,15 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-05 | 2 | Window, OpenGL 2.1 viewport, camera, grid, and GitHub Actions build added. Run on Linux with software graphics using simulated mouse and keyboard input: orbit, pan, wheel zoom, top view, and resizing all worked, and idle CPU measured 0.00% | Not yet |
 | 2026-11-05 | 2 | First Windows build through GitHub Actions passed: all tests pass on Windows and the .exe is 3.01 MB. The first build failed because current CMake rejects the bundled SDL2's old version setting, fixed in the workflow | Not yet, waiting for the owner's test |
 | 2026-11-06 | 2 | After the owner's feedback: right drag turns and middle drag slides with no keys held, and F keys added for views | Partly: the first build opened, and the owner has not yet reported the full test |
+| 2026-11-06 | 2 | Laptop reports OpenGL 3.1.0, Build 9.17.10.4459, Intel HD Graphics 3000. The owner saw the picture stretch while dragging the window edge, because Windows pauses the main loop during a resize. Window events now draw from an SDL event watch. | Fix not yet confirmed |
 
 ## 12. Open questions
 
 - [x] Exact CPU model: i3-2328M (dxdiag showed "not applicable", so it came from Task Manager)
-- [x] Graphics chip as reported: Intel(R) HD Graphics Family
+- [x] Graphics chip: Intel HD Graphics 3000
 - [x] Windows version: Windows 10 Home 64-bit, so Stage 2 builds a 64-bit .exe
-- [ ] Confirm the graphics chip supports OpenGL 2.1 (first Stage 2 build on the laptop)
+- [x] The graphics chip supports OpenGL 2.1: the laptop reports OpenGL 3.1 on Intel HD Graphics 3000
 - [x] Owner has a GitHub account (Smogi67)
-- [ ] Check Roblox's current mesh requirements before Stage 3
+- [x] Roblox's mesh requirements checked 2026-11-06: 20,000 triangles per mesh, closed geometry with real thickness (https://create.roblox.com/docs/en-us/art/modeling/specifications)
 - [ ] List the real dependencies of the .exe for the installer (once the Stage 2 build exists)
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
