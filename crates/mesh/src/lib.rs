@@ -81,6 +81,7 @@ mod ops;
 mod pool;
 mod primitives;
 mod selection;
+mod tools;
 mod triangulate;
 pub mod validate;
 

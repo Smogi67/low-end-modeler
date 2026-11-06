@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 4 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 and 4 and the Roblox import are still needed. See section 11.**
-Next step: **After those tests pass, Stage 5: extrude, inset, merge, delete, fill, subdivide.**
+Status: **Stage 5 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 5 and the Roblox import are still needed. See section 11.**
+Next step: **After those tests pass, Stage 6: loop selection, loop cut, edge slide, bridge. It needs Aufwand Extra hoch.**
 
 ## 1. Goal
 
@@ -111,12 +111,19 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 ### Decisions made in Stage 4
 
 - **Selection:** stored as flags on elements, so undo restores it. A selected face always has its edges selected, and a selected edge its vertices. `validate` checks this.
-- **Mouse:** left click selects, left drag selects with the chosen tool (box, circle, or lasso), Shift adds, and Ctrl removes. A click on nothing clears the selection. This follows the owner's wish to avoid extra keys for common actions.
+- **Mouse:** left click selects, left drag can select with a chosen tool (box, circle, or lasso), Shift adds, and Ctrl removes. A click on nothing clears the selection. This follows the owner's wish to avoid extra keys for common actions.
 - **Hidden parts:** depth is read from the graphics card once per selection, so only visible parts get selected. There is no select-through mode yet.
 - **Transforms:** G, R, and S or panel buttons start a drag around the selection's center. X, Y, or Z locks an axis, Ctrl snaps (1 unit, 15 degrees, or 0.1 scale), a left click confirms, and a right click or Esc cancels. Duplicate is one undo step with its move, so cancelling removes the copy.
 - **Mirror:** across the selection's center. Fully selected faces get their winding reversed, so they keep facing outward.
 - **Partial updates:** during a transform only the affected faces, edges, and points are rewritten and sent (section 4, rule 3). Other changes, including selection, still rebuild everything.
 - **Scheduling gaps:** proportional editing, the 3D cursor, other pivot points, and typing exact values have no stage yet. Add them to Stage 8 or 9 unless the owner says otherwise. Loop selection stays in Stage 6.
+
+### Decisions made in Stage 5
+
+- **Sliders follow the selection (owner's request):** the app remembers each added shape. If exactly one shape is touched by the selection and it has not been reshaped, the panel shows its values and changing them rebuilds it. A shape moved as a whole keeps this. A reshaped one, or one with anything attached, does not, because a rebuild would destroy that work. Replaces "only the newest shape" from Stage 3. Slider changes in a row share one undo step.
+- **Selecting (owner's request):** the new default is Part mode (key 4), where a click selects a whole connected part. Left drag is now off by default, and Box, Circle, or Lasso can be turned on. A press that moves under 8 pixels counts as a click.
+- **Tools:** in `crates/mesh/src/tools.rs`. Extrude keeps the selected faces as a region and moves along their average normal. Inset treats each face separately. Merge removes a face left with too few corners or crossing itself. Merging two faces onto the same vertices keeps one. Subdivide turns triangles into four, and larger faces into one quad per corner. Unselected neighbors gain a corner on each cut edge, so they stay whole.
+- **Holes show red:** the inside of an open shape shows its back faces, which draw red by design.
 
 ## 6. Feature scope
 
@@ -230,6 +237,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 3 | Seven primitives, flat-shaded display with edges, tool panel, undo and redo buttons and shortcuts, triangle counter, and OBJ export added. Run on Linux with OpenGL limited to 2.1 using simulated clicks: all shapes, undo, redo, and export worked, and idle CPU measured 0.00% | Not yet |
 | 2026-11-06 | 3 | The owner reported a crash when changing the Icosphere slider, and that changing values did not affect shapes. Reproduced the crash: the slider and the shape button shared a label, so a shared ID hit an out-of-range mouse button in Dear ImGui. Labels are now unique. Panel values now adjust the newest shape. Also fixed a null draw list on the first frame | Fix not yet confirmed |
 | 2026-11-06 | 4 | Vertex, edge, and face selection with click, box, circle, and lasso; all, none, invert, linked, more, and less; move, rotate, and scale with axis lock and snapping; duplicate and mirror; partial graphics updates. Started at the owner's request before the Stage 3 tests were reported, so the Roblox import is still untested. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
+| 2026-11-06 | 5 | The owner reported that sliders stopped working after selecting, and asked to select parts without dragging. Sliders now follow the selected shape, Part mode and click-only selecting added, and a slightly moved click no longer clears the selection. Extrude, inset, merge, delete, fill, and subdivide added, with a random test of all tools. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 
 ## 12. Open questions
 

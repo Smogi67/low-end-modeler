@@ -127,6 +127,17 @@ impl Mesh {
         primitive: Primitive,
         center: [f32; 3],
     ) -> Result<Vec<FaceId>, MeshError> {
+        self.add_primitive_parts(primitive, center)
+            .map(|(_, faces)| faces)
+    }
+
+    /// Like [`add_primitive`](Self::add_primitive), and also returns the new vertices, in
+    /// an order that is always the same for the same shape.
+    pub fn add_primitive_parts(
+        &mut self,
+        primitive: Primitive,
+        center: [f32; 3],
+    ) -> Result<(Vec<VertexId>, Vec<FaceId>), MeshError> {
         primitive.check()?;
         if !center.iter().all(|c| c.is_finite()) {
             return Err(MeshError::NonFinitePosition);
@@ -143,7 +154,7 @@ impl Mesh {
             cycle.extend(face.iter().map(|&i| ids[i as usize]));
             out.push(self.add_face(&cycle)?);
         }
-        Ok(out)
+        Ok((ids, out))
     }
 }
 

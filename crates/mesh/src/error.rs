@@ -66,6 +66,14 @@ pub enum MeshError {
     WrongSelectMode,
     /// An axis must be 0, 1 or 2.
     InvalidAxis,
+    /// The tool needs something selected, or more than is selected.
+    NothingSelected,
+    /// The tool needs at least one selected face.
+    NoFacesSelected,
+    /// The selection cannot make a new edge or face.
+    CannotFill,
+    /// A merge distance must be a positive number.
+    InvalidDistance,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -110,6 +118,10 @@ impl fmt::Display for MeshError {
             Self::InvalidScale => write!(f, "the export scale must be a positive number"),
             Self::WrongSelectMode => write!(f, "those elements do not match the selection mode"),
             Self::InvalidAxis => write!(f, "the axis must be X, Y or Z"),
+            Self::NothingSelected => write!(f, "select more first"),
+            Self::NoFacesSelected => write!(f, "select at least one face first"),
+            Self::CannotFill => write!(f, "these already form an edge or face"),
+            Self::InvalidDistance => write!(f, "the merge distance must be a positive number"),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

@@ -1,8 +1,9 @@
 //! The tool panel, built with Dear ImGui.
 
 use imgui::{Condition, Drag, SliderFlags, Ui, WindowFlags};
-use modeler_mesh::{MAX_SUBDIVISIONS, Primitive, SelectMode};
+use modeler_mesh::{MAX_SUBDIVISIONS, Primitive};
 
+use crate::editor::Target;
 use crate::picking::Region;
 use crate::transform::Kind;
 
@@ -78,10 +79,21 @@ enum Setting {
     Cuts,
 }
 
+/// The selection mode buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeChoice {
+    Part,
+    Vertex,
+    Edge,
+    Face,
+}
+
 /// What a left drag in the viewport does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DragTool {
+    /// Dragging does nothing, so only clicks select.
     #[default]
+    ClickOnly,
     Box,
     Circle,
     Lasso,
@@ -114,7 +126,7 @@ impl Default for PanelState {
             file_name: "model".to_string(),
             scale: 1.0,
             message: String::new(),
-            tool: DragTool::Box,
+            tool: DragTool::ClickOnly,
         }
     }
 }
@@ -157,14 +169,54 @@ impl PanelState {
     }
 }
 
+impl PanelState {
+    /// Puts a shape's values on the sliders.
+    pub fn show_values(&mut self, primitive: Primitive, center: [f32; 3]) {
+        self.location = center;
+        match primitive {
+            Primitive::Cube { size } => self.size = size,
+            Primitive::Cone {
+                radius, segments, ..
+            }
+            | Primitive::Cylinder {
+                radius, segments, ..
+            }
+            | Primitive::Circle { radius, segments } => {
+                self.size = radius * 2.0;
+                self.segments = segments as i32;
+            }
+            Primitive::UvSphere {
+                radius,
+                segments,
+                rings,
+            } => {
+                self.size = radius * 2.0;
+                self.segments = segments as i32;
+                self.rings = rings as i32;
+            }
+            Primitive::Icosphere {
+                radius,
+                subdivisions,
+            } => {
+                self.size = radius * 2.0;
+                self.subdivisions = subdivisions as i32;
+            }
+            Primitive::Grid { size, columns, .. } => {
+                self.size = size;
+                self.cuts = columns as i32;
+            }
+        }
+    }
+}
+
 /// What the document looks like, for showing in the panel.
 pub struct PanelInfo<'a> {
     pub triangles: usize,
     pub vertices: usize,
     pub faces: usize,
     pub warnings: &'a [String],
-    pub adjusting: Option<Shape>,
-    pub mode: SelectMode,
+    pub target: Target,
+    pub mode: ModeChoice,
     pub selected_vertices: usize,
     pub transform_help: Option<(Kind, Option<usize>)>,
     pub undo_label: Option<&'static str>,
@@ -179,7 +231,14 @@ pub enum Action {
     Undo,
     Redo,
     Export,
-    SetMode(SelectMode),
+    SetMode(ModeChoice),
+    Delete,
+    Extrude,
+    Inset,
+    Merge,
+    MergeByDistance,
+    Fill,
+    Subdivide,
     SelectAll,
     SelectNone,
     SelectInvert,
@@ -237,21 +296,26 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
             }
 
             ui.text("Select");
-            let mode_button = |label: &str, mode: SelectMode, action: &mut Option<Action>| {
+            let mode_button = |label: &str, mode: ModeChoice, action: &mut Option<Action>| {
                 let color = (info.mode == mode).then(|| {
                     ui.push_style_color(imgui::StyleColor::Button, [0.85, 0.5, 0.15, 1.0])
                 });
-                if ui.button_with_size(label, [(PANEL_WIDTH - 44.0) / 3.0, 0.0]) {
+                if ui.button_with_size(label, [(PANEL_WIDTH - 52.0) / 4.0, 0.0]) {
                     *action = Some(Action::SetMode(mode));
                 }
                 drop(color);
             };
-            mode_button("Vertex (1)", SelectMode::Vertex, &mut action);
+            mode_button("Part 4", ModeChoice::Part, &mut action);
             ui.same_line();
-            mode_button("Edge (2)", SelectMode::Edge, &mut action);
+            mode_button("Vertex 1", ModeChoice::Vertex, &mut action);
             ui.same_line();
-            mode_button("Face (3)", SelectMode::Face, &mut action);
-            ui.text("Left drag:");
+            mode_button("Edge 2", ModeChoice::Edge, &mut action);
+            ui.same_line();
+            mode_button("Face 3", ModeChoice::Face, &mut action);
+            ui.text_disabled("Click selects. Shift adds, Ctrl removes.");
+            ui.text("Drag:");
+            ui.same_line();
+            ui.radio_button("Off", &mut state.tool, DragTool::ClickOnly);
             ui.same_line();
             ui.radio_button("Box", &mut state.tool, DragTool::Box);
             ui.same_line();
@@ -311,6 +375,35 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
             );
 
             ui.separator();
+            ui.text("Edit");
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("Extrude (E)", Action::Extrude),
+                    ("Inset (I)", Action::Inset),
+                    ("Delete (X)", Action::Delete),
+                ],
+                any,
+            );
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("Merge (M)", Action::Merge),
+                    ("Fill (F)", Action::Fill),
+                    ("Subdivide", Action::Subdivide),
+                ],
+                any,
+            );
+            button_row(
+                ui,
+                &mut action,
+                &[("Merge close vertices", Action::MergeByDistance)],
+                any,
+            );
+
+            ui.separator();
             ui.text("Add shape");
             for (i, shape) in Shape::ALL.into_iter().enumerate() {
                 if ui.button_with_size(shape.name(), [half, 0.0]) {
@@ -325,12 +418,31 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
             // Every label in a window must be different. Dear ImGui builds IDs from
             // them, and two widgets sharing an ID can crash it.
             ui.separator();
-            match info.adjusting {
-                Some(shape) => ui.text(format!("Changing: {}", shape.name())),
-                None => ui.text("Next shape's settings"),
-            }
-            let width = PANEL_WIDTH - 110.0;
-            let shape = info.adjusting;
+            let shape = match info.target {
+                Target::Shape(shape) => {
+                    ui.text(format!("Changing: {}", shape.name()));
+                    Some(shape)
+                }
+                Target::Nothing => {
+                    ui.text("Settings for the next shape");
+                    None
+                }
+                Target::Edited(shape) => {
+                    ui.text_wrapped(format!(
+                        "This {} was reshaped, so these only apply to the next shape.",
+                        shape.name()
+                    ));
+                    None
+                }
+                Target::Several => {
+                    ui.text_wrapped(
+                        "Several shapes are selected. Select one to change it. These apply to \
+                         the next shape.",
+                    );
+                    None
+                }
+            };
+            let width = PANEL_WIDTH - 126.0;
             let applies = |setting: Setting| shape.is_none_or(|s| s.uses(setting));
 
             ui.set_next_item_width(width);
@@ -469,6 +581,25 @@ mod tests {
     }
 
     #[test]
+    fn shape_values_go_to_the_sliders_and_back() {
+        let samples = PanelState {
+            size: 3.0,
+            segments: 7,
+            rings: 5,
+            subdivisions: 2,
+            cuts: 6,
+            ..Default::default()
+        };
+        for shape in Shape::ALL {
+            let primitive = samples.primitive(shape);
+            let mut state = PanelState::default();
+            state.show_values(primitive, [1.0, 2.0, 3.0]);
+            assert_eq!(state.primitive(shape), primitive, "{shape:?}");
+            assert_eq!(state.location, [1.0, 2.0, 3.0]);
+        }
+    }
+
+    #[test]
     fn each_shape_uses_the_right_sliders() {
         let uses = |s: Shape| {
             [
@@ -500,14 +631,19 @@ mod tests {
         let warnings = vec!["A warning".to_string()];
 
         let mut clicked_actions = 0;
-        for adjusting in [None, Some(Shape::Cube), Some(Shape::Icosphere)] {
+        for target in [
+            Target::Nothing,
+            Target::Shape(Shape::Cube),
+            Target::Edited(Shape::Icosphere),
+            Target::Several,
+        ] {
             let info = PanelInfo {
                 triangles: 12,
                 vertices: 8,
                 faces: 6,
                 warnings: &warnings,
-                adjusting,
-                mode: SelectMode::Vertex,
+                target,
+                mode: ModeChoice::Part,
                 selected_vertices: 8,
                 transform_help: Some((Kind::Move, Some(0))),
                 undo_label: Some("Add Cube"),

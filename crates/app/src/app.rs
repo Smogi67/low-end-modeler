@@ -24,18 +24,30 @@ use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, PANEL_MARGIN, PANEL_WIDTH, PanelInfo, PanelState, draw_region, panel,
+    Action, DragTool, ModeChoice, PANEL_MARGIN, PANEL_WIDTH, PanelInfo, PanelState, draw_region,
+    panel,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
 /// Frames to draw after an interaction, so that Dear ImGui can settle.
 const UI_SETTLE_FRAMES: u32 = 3;
 /// A left press that moves less than this is a click rather than a drag.
-const CLICK_PIXELS: f32 = 4.0;
+const CLICK_PIXELS: f32 = 8.0;
 const CIRCLE_BRUSH_RADIUS: f32 = 30.0;
 /// How much nearer than the surface a point may be pretended to be, as a share of the
 /// camera distance, so a point lying on a visible face is not hidden by that face.
 const DEPTH_TOLERANCE: f32 = 0.004;
+/// "Merge close vertices" joins vertices closer together than this, in model units.
+const MERGE_DISTANCE: f32 = 0.001;
+
+/// What must happen to the selection before a drag starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Prepare {
+    Nothing,
+    Duplicate,
+    Extrude,
+    Inset,
+}
 
 /// What the mouse is in the middle of doing.
 enum Mouse {
@@ -45,6 +57,7 @@ enum Mouse {
         region: Region,
         start: [f32; 2],
         moved: bool,
+        click_only: bool,
         op: SelectOp,
     },
     Transforming {
@@ -145,6 +158,7 @@ impl App {
         io.delta_time = (now - self.last_frame).as_secs_f32().max(0.001);
         self.last_frame = now;
 
+        let target = self.editor.refresh_target(&mut self.state);
         let document = self.editor.document();
         let mesh = document.mesh();
         let transform_help = match &self.mouse_state {
@@ -156,8 +170,8 @@ impl App {
             vertices: mesh.vertex_count(),
             faces: mesh.face_count(),
             warnings: &self.warnings,
-            adjusting: self.editor.adjusting(),
-            mode: self.editor.mode(),
+            target,
+            mode: self.editor.mode_choice(),
             selected_vertices: mesh.vertices().filter(|(_, v)| v.is_selected()).count(),
             transform_help,
             undo_label: document.undo_label(),
@@ -189,7 +203,7 @@ impl App {
 
         if self.stale == Stale::Everything {
             let mesh = self.editor.document().mesh();
-            self.scene.rebuild(mesh, self.editor.mode());
+            self.scene.rebuild(mesh, self.editor.drawing_mode());
             self.renderer.upload_scene(&self.scene);
             self.warnings = warnings(mesh.triangle_count(), mesh.open_edge_count());
         } else if self.stale == Stale::Moved
@@ -295,8 +309,43 @@ impl App {
             Action::SelectLess => {
                 self.select_edit("Select less", |mesh, mode| mesh.select_less(mode));
             }
-            Action::Transform(kind) => self.start_transform(kind, false),
-            Action::Duplicate => self.start_transform(Kind::Move, true),
+            Action::Transform(kind) => self.start_transform(kind, Prepare::Nothing),
+            Action::Duplicate => self.start_transform(Kind::Move, Prepare::Duplicate),
+            Action::Extrude => self.start_transform(Kind::Move, Prepare::Extrude),
+            Action::Inset => self.start_transform(Kind::Inset, Prepare::Inset),
+            Action::Delete => {
+                let result = self
+                    .editor
+                    .run("Delete", |mesh, mode| mesh.delete_selected(mode));
+                self.finish_edit(result);
+            }
+            Action::Merge => {
+                let result = self
+                    .editor
+                    .run("Merge", |mesh, mode| mesh.merge_selected_at_center(mode));
+                self.finish_edit(result);
+            }
+            Action::MergeByDistance => {
+                let mut removed = 0;
+                let result = self.editor.run("Merge close vertices", |mesh, mode| {
+                    removed = mesh.merge_selected_by_distance(MERGE_DISTANCE, mode)?;
+                    Ok(())
+                });
+                self.state.message = format!("Merged away {removed} vertices.");
+                self.finish_edit(result);
+            }
+            Action::Fill => {
+                let result = self
+                    .editor
+                    .run("Fill", |mesh, mode| mesh.fill_selected(mode));
+                self.finish_edit(result);
+            }
+            Action::Subdivide => {
+                let result = self
+                    .editor
+                    .run("Subdivide", |mesh, mode| mesh.subdivide_selected(mode));
+                self.finish_edit(result);
+            }
             Action::Mirror(axis) => {
                 let result = self
                     .editor
@@ -315,9 +364,9 @@ impl App {
         }
     }
 
-    /// Starts dragging the selection. Duplicating copies it first, as one undo step, so
-    /// cancelling removes the copy again.
-    fn start_transform(&mut self, kind: Kind, duplicate: bool) {
+    /// Starts dragging the selection. Anything prepared first shares its undo step, so
+    /// cancelling the drag removes it again.
+    fn start_transform(&mut self, kind: Kind, prepare: Prepare) {
         if !matches!(self.mouse_state, Mouse::Idle) {
             return;
         }
@@ -325,36 +374,59 @@ impl App {
             self.state.message = "Select something first.".to_string();
             return;
         }
-        let label = if duplicate { "Duplicate" } else { kind.name() };
+        let label = match prepare {
+            Prepare::Nothing => kind.name(),
+            Prepare::Duplicate => "Duplicate",
+            Prepare::Extrude => "Extrude",
+            Prepare::Inset => "Inset",
+        };
         if let Err(error) = self.editor.begin(label) {
             self.state.message = format!("That did not work: {error}");
             return;
         }
         let mode = self.editor.mode();
-        if duplicate {
-            let result = match self.editor.active_mesh() {
-                Some(mesh) => mesh.duplicate_selected(mode),
-                None => Ok(()),
-            };
-            if let Err(error) = result {
-                let _ = self.editor.cancel();
-                self.state.message = format!("That did not work: {error}");
-                return;
-            }
-            // The copies are new elements, so the card needs all of it once.
+        let mut direction = None;
+        let mut inset_targets = Vec::new();
+        let prepared = match self.editor.active_mesh() {
+            None => Ok(()),
+            Some(mesh) => match prepare {
+                Prepare::Nothing => Ok(()),
+                Prepare::Duplicate => mesh.duplicate_selected(mode),
+                Prepare::Extrude => {
+                    direction = mesh.selected_faces_normal();
+                    mesh.extrude_selected_faces(mode)
+                }
+                Prepare::Inset => mesh
+                    .inset_selected_faces(mode)
+                    .map(|moving| inset_targets = moving),
+            },
+        };
+        if let Err(error) = prepared {
+            let _ = self.editor.cancel();
+            self.state.message = format!("That did not work: {error}");
+            return;
+        }
+        if prepare != Prepare::Nothing {
+            // New elements exist, so the card needs all of it once.
             let mesh = self.editor.document().mesh();
-            self.scene.rebuild(mesh, mode);
+            self.scene.rebuild(mesh, self.editor.drawing_mode());
             self.renderer.upload_scene(&self.scene);
         }
         let mesh = self.editor.document().mesh();
-        let selected = mesh.selected_vertices();
-        let originals = selected
+        let (moving, centers): (Vec<_>, Vec<_>) = if prepare == Prepare::Inset {
+            inset_targets.iter().copied().unzip()
+        } else {
+            (mesh.selected_vertices(), Vec::new())
+        };
+        let originals = moving
             .iter()
             .filter_map(|&id| Some((id, mesh.vertex(id)?.position())))
             .collect();
         let pivot = mesh.selection_center().unwrap_or([0.0; 3]);
-        let parts = Scene::moved_parts(mesh, &selected);
-        let transform = Transform::new(kind, self.pointer, originals, pivot);
+        let parts = Scene::moved_parts(mesh, &moving);
+        let mut transform = Transform::new(kind, self.pointer, originals, pivot);
+        transform.direction = direction;
+        transform.centers = centers;
         self.mouse_state = Mouse::Transforming {
             transform: Box::new(transform),
             parts,
@@ -374,10 +446,8 @@ impl App {
             width,
             height,
         };
-        let moved: Vec<_> = transform
-            .originals
-            .iter()
-            .map(|&(id, start)| (id, transform.apply(start, &input)))
+        let moved: Vec<_> = (0..transform.originals.len())
+            .map(|i| (transform.originals[i].0, transform.position_for(i, &input)))
             .collect();
         if let Some(mesh) = self.editor.active_mesh() {
             for (id, position) in moved {
@@ -448,11 +518,12 @@ impl App {
             start,
             moved,
             op,
+            ..
         } = std::mem::replace(&mut self.mouse_state, Mouse::Idle)
         else {
             return;
         };
-        let elements: Vec<Element> = if moved {
+        let mut elements: Vec<Element> = if moved {
             self.with_visibility(|mesh, mode, view, visible| {
                 pick_region(mesh, mode, view, &region, visible)
             })
@@ -462,6 +533,14 @@ impl App {
             });
             hit.into_iter().collect()
         };
+        if self.editor.whole_parts() {
+            let mesh = self.editor.document().mesh();
+            elements = mesh
+                .linked_faces(&elements)
+                .into_iter()
+                .map(Element::Face)
+                .collect();
+        }
         // A plain click on nothing clears the selection, while Shift and Ctrl keep it.
         let result = self.editor.run("Select", |mesh, mode| {
             mesh.select_elements(mode, &elements, op)
@@ -473,7 +552,7 @@ impl App {
     fn start_selecting(&mut self, modifiers: Modifiers) {
         let start = self.pointer;
         let region = match self.state.tool {
-            DragTool::Box => Region::Box { a: start, b: start },
+            DragTool::ClickOnly | DragTool::Box => Region::Box { a: start, b: start },
             DragTool::Circle => Region::Brush {
                 path: vec![start],
                 radius: CIRCLE_BRUSH_RADIUS,
@@ -493,6 +572,7 @@ impl App {
             region,
             start,
             moved: false,
+            click_only: self.state.tool == DragTool::ClickOnly,
             op,
         };
     }
@@ -565,12 +645,13 @@ impl App {
                         region,
                         start,
                         moved,
+                        click_only,
                         ..
                     } => {
                         let far = (pointer[0] - start[0])
                             .abs()
                             .max((pointer[1] - start[1]).abs());
-                        *moved |= far >= CLICK_PIXELS;
+                        *moved |= far >= CLICK_PIXELS && !*click_only;
                         match region {
                             Region::Box { b, .. } => *b = pointer,
                             Region::Brush { path, .. } => path.push(pointer),
@@ -798,13 +879,19 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
         return (key == Keycode::D).then_some(Action::Duplicate);
     }
     match key {
-        Keycode::Num1 => Some(Action::SetMode(SelectMode::Vertex)),
-        Keycode::Num2 => Some(Action::SetMode(SelectMode::Edge)),
-        Keycode::Num3 => Some(Action::SetMode(SelectMode::Face)),
+        Keycode::Num1 => Some(Action::SetMode(ModeChoice::Vertex)),
+        Keycode::Num2 => Some(Action::SetMode(ModeChoice::Edge)),
+        Keycode::Num3 => Some(Action::SetMode(ModeChoice::Face)),
+        Keycode::Num4 => Some(Action::SetMode(ModeChoice::Part)),
         Keycode::A => Some(Action::SelectAll),
         Keycode::G => Some(Action::Transform(Kind::Move)),
         Keycode::R => Some(Action::Transform(Kind::Rotate)),
         Keycode::S => Some(Action::Transform(Kind::Scale)),
+        Keycode::E => Some(Action::Extrude),
+        Keycode::I => Some(Action::Inset),
+        Keycode::X | Keycode::Delete => Some(Action::Delete),
+        Keycode::M => Some(Action::Merge),
+        Keycode::F => Some(Action::Fill),
         _ => None,
     }
 }
@@ -930,44 +1017,38 @@ mod tests {
     }
 
     #[test]
-    fn selection_and_transform_shortcuts() {
+    fn selection_and_tool_shortcuts() {
         let shift = Modifiers {
             shift: true,
             ..NONE
         };
         let alt = Modifiers { alt: true, ..NONE };
-        assert_eq!(
-            shortcut(Keycode::Num1, NONE),
-            Some(Action::SetMode(SelectMode::Vertex))
-        );
-        assert_eq!(
-            shortcut(Keycode::Num2, NONE),
-            Some(Action::SetMode(SelectMode::Edge))
-        );
-        assert_eq!(
-            shortcut(Keycode::Num3, NONE),
-            Some(Action::SetMode(SelectMode::Face))
-        );
-        assert_eq!(shortcut(Keycode::A, NONE), Some(Action::SelectAll));
-        assert_eq!(
-            shortcut(Keycode::G, NONE),
-            Some(Action::Transform(Kind::Move))
-        );
-        assert_eq!(
-            shortcut(Keycode::R, NONE),
-            Some(Action::Transform(Kind::Rotate))
-        );
-        assert_eq!(
-            shortcut(Keycode::S, NONE),
-            Some(Action::Transform(Kind::Scale))
-        );
+        let pairs = [
+            (Keycode::Num1, Action::SetMode(ModeChoice::Vertex)),
+            (Keycode::Num2, Action::SetMode(ModeChoice::Edge)),
+            (Keycode::Num3, Action::SetMode(ModeChoice::Face)),
+            (Keycode::Num4, Action::SetMode(ModeChoice::Part)),
+            (Keycode::A, Action::SelectAll),
+            (Keycode::G, Action::Transform(Kind::Move)),
+            (Keycode::R, Action::Transform(Kind::Rotate)),
+            (Keycode::S, Action::Transform(Kind::Scale)),
+            (Keycode::E, Action::Extrude),
+            (Keycode::I, Action::Inset),
+            (Keycode::X, Action::Delete),
+            (Keycode::Delete, Action::Delete),
+            (Keycode::M, Action::Merge),
+            (Keycode::F, Action::Fill),
+        ];
+        for (key, action) in pairs {
+            assert_eq!(shortcut(key, NONE), Some(action));
+            assert_eq!(shortcut(key, alt), None);
+        }
         assert_eq!(shortcut(Keycode::D, shift), Some(Action::Duplicate));
         assert_eq!(shortcut(Keycode::D, NONE), None);
         assert_eq!(shortcut(Keycode::I, CTRL), Some(Action::SelectInvert));
         assert_eq!(shortcut(Keycode::L, CTRL), Some(Action::SelectLinked));
         assert_eq!(shortcut(Keycode::Plus, CTRL), Some(Action::SelectMore));
         assert_eq!(shortcut(Keycode::Minus, CTRL), Some(Action::SelectLess));
-        assert_eq!(shortcut(Keycode::A, alt), None);
     }
 
     #[test]

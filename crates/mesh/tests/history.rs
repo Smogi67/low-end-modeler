@@ -550,6 +550,10 @@ fn errors_have_readable_messages() {
         MeshError::InvalidScale,
         MeshError::WrongSelectMode,
         MeshError::InvalidAxis,
+        MeshError::NothingSelected,
+        MeshError::NoFacesSelected,
+        MeshError::CannotFill,
+        MeshError::InvalidDistance,
         MeshError::IdsExhausted,
     ];
     let messages: Vec<String> = errors.iter().map(|error| error.to_string()).collect();

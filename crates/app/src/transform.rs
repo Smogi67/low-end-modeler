@@ -8,12 +8,18 @@ use crate::camera::Camera;
 const SNAP_MOVE: f32 = 1.0;
 const SNAP_ROTATE_RADIANS: f32 = 15.0 * std::f32::consts::PI / 180.0;
 const SNAP_SCALE: f32 = 0.1;
+/// Mouse travel for a full inset.
+const INSET_PIXELS: f32 = 300.0;
+/// Stops short of a full inset, so the new face keeps some size.
+const INSET_LIMIT: f32 = 0.99;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Move,
     Rotate,
     Scale,
+    /// Each vertex moves toward its own face's center.
+    Inset,
 }
 
 impl Kind {
@@ -22,6 +28,7 @@ impl Kind {
             Kind::Move => "Move",
             Kind::Rotate => "Rotate",
             Kind::Scale => "Scale",
+            Kind::Inset => "Inset",
         }
     }
 }
@@ -77,6 +84,10 @@ pub struct Transform {
     start_mouse: [f32; 2],
     pub originals: Vec<(VertexId, V3)>,
     pub pivot: V3,
+    /// For extruding: the direction to move in until an axis key is pressed.
+    pub direction: Option<V3>,
+    /// For insetting: each vertex's target, in the same order as `originals`.
+    pub centers: Vec<V3>,
 }
 
 impl Transform {
@@ -92,6 +103,8 @@ impl Transform {
             start_mouse,
             originals,
             pivot,
+            direction: None,
+            centers: Vec::new(),
         }
     }
 
@@ -104,12 +117,34 @@ impl Transform {
         };
     }
 
+    /// The new position of the vertex at this place in `originals`.
+    pub fn position_for(&self, index: usize, input: &Input) -> V3 {
+        let start = self.originals[index].1;
+        if self.kind == Kind::Inset {
+            let center = self.centers.get(index).copied().unwrap_or(start);
+            return add(start, scaled(sub(center, start), self.inset_amount(input)));
+        }
+        self.apply(start, input)
+    }
+
+    /// How far insetting has gone, from 0 to just under 1, by distance from the start.
+    fn inset_amount(&self, input: &Input) -> f32 {
+        let dx = input.mouse[0] - self.start_mouse[0];
+        let dy = input.mouse[1] - self.start_mouse[1];
+        let mut amount = (dx * dx + dy * dy).sqrt() / INSET_PIXELS;
+        if input.snap {
+            amount = snapped(amount, SNAP_SCALE);
+        }
+        amount.min(INSET_LIMIT)
+    }
+
     /// The new position of a point that started at `point`.
     pub fn apply(&self, point: V3, input: &Input) -> V3 {
         match self.kind {
             Kind::Move => add(point, self.move_offset(input)),
             Kind::Rotate => self.rotate(point, input),
             Kind::Scale => self.scale(point, input),
+            Kind::Inset => point,
         }
     }
 
@@ -118,11 +153,11 @@ impl Transform {
         let dy = input.mouse[1] - self.start_mouse[1];
         let (right, up) = input.camera.right_and_up();
         let per_pixel = input.camera.world_per_pixel_at(self.pivot, input.height);
-        let mut offset = match self.axis {
+        let locked = self.axis.map(axis_vector).or(self.direction);
+        let mut offset = match locked {
             None => add(scaled(right, dx * per_pixel), scaled(up, -dy * per_pixel)),
-            Some(axis) => {
+            Some(a) => {
                 // How far along the axis the mouse has gone, as the axis looks on screen.
-                let a = axis_vector(axis);
                 let (sx, sy) = (dot(a, right), -dot(a, up));
                 let squared = sx * sx + sy * sy;
                 if squared < 1e-4 {
@@ -406,6 +441,64 @@ mod tests {
         let t = transform(Kind::Scale, [400.0, 300.0]);
         let done = t.apply([1.0, 1.0, 1.0], &input(front(), [500.0, 300.0]));
         assert!(done.iter().all(|c| c.is_finite()));
+    }
+
+    #[test]
+    fn extrude_direction_applies_until_an_axis_key_replaces_it() {
+        let mut camera = front();
+        camera.set_view(40.0, 30.0);
+        let mut t = transform(Kind::Move, [400.0, 300.0]);
+        t.direction = Some([0.0, 0.0, 1.0]);
+        let moved = t.apply([0.0; 3], &input(camera, [400.0, 200.0]));
+        assert!(
+            moved[2] > 0.0 && moved[0] == 0.0 && moved[1] == 0.0,
+            "{moved:?}"
+        );
+        t.toggle_axis(0);
+        let moved = t.apply([0.0; 3], &input(camera, [500.0, 300.0]));
+        assert!(moved[0] != 0.0 && moved[2] == 0.0, "{moved:?}");
+        t.toggle_axis(0);
+        let moved = t.apply([0.0; 3], &input(camera, [400.0, 200.0]));
+        assert!(moved[2] > 0.0, "unlocking returns to the direction");
+    }
+
+    #[test]
+    fn inset_moves_each_vertex_toward_its_center() {
+        let mut t = Transform::new(Kind::Inset, [400.0, 300.0], Vec::new(), [0.0; 3]);
+        let id = {
+            let mut mesh = modeler_mesh::Mesh::new();
+            mesh.add_vertex([0.0; 3]).unwrap()
+        };
+        t.originals = vec![(id, [2.0, 0.0, 0.0]), (id, [0.0, 4.0, 0.0])];
+        t.centers = vec![[0.0; 3], [0.0; 3]];
+        let camera = front();
+        near(
+            t.position_for(0, &input(camera, [400.0, 300.0])),
+            [2.0, 0.0, 0.0],
+        );
+        near(
+            t.position_for(0, &input(camera, [550.0, 300.0])),
+            [1.0, 0.0, 0.0],
+        );
+        near(
+            t.position_for(1, &input(camera, [550.0, 300.0])),
+            [0.0, 2.0, 0.0],
+        );
+        // It stops before collapsing the face to a point.
+        let far = t.position_for(0, &input(camera, [5000.0, 300.0]));
+        assert!(far[0] > 0.0 && far[0] < 0.1, "{far:?}");
+        let mut with_snap = input(camera, [516.0, 300.0]); // 0.387, snapping to 0.4.
+        with_snap.snap = true;
+        near(t.position_for(0, &with_snap), [1.2, 0.0, 0.0]);
+        // Other kinds follow apply.
+        let m = transform(Kind::Move, [400.0, 300.0]);
+        let mut m2 = m.clone();
+        m2.originals = vec![(id, [1.0, 1.0, 1.0])];
+        near(
+            m2.position_for(0, &input(camera, [400.0, 300.0])),
+            [1.0, 1.0, 1.0],
+        );
+        assert_eq!(Kind::Inset.name(), "Inset");
     }
 
     #[test]
