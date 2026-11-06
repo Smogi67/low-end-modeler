@@ -2,7 +2,7 @@
 //! Blender's Adjust Last Operation panel. No window or graphics code, so it is tested
 //! directly.
 
-use modeler_mesh::{Document, Mesh, MeshError, Primitive};
+use modeler_mesh::{Document, Element, Mesh, MeshError, Primitive, SelectMode, SelectOp};
 
 use crate::ui::{PanelState, Shape};
 
@@ -17,6 +17,7 @@ struct LastAdd {
 pub struct Editor {
     document: Document,
     last_add: Option<LastAdd>,
+    mode: SelectMode,
 }
 
 impl Editor {
@@ -24,6 +25,7 @@ impl Editor {
         Self {
             document: Document::new(Mesh::new()),
             last_add: None,
+            mode: SelectMode::Vertex,
         }
     }
 
@@ -42,8 +44,15 @@ impl Editor {
         primitive: Primitive,
         center: [f32; 3],
     ) -> Result<(), MeshError> {
+        // The new shape becomes the selection, ready to move.
+        let mode = self.mode;
         self.document.edit(shape.edit_label(), |mesh| {
-            mesh.add_primitive(primitive, center).map(|_| ())
+            let faces = mesh.add_primitive(primitive, center)?;
+            let picked: Vec<Element> = faces.into_iter().map(Element::Face).collect();
+            mesh.deselect_all();
+            mesh.select_elements(SelectMode::Face, &picked, SelectOp::Add)?;
+            mesh.flush_selection(mode);
+            Ok(())
         })?;
         self.last_add = Some(LastAdd {
             shape,
@@ -51,6 +60,55 @@ impl Editor {
             center,
         });
         Ok(())
+    }
+
+    /// The active selection mode.
+    pub fn mode(&self) -> SelectMode {
+        self.mode
+    }
+
+    /// Switches modes, keeping what the new mode can hold. Returns whether it changed.
+    pub fn set_mode(&mut self, mode: SelectMode) -> bool {
+        if self.mode == mode {
+            return false;
+        }
+        self.mode = mode;
+        self.last_add = None;
+        let _ = self.document.edit("Select mode", |mesh| {
+            mesh.flush_selection(mode);
+            Ok(())
+        });
+        true
+    }
+
+    /// Runs one edit as an undo step. Ends adjusting of the newest shape.
+    pub fn run(
+        &mut self,
+        label: &'static str,
+        edit: impl FnOnce(&mut Mesh, SelectMode) -> Result<(), MeshError>,
+    ) -> Result<(), MeshError> {
+        self.last_add = None;
+        let mode = self.mode;
+        self.document.edit(label, |mesh| edit(mesh, mode))
+    }
+
+    /// Starts an edit that stays open during a drag.
+    pub fn begin(&mut self, label: &'static str) -> Result<(), MeshError> {
+        self.last_add = None;
+        self.document.begin_edit(label)
+    }
+
+    /// The mesh during an open edit.
+    pub fn active_mesh(&mut self) -> Option<&mut Mesh> {
+        self.document.active_mesh()
+    }
+
+    pub fn commit(&mut self) -> Result<bool, MeshError> {
+        self.document.commit_edit()
+    }
+
+    pub fn cancel(&mut self) -> Result<(), MeshError> {
+        self.document.cancel_edit()
     }
 
     pub fn add(&mut self, shape: Shape, state: &PanelState) -> Result<(), MeshError> {
@@ -221,6 +279,97 @@ mod tests {
         editor.add(Shape::Cube, &state).unwrap();
         let mesh = editor.document().mesh();
         assert!(mesh.vertices().all(|(_, v)| v.position()[0].abs() == 2.0));
+    }
+
+    #[test]
+    fn a_new_shape_becomes_the_selection_and_stays_so_when_adjusted() {
+        let mut editor = Editor::new();
+        let mut state = PanelState {
+            segments: 8,
+            ..Default::default()
+        };
+        editor.add(Shape::Cube, &state).unwrap();
+        editor.add(Shape::Cylinder, &state).unwrap();
+        let selected = |e: &Editor| e.document().mesh().selected_vertices().len();
+        assert_eq!(selected(&editor), 16, "only the newest shape");
+        state.segments = 12;
+        editor.adjust(&state).unwrap();
+        assert_eq!(selected(&editor), 24);
+        editor.document().mesh().validate().unwrap();
+    }
+
+    #[test]
+    fn other_edits_end_adjusting() {
+        let mut editor = Editor::new();
+        let mut state = PanelState::default();
+        editor.add(Shape::Cube, &state).unwrap();
+        editor
+            .run("Select all", |mesh, _| {
+                mesh.select_all();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(editor.adjusting(), None);
+        state.size = 5.0;
+        assert_eq!(editor.adjust(&state), Ok(false));
+
+        editor.add(Shape::Cube, &state).unwrap();
+        assert!(editor.set_mode(SelectMode::Face));
+        assert_eq!(editor.adjusting(), None);
+        assert!(!editor.set_mode(SelectMode::Face));
+
+        editor.add(Shape::Cube, &state).unwrap();
+        editor.begin("Move").unwrap();
+        assert_eq!(editor.adjusting(), None);
+        assert_eq!(editor.adjust(&state), Ok(false));
+        editor.cancel().unwrap();
+    }
+
+    #[test]
+    fn switching_modes_keeps_a_whole_shape_selected_in_each_mode() {
+        let mut editor = Editor::new();
+        let state = PanelState::default();
+        for mode in [SelectMode::Face, SelectMode::Edge, SelectMode::Vertex] {
+            editor.set_mode(mode);
+            editor.add(Shape::Cube, &state).unwrap();
+            let mesh = editor.document().mesh();
+            assert_eq!(mesh.selected_vertices().len(), 8, "{mode:?}");
+            assert_eq!(
+                mesh.faces().filter(|(_, f)| f.is_selected()).count(),
+                6,
+                "{mode:?}"
+            );
+            mesh.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_held_edit_can_commit_or_cancel() {
+        let mut editor = Editor::new();
+        let state = PanelState::default();
+        editor.add(Shape::Cube, &state).unwrap();
+        let before = editor.document().mesh().clone();
+        let vertex = before.selected_vertices()[0];
+
+        editor.begin("Move").unwrap();
+        editor
+            .active_mesh()
+            .unwrap()
+            .set_vertex_position(vertex, [9.0; 3])
+            .unwrap();
+        editor.cancel().unwrap();
+        assert_eq!(*editor.document().mesh(), before);
+
+        editor.begin("Move").unwrap();
+        editor
+            .active_mesh()
+            .unwrap()
+            .set_vertex_position(vertex, [9.0; 3])
+            .unwrap();
+        assert_eq!(editor.commit(), Ok(true));
+        assert_ne!(*editor.document().mesh(), before);
+        assert!(editor.undo());
+        assert_eq!(*editor.document().mesh(), before);
     }
 
     /// Dragging a slider rebuilds a shape on each change, so memory must stay level.

@@ -1,10 +1,13 @@
 //! The tool panel, built with Dear ImGui.
 
 use imgui::{Condition, Drag, SliderFlags, Ui, WindowFlags};
-use modeler_mesh::{MAX_SUBDIVISIONS, Primitive};
+use modeler_mesh::{MAX_SUBDIVISIONS, Primitive, SelectMode};
+
+use crate::picking::Region;
+use crate::transform::Kind;
 
 pub const PANEL_MARGIN: f32 = 8.0;
-pub const PANEL_WIDTH: f32 = 236.0;
+pub const PANEL_WIDTH: f32 = 300.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -75,6 +78,15 @@ enum Setting {
     Cuts,
 }
 
+/// What a left drag in the viewport does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DragTool {
+    #[default]
+    Box,
+    Circle,
+    Lasso,
+}
+
 /// The values the panel edits.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
@@ -87,6 +99,7 @@ pub struct PanelState {
     pub file_name: String,
     pub scale: f32,
     pub message: String,
+    pub tool: DragTool,
 }
 
 impl Default for PanelState {
@@ -101,6 +114,7 @@ impl Default for PanelState {
             file_name: "model".to_string(),
             scale: 1.0,
             message: String::new(),
+            tool: DragTool::Box,
         }
     }
 }
@@ -150,6 +164,9 @@ pub struct PanelInfo<'a> {
     pub faces: usize,
     pub warnings: &'a [String],
     pub adjusting: Option<Shape>,
+    pub mode: SelectMode,
+    pub selected_vertices: usize,
+    pub transform_help: Option<(Kind, Option<usize>)>,
     pub undo_label: Option<&'static str>,
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
@@ -162,9 +179,38 @@ pub enum Action {
     Undo,
     Redo,
     Export,
+    SetMode(SelectMode),
+    SelectAll,
+    SelectNone,
+    SelectInvert,
+    SelectLinked,
+    SelectMore,
+    SelectLess,
+    Transform(Kind),
+    Duplicate,
+    Mirror(usize),
     #[cfg(windows)]
     OpenExportFolder,
 }
+
+/// Fills a row with buttons of equal width. Labels must be unique in the panel.
+fn button_row(ui: &Ui, action: &mut Option<Action>, buttons: &[(&str, Action)], enabled: bool) {
+    let gap = ui.clone_style().item_spacing[0];
+    let count = buttons.len() as f32;
+    let width = (PANEL_WIDTH - 28.0 - gap * (count - 1.0)) / count;
+    let disabled = ui.begin_disabled(!enabled);
+    for (i, (label, choice)) in buttons.iter().enumerate() {
+        if i > 0 {
+            ui.same_line();
+        }
+        if ui.button_with_size(label, [width, 0.0]) {
+            *action = Some(*choice);
+        }
+    }
+    disabled.end();
+}
+
+const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
 /// Builds the panel. Returns the action, and the panel's height.
 pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Action>, f32) {
@@ -172,16 +218,99 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
     let mut height = 0.0;
     ui.window("Tools")
         .position([PANEL_MARGIN, PANEL_MARGIN], Condition::Always)
-        .size([PANEL_WIDTH, 0.0], Condition::Always)
-        .flags(
-            WindowFlags::NO_MOVE
-                | WindowFlags::NO_RESIZE
-                | WindowFlags::NO_COLLAPSE
-                | WindowFlags::ALWAYS_AUTO_RESIZE,
+        .size(
+            [PANEL_WIDTH, ui.io().display_size[1] - PANEL_MARGIN * 2.0],
+            Condition::Always,
         )
+        .flags(WindowFlags::NO_MOVE | WindowFlags::NO_RESIZE | WindowFlags::NO_COLLAPSE)
         .build(|| {
             let half = (PANEL_WIDTH - 24.0) / 2.0;
 
+            if let Some((kind, axis)) = info.transform_help {
+                ui.text_colored([1.0, 0.7, 0.3, 1.0], format!("{}...", kind.name()));
+                ui.text_wrapped("Move the mouse. Left click confirms. Right click or Esc cancels.");
+                ui.text_wrapped("X, Y or Z locks to an axis. Hold Ctrl to snap.");
+                if let Some(axis) = axis {
+                    ui.text(format!("Locked to {}", AXIS_NAMES[axis]));
+                }
+                ui.separator();
+            }
+
+            ui.text("Select");
+            let mode_button = |label: &str, mode: SelectMode, action: &mut Option<Action>| {
+                let color = (info.mode == mode).then(|| {
+                    ui.push_style_color(imgui::StyleColor::Button, [0.85, 0.5, 0.15, 1.0])
+                });
+                if ui.button_with_size(label, [(PANEL_WIDTH - 44.0) / 3.0, 0.0]) {
+                    *action = Some(Action::SetMode(mode));
+                }
+                drop(color);
+            };
+            mode_button("Vertex (1)", SelectMode::Vertex, &mut action);
+            ui.same_line();
+            mode_button("Edge (2)", SelectMode::Edge, &mut action);
+            ui.same_line();
+            mode_button("Face (3)", SelectMode::Face, &mut action);
+            ui.text("Left drag:");
+            ui.same_line();
+            ui.radio_button("Box", &mut state.tool, DragTool::Box);
+            ui.same_line();
+            ui.radio_button("Circle", &mut state.tool, DragTool::Circle);
+            ui.same_line();
+            ui.radio_button("Lasso", &mut state.tool, DragTool::Lasso);
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("All (A)", Action::SelectAll),
+                    ("None", Action::SelectNone),
+                    ("Invert", Action::SelectInvert),
+                ],
+                true,
+            );
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("Linked (L)", Action::SelectLinked),
+                    ("More", Action::SelectMore),
+                    ("Less", Action::SelectLess),
+                ],
+                true,
+            );
+            ui.text_disabled(format!("Selected: {} vertices", info.selected_vertices));
+
+            ui.separator();
+            ui.text("Transform");
+            let any = info.selected_vertices > 0;
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("Move (G)", Action::Transform(Kind::Move)),
+                    ("Rotate (R)", Action::Transform(Kind::Rotate)),
+                    ("Scale (S)", Action::Transform(Kind::Scale)),
+                ],
+                any,
+            );
+            button_row(
+                ui,
+                &mut action,
+                &[("Duplicate (Shift+D)", Action::Duplicate)],
+                any,
+            );
+            button_row(
+                ui,
+                &mut action,
+                &[
+                    ("Mirror X", Action::Mirror(0)),
+                    ("Mirror Y", Action::Mirror(1)),
+                    ("Mirror Z", Action::Mirror(2)),
+                ],
+                any,
+            );
+
+            ui.separator();
             ui.text("Add shape");
             for (i, shape) in Shape::ALL.into_iter().enumerate() {
                 if ui.button_with_size(shape.name(), [half, 0.0]) {
@@ -281,6 +410,26 @@ pub fn panel(ui: &Ui, state: &mut PanelState, info: &PanelInfo) -> (Option<Actio
     (action, height)
 }
 
+/// Draws a selection shape being dragged.
+pub fn draw_region(ui: &Ui, region: &Region) {
+    let list = ui.get_foreground_draw_list();
+    let color = [1.0, 0.75, 0.3, 1.0];
+    match region {
+        Region::Box { a, b } => {
+            list.add_rect(*a, *b, color).build();
+        }
+        Region::Brush { path, radius } => {
+            if let Some(last) = path.last() {
+                list.add_circle(*last, *radius, color).build();
+            }
+            list.add_polyline(path.clone(), color).build();
+        }
+        Region::Lasso { points } => {
+            list.add_polyline(points.clone(), color).build();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,7 +495,7 @@ mod tests {
         let mut context = imgui::Context::create();
         context.set_ini_filename(None);
         context.fonts().build_rgba32_texture();
-        context.io_mut().display_size = [1024.0, 640.0];
+        context.io_mut().display_size = [1024.0, 1000.0];
         context.io_mut().delta_time = 1.0 / 60.0;
         let warnings = vec!["A warning".to_string()];
 
@@ -358,6 +507,9 @@ mod tests {
                 faces: 6,
                 warnings: &warnings,
                 adjusting,
+                mode: SelectMode::Vertex,
+                selected_vertices: 8,
+                transform_help: Some((Kind::Move, Some(0))),
                 undo_label: Some("Add Cube"),
                 redo_label: Some("Add Cube"),
                 export_folder: "exports",
@@ -374,7 +526,7 @@ mod tests {
             };
             frame(&mut context, &mut state);
             frame(&mut context, &mut state);
-            for y in (0..640).step_by(5) {
+            for y in (0..1000).step_by(6) {
                 for x in (10..PANEL_WIDTH as i32).step_by(25) {
                     let (x, y) = (x as f32, y as f32);
                     let io = context.io_mut();

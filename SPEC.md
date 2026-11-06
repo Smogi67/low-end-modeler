@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 3 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop test and a Roblox import are still needed. See section 11.**
-Next step: **After the owner's test and Roblox import pass, Stage 4, selection modes and transforms.**
+Status: **Stage 4 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 and 4 and the Roblox import are still needed. See section 11.**
+Next step: **After those tests pass, Stage 5: extrude, inset, merge, delete, fill, subdivide.**
 
 ## 1. Goal
 
@@ -107,6 +107,16 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **Adjusting the newest shape (owner's request):** the panel's values change the shape just added, like Blender's Adjust Last Operation, without adding undo steps. This stops after undo or redo.
 - **ImGui labels:** every label in a window must be unique. A shared ID crashes the app when clicked, and `clicking_and_dragging_everywhere_on_the_panel_is_safe` in `ui.rs` guards against it.
 - **Not done yet:** the whole mesh is re-sent to the graphics card after each change. This is fine for adding shapes, but Stage 4's transforms must send only what changed (section 4, rule 3), and must also use the list of changed elements noted in section 5.
+
+### Decisions made in Stage 4
+
+- **Selection:** stored as flags on elements, so undo restores it. A selected face always has its edges selected, and a selected edge its vertices. `validate` checks this.
+- **Mouse:** left click selects, left drag selects with the chosen tool (box, circle, or lasso), Shift adds, and Ctrl removes. A click on nothing clears the selection. This follows the owner's wish to avoid extra keys for common actions.
+- **Hidden parts:** depth is read from the graphics card once per selection, so only visible parts get selected. There is no select-through mode yet.
+- **Transforms:** G, R, and S or panel buttons start a drag around the selection's center. X, Y, or Z locks an axis, Ctrl snaps (1 unit, 15 degrees, or 0.1 scale), a left click confirms, and a right click or Esc cancels. Duplicate is one undo step with its move, so cancelling removes the copy.
+- **Mirror:** across the selection's center. Fully selected faces get their winding reversed, so they keep facing outward.
+- **Partial updates:** during a transform only the affected faces, edges, and points are rewritten and sent (section 4, rule 3). Other changes, including selection, still rebuild everything.
+- **Scheduling gaps:** proportional editing, the 3D cursor, other pivot points, and typing exact values have no stage yet. Add them to Stage 8 or 9 unless the owner says otherwise. Loop selection stays in Stage 6.
 
 ## 6. Feature scope
 
@@ -219,6 +229,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 2 | Laptop reports OpenGL 3.1.0, Build 9.17.10.4459, Intel HD Graphics 3000. The owner saw the picture stretch while dragging the window edge, because Windows pauses the main loop during a resize. Window events now draw from an SDL event watch. | Fix not yet confirmed |
 | 2026-11-06 | 3 | Seven primitives, flat-shaded display with edges, tool panel, undo and redo buttons and shortcuts, triangle counter, and OBJ export added. Run on Linux with OpenGL limited to 2.1 using simulated clicks: all shapes, undo, redo, and export worked, and idle CPU measured 0.00% | Not yet |
 | 2026-11-06 | 3 | The owner reported a crash when changing the Icosphere slider, and that changing values did not affect shapes. Reproduced the crash: the slider and the shape button shared a label, so a shared ID hit an out-of-range mouse button in Dear ImGui. Labels are now unique. Panel values now adjust the newest shape. Also fixed a null draw list on the first frame | Fix not yet confirmed |
+| 2026-11-06 | 4 | Vertex, edge, and face selection with click, box, circle, and lasso; all, none, invert, linked, more, and less; move, rotate, and scale with axis lock and snapping; duplicate and mirror; partial graphics updates. Started at the owner's request before the Stage 3 tests were reported, so the Roblox import is still untested. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 
 ## 12. Open questions
 
@@ -227,6 +238,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] Windows version: Windows 10 Home 64-bit, so Stage 2 builds a 64-bit .exe
 - [x] The graphics chip supports OpenGL 2.1: the laptop reports OpenGL 3.1 on Intel HD Graphics 3000
 - [x] Owner has a GitHub account (Smogi67)
+- [ ] Test importing an exported OBJ into Roblox Studio (Stage 3 goal, not yet reported)
 - [x] Roblox's mesh requirements checked 2026-11-06: 20,000 triangles per mesh, closed geometry with real thickness (https://create.roblox.com/docs/en-us/art/modeling/specifications)
 - [ ] List the real dependencies of the .exe for the installer (once the Stage 2 build exists)
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)

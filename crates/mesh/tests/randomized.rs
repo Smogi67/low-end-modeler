@@ -15,7 +15,10 @@
 
 mod common;
 use common::{cube, normalize_cycle};
-use modeler_mesh::{Document, EdgeId, FaceId, HistoryLimits, Mesh, MeshError, VertexId};
+use modeler_mesh::{
+    Document, EdgeId, Element, FaceId, HistoryLimits, Mesh, MeshError, SelectMode, SelectOp,
+    VertexId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 struct Rng(u64);
@@ -494,6 +497,45 @@ impl Run {
                     |model, (), _| model.flip(face),
                 );
             }
+            21 if rng.below(4) == 0 => {
+                // Selection changes nothing the model tracks, but must stay valid
+                // through every other edit, and undo must restore it exactly.
+                let modes = [SelectMode::Vertex, SelectMode::Edge, SelectMode::Face];
+                let mode = modes[rng.below(3)];
+                let choice = rng.below(6);
+                let picked: Vec<Element> = match mode {
+                    SelectMode::Vertex => rng
+                        .pick(&self.live_vertices())
+                        .map(Element::Vertex)
+                        .into_iter()
+                        .collect(),
+                    SelectMode::Edge => rng
+                        .pick(&self.live_edges())
+                        .map(Element::Edge)
+                        .into_iter()
+                        .collect(),
+                    SelectMode::Face => rng
+                        .pick(&self.live_faces())
+                        .map(Element::Face)
+                        .into_iter()
+                        .collect(),
+                };
+                self.apply(
+                    "select",
+                    move |m| {
+                        match choice {
+                            0 => m.select_elements(mode, &picked, SelectOp::Replace)?,
+                            1 => m.select_elements(mode, &picked, SelectOp::Add)?,
+                            2 => m.select_linked(mode),
+                            3 => m.select_more(mode),
+                            4 => m.select_less(mode),
+                            _ => m.invert_selection(mode),
+                        }
+                        Ok(())
+                    },
+                    |_, (), _| {},
+                );
+            }
             21 if rng.below(2) == 0 => {
                 // A new face beside an existing one, with matching winding, which
                 // gives later joins and splits a well-formed surface to work on.
@@ -648,6 +690,7 @@ fn random_edits_match_the_model() {
         "undo",
         "redo",
         "add neighbor",
+        "select",
     ];
     for action in actions {
         let (succeeded, _) = total.get(action).copied().unwrap_or_default();

@@ -548,6 +548,8 @@ fn errors_have_readable_messages() {
         MeshError::NoEditInProgress,
         MeshError::InvalidPrimitive,
         MeshError::InvalidScale,
+        MeshError::WrongSelectMode,
+        MeshError::InvalidAxis,
         MeshError::IdsExhausted,
     ];
     let messages: Vec<String> = errors.iter().map(|error| error.to_string()).collect();

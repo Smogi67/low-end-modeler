@@ -20,6 +20,9 @@
 //! joins its vertex to the next corner's vertex. No vertex repeats within a face.
 //! No two faces use the same set of vertices. Every corner is in exactly one face.
 //!
+//! **Selection:** a selected face has all its edges selected, and a selected edge has
+//! both its vertices selected.
+//!
 //! Winding may differ between neighbors, and it is deliberately not checked.
 
 use std::collections::HashSet;
@@ -74,6 +77,25 @@ impl Mesh {
         self.check_vertices_and_disk_cycles()?;
         self.check_radial_cycles()?;
         self.check_faces()?;
+        self.check_selection()?;
+        Ok(())
+    }
+
+    fn check_selection(&self) -> Result<(), ValidationError> {
+        for (id, edge) in self.edges.iter() {
+            if edge.selected && !edge.vertices.iter().all(|&v| self.vertices[v].selected) {
+                bail!("selected edge {id} has an unselected vertex");
+            }
+        }
+        for (id, face) in self.faces.iter() {
+            if face.selected
+                && !self
+                    .face_walk(id)
+                    .all(|c| self.edges[self.corners[c].edge].selected)
+            {
+                bail!("selected face {id} has an unselected edge");
+            }
+        }
         Ok(())
     }
 
@@ -343,6 +365,7 @@ mod tests {
         let face = mesh.faces.insert_with(|_| Face {
             first_corner: CornerId::dangling(),
             corner_count: corners.len() as u32,
+            selected: false,
         });
         let ids: Vec<CornerId> = corners
             .iter()
@@ -472,6 +495,14 @@ mod tests {
             f.mesh.corners[f.corner].edge = f.wire;
             f.mesh.radial_insert(f.corner);
         });
+    }
+
+    #[test]
+    fn detects_selection_that_is_not_carried_down() {
+        assert_detected("unselected vertex", |f| {
+            f.mesh.edges[f.wire].selected = true
+        });
+        assert_detected("unselected edge", |f| f.mesh.faces[f.face].selected = true);
     }
 
     #[test]

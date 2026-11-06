@@ -62,6 +62,10 @@ pub enum MeshError {
     InvalidPrimitive,
     /// An export scale must be a positive number.
     InvalidScale,
+    /// The elements given do not match the selection mode.
+    WrongSelectMode,
+    /// An axis must be 0, 1 or 2.
+    InvalidAxis,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -104,6 +108,8 @@ impl fmt::Display for MeshError {
             Self::NoEditInProgress => write!(f, "no edit is running"),
             Self::InvalidPrimitive => write!(f, "that shape's size or detail is out of range"),
             Self::InvalidScale => write!(f, "the export scale must be a positive number"),
+            Self::WrongSelectMode => write!(f, "those elements do not match the selection mode"),
+            Self::InvalidAxis => write!(f, "the axis must be X, Y or Z"),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

@@ -24,6 +24,7 @@ impl Mesh {
         Ok(self.vertices.insert_with(|_| Vertex {
             position,
             first_edge: None,
+            selected: false,
         }))
     }
 
@@ -78,6 +79,7 @@ impl Mesh {
         let face = self.faces.insert_with(|_| Face {
             first_corner: CornerId::dangling(),
             corner_count: count as u32,
+            selected: false,
         });
         let mut corners = Vec::with_capacity(count);
         for (i, &vertex) in vertices.iter().enumerate() {
@@ -156,9 +158,13 @@ impl Mesh {
         let corners: Vec<CornerId> = self.radial_walk(edge).collect();
         self.reserve_ids(1, 1, corners.len(), 0)?;
 
+        // New parts of a selected edge stay selected, so that a selected face keeps
+        // all of its parts selected.
+        let selected = self.edges[edge].selected;
         let middle = self.vertices.insert_with(|_| Vertex {
             position,
             first_edge: None,
+            selected,
         });
 
         // The original edge becomes a-middle. A new edge covers middle-b.
@@ -166,6 +172,7 @@ impl Mesh {
         self.edges[edge].vertices[1] = middle;
         self.disk_insert(edge, middle);
         let new_edge = self.link_new_edge(middle, b);
+        self.edges[new_edge].selected = selected;
 
         for corner in corners {
             let Corner {
@@ -231,9 +238,14 @@ impl Mesh {
             Some(edge) => edge,
             None => self.link_new_edge(a, b),
         };
+        let selected = self.faces[face].selected;
+        if selected {
+            self.edges[edge].selected = true;
+        }
         let new_face = self.faces.insert_with(|_| Face {
             first_corner: corner_b,
             corner_count: moved_part.len() as u32 + 1,
+            selected,
         });
 
         let before_a = self.corners[corner_a].prev;
@@ -314,6 +326,7 @@ impl Mesh {
         let merged_count = self.faces[kept].corner_count + self.faces[removed].corner_count - 2;
         self.faces[kept].first_corner = first.next;
         self.faces[kept].corner_count = merged_count;
+        self.faces[kept].selected &= self.faces[removed].selected;
         self.faces.remove(removed);
 
         let [a, b] = endpoints;
@@ -385,6 +398,7 @@ impl Mesh {
             vertices: [a, b],
             disk: [DiskLink { next: id, prev: id }; 2],
             first_corner: None,
+            selected: false,
         });
         self.disk_insert(edge, a);
         self.disk_insert(edge, b);

@@ -5,7 +5,7 @@ use glow::HasContext;
 
 use crate::camera::Mat4;
 use crate::grid::{FLOATS_PER_VERTEX, GridPlane, grid_vertices};
-use crate::scene::{FLOATS_PER_EDGE_VERTEX, FLOATS_PER_TRIANGLE_VERTEX};
+use crate::scene::{Changed, FLOATS_PER_LINE_VERTEX, FLOATS_PER_TRIANGLE_VERTEX, Scene};
 
 const VERTEX_SHADER: &str = r#"#version 120
 attribute vec3 a_position;
@@ -19,6 +19,7 @@ void main() {
     // Pushes grid lines back slightly, so one lying exactly on a face does not look
     // like an edge of that face.
     gl_Position.z += u_depth_bias * gl_Position.w;
+    gl_PointSize = 5.0;
 }
 "#;
 
@@ -32,10 +33,13 @@ void main() {
 const MESH_VERTEX_SHADER: &str = r#"#version 120
 attribute vec3 a_position;
 attribute vec3 a_normal;
+attribute float a_selected;
 uniform mat4 u_view_projection;
 varying vec3 v_normal;
+varying float v_selected;
 void main() {
     v_normal = a_normal;
+    v_selected = a_selected;
     gl_Position = u_view_projection * vec4(a_position, 1.0);
 }
 "#;
@@ -43,10 +47,12 @@ void main() {
 const MESH_FRAGMENT_SHADER: &str = r#"#version 120
 uniform vec3 u_light;
 varying vec3 v_normal;
+varying float v_selected;
 void main() {
     // The light follows the camera. A face seen from behind turns red, which shows
     // inside-out faces at a glance.
     vec3 color = gl_FrontFacing ? vec3(0.62, 0.62, 0.64) : vec3(0.55, 0.16, 0.16);
+    color = mix(color, vec3(1.0, 0.58, 0.18), v_selected * 0.55);
     float side = gl_FrontFacing ? 1.0 : -1.0;
     float light = max(dot(normalize(v_normal) * side, u_light), 0.0);
     gl_FragColor = vec4(color * (0.35 + 0.65 * light), 1.0);
@@ -55,8 +61,8 @@ void main() {
 
 const POSITION_ATTRIBUTE: u32 = 0;
 const COLOR_ATTRIBUTE: u32 = 1;
+const SELECTED_ATTRIBUTE: u32 = 2;
 const BACKGROUND: [f32; 3] = [0.19, 0.19, 0.19];
-const EDGE_COLOR: [f32; 3] = [0.05, 0.05, 0.05];
 const GRID_DEPTH_BIAS: f32 = 0.0002;
 
 pub struct Renderer {
@@ -74,6 +80,8 @@ pub struct Renderer {
     triangle_vertex_count: i32,
     edge_buffer: glow::Buffer,
     edge_vertex_count: i32,
+    point_buffer: glow::Buffer,
+    point_vertex_count: i32,
 }
 
 /// One view's camera settings, for drawing.
@@ -161,6 +169,7 @@ impl Renderer {
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(&vertices), glow::STATIC_DRAW);
 
             gl.enable(glow::DEPTH_TEST);
+            gl.enable(glow::PROGRAM_POINT_SIZE);
             gl.clear_color(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 1.0);
 
             let renderer = Self {
@@ -171,6 +180,8 @@ impl Renderer {
                 triangle_vertex_count: 0,
                 edge_buffer: gl.create_buffer()?,
                 edge_vertex_count: 0,
+                point_buffer: gl.create_buffer()?,
+                point_vertex_count: 0,
                 mesh_program,
                 program,
                 view_projection,
@@ -187,17 +198,84 @@ impl Renderer {
         &self.gl
     }
 
-    /// Replaces the mesh data on the graphics card.
-    pub fn upload_mesh(&mut self, triangles: &[f32], edges: &[f32]) {
+    /// Replaces all the mesh data on the graphics card.
+    pub fn upload_scene(&mut self, scene: &Scene) {
         unsafe {
             let gl = &self.gl;
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.triangle_buffer));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(triangles), glow::DYNAMIC_DRAW);
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(edges), glow::DYNAMIC_DRAW);
+            for (buffer, data) in [
+                (self.triangle_buffer, &scene.triangles),
+                (self.edge_buffer, &scene.edges),
+                (self.point_buffer, &scene.points),
+            ] {
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(data), glow::DYNAMIC_DRAW);
+            }
         }
-        self.triangle_vertex_count = (triangles.len() / FLOATS_PER_TRIANGLE_VERTEX) as i32;
-        self.edge_vertex_count = (edges.len() / FLOATS_PER_EDGE_VERTEX) as i32;
+        self.triangle_vertex_count = (scene.triangles.len() / FLOATS_PER_TRIANGLE_VERTEX) as i32;
+        self.edge_vertex_count = (scene.edges.len() / FLOATS_PER_LINE_VERTEX) as i32;
+        self.point_vertex_count = (scene.points.len() / FLOATS_PER_LINE_VERTEX) as i32;
+    }
+
+    /// Sends only the parts of the scene that changed.
+    pub fn update_scene(&self, scene: &Scene, changed: &Changed) {
+        unsafe {
+            let gl = &self.gl;
+            for (buffer, data, ranges) in [
+                (self.triangle_buffer, &scene.triangles, &changed.triangles),
+                (self.edge_buffer, &scene.edges, &changed.edges),
+                (self.point_buffer, &scene.points, &changed.points),
+            ] {
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+                for range in ranges {
+                    gl.buffer_sub_data_u8_slice(
+                        glow::ARRAY_BUFFER,
+                        (range.start * size_of::<f32>()) as i32,
+                        &as_bytes(&data[range.clone()]),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draws only the faces' depth and reads it back, for checking what is hidden.
+    /// The next normal frame replaces what this leaves in the buffers.
+    pub fn read_depth(&self, width: i32, height: i32, view_projection: &Mat4) -> Vec<f32> {
+        let gl = &self.gl;
+        let mut bytes = vec![0u8; width.max(0) as usize * height.max(0) as usize * 4];
+        unsafe {
+            gl.viewport(0, 0, width, height);
+            gl.clear(glow::DEPTH_BUFFER_BIT);
+            gl.color_mask(false, false, false, false);
+            if self.triangle_vertex_count > 0 {
+                gl.use_program(Some(self.mesh_program));
+                gl.uniform_matrix_4_f32_slice(
+                    self.mesh_view_projection.as_ref(),
+                    false,
+                    view_projection,
+                );
+                let stride = FLOATS_PER_TRIANGLE_VERTEX as i32 * size_of::<f32>() as i32;
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.triangle_buffer));
+                gl.enable_vertex_attrib_array(POSITION_ATTRIBUTE);
+                gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
+                gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
+                gl.disable_vertex_attrib_array(POSITION_ATTRIBUTE);
+            }
+            gl.color_mask(true, true, true, true);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            gl.read_pixels(
+                0,
+                0,
+                width,
+                height,
+                glow::DEPTH_COMPONENT,
+                glow::FLOAT,
+                glow::PixelPackData::Slice(Some(&mut bytes)),
+            );
+        }
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
     }
 
     pub fn render(&self, width: i32, height: i32, view: &View) {
@@ -253,22 +331,52 @@ impl Renderer {
                     stride,
                     3 * size,
                 );
+                gl.enable_vertex_attrib_array(SELECTED_ATTRIBUTE);
+                gl.vertex_attrib_pointer_f32(
+                    SELECTED_ATTRIBUTE,
+                    1,
+                    glow::FLOAT,
+                    false,
+                    stride,
+                    6 * size,
+                );
                 gl.enable(glow::POLYGON_OFFSET_FILL);
                 gl.polygon_offset(1.0, 1.0);
                 gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
                 gl.disable(glow::POLYGON_OFFSET_FILL);
+                gl.disable_vertex_attrib_array(SELECTED_ATTRIBUTE);
             }
 
-            // Edges, using the grid's shader with one fixed color.
-            if self.edge_vertex_count > 0 {
+            // Edges and points, using the grid's shader.
+            if self.edge_vertex_count > 0 || self.point_vertex_count > 0 {
                 gl.use_program(Some(self.program));
                 gl.uniform_1_f32(self.depth_bias.as_ref(), 0.0);
-                gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);
-                let [r, g, b] = EDGE_COLOR;
-                gl.vertex_attrib_3_f32(COLOR_ATTRIBUTE, r, g, b);
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
-                gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, 0, 0);
-                gl.draw_arrays(glow::LINES, 0, self.edge_vertex_count);
+                let stride = FLOATS_PER_LINE_VERTEX as i32 * size;
+                for (buffer, count, mode) in [
+                    (self.edge_buffer, self.edge_vertex_count, glow::LINES),
+                    (self.point_buffer, self.point_vertex_count, glow::POINTS),
+                ] {
+                    if count > 0 {
+                        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+                        gl.vertex_attrib_pointer_f32(
+                            POSITION_ATTRIBUTE,
+                            3,
+                            glow::FLOAT,
+                            false,
+                            stride,
+                            0,
+                        );
+                        gl.vertex_attrib_pointer_f32(
+                            COLOR_ATTRIBUTE,
+                            3,
+                            glow::FLOAT,
+                            false,
+                            stride,
+                            3 * size,
+                        );
+                        gl.draw_arrays(mode, 0, count);
+                    }
+                }
             }
 
             gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);

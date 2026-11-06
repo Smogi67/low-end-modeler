@@ -310,10 +310,10 @@ fn memory_use_per_element_stays_small() {
     // These limits catch accidental growth, which matters on a 4 GB machine.
     assert_eq!(size_of::<modeler_mesh::VertexId>(), 8);
     assert_eq!(size_of::<Option<modeler_mesh::VertexId>>(), 8);
-    assert!(size_of::<modeler_mesh::Vertex>() <= 20);
-    assert!(size_of::<modeler_mesh::Edge>() <= 56);
+    assert!(size_of::<modeler_mesh::Vertex>() <= 24);
+    assert!(size_of::<modeler_mesh::Edge>() <= 60);
     assert!(size_of::<modeler_mesh::Corner>() <= 56);
-    assert!(size_of::<modeler_mesh::Face>() <= 12);
+    assert!(size_of::<modeler_mesh::Face>() <= 16);
 }
 
 #[test]

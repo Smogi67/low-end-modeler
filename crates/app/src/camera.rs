@@ -90,6 +90,26 @@ impl Camera {
         ]
     }
 
+    /// The screen's right and up directions in world space.
+    pub fn right_and_up(&self) -> ([f32; 3], [f32; 3]) {
+        let [right, up, _] = self.rotation_rows();
+        (right, up)
+    }
+
+    /// World units per pixel, at the depth of `point`.
+    pub fn world_per_pixel_at(&self, point: [f32; 3], viewport_height: f32) -> f32 {
+        let height = viewport_height.max(1.0);
+        if self.orthographic {
+            return self.world_height_at_target() / height;
+        }
+        let toward = self.toward_camera();
+        let along: f32 = (0..3)
+            .map(|i| (point[i] - self.target[i]) * toward[i])
+            .sum();
+        let depth = (self.distance - along).max(self.distance * 0.01);
+        2.0 * depth * (FIELD_OF_VIEW / 2.0).tan() / height
+    }
+
     /// The direction from the target toward the camera.
     pub fn toward_camera(&self) -> [f32; 3] {
         self.rotation_rows()[2]
@@ -408,6 +428,25 @@ mod tests {
         assert_eq!(camera(0.0, 30.0).grid_plane(), GridPlane::Ground);
         assert_eq!(camera(45.0, 0.0).grid_plane(), GridPlane::Ground);
         assert_eq!(Camera::default().grid_plane(), GridPlane::Ground);
+    }
+
+    #[test]
+    fn closer_points_cover_less_world_per_pixel() {
+        let cam = camera(0.0, 0.0);
+        let at_target = cam.world_per_pixel_at([0.0; 3], 600.0);
+        assert!(close(at_target, cam.world_height_at_target() / 600.0));
+        assert!(cam.world_per_pixel_at([0.0, -5.0, 0.0], 600.0) < at_target);
+        assert!(cam.world_per_pixel_at([0.0, 5.0, 0.0], 600.0) > at_target);
+        // A point behind the camera still gives a usable number.
+        assert!(cam.world_per_pixel_at([0.0, -50.0, 0.0], 600.0) > 0.0);
+        let flat = Camera {
+            orthographic: true,
+            ..cam
+        };
+        assert_eq!(
+            flat.world_per_pixel_at([0.0, -5.0, 0.0], 600.0),
+            flat.world_per_pixel_at([0.0, 5.0, 0.0], 600.0)
+        );
     }
 
     #[test]

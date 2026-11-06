@@ -10,6 +10,7 @@ pub struct Vertex {
     pub(crate) position: [f32; 3],
     /// Any one edge from the disk cycle, or `None` for a loose vertex.
     pub(crate) first_edge: Option<EdgeId>,
+    pub(crate) selected: bool,
 }
 
 impl Vertex {
@@ -21,6 +22,11 @@ impl Vertex {
     /// One edge touching this vertex, or `None` for a loose vertex.
     pub fn first_edge(&self) -> Option<EdgeId> {
         self.first_edge
+    }
+
+    /// True if the vertex is selected.
+    pub fn is_selected(&self) -> bool {
+        self.selected
     }
 }
 
@@ -39,6 +45,7 @@ pub struct Edge {
     pub(crate) disk: [DiskLink; 2],
     /// Any one corner from the radial cycle, or `None` for a wire edge.
     pub(crate) first_corner: Option<CornerId>,
+    pub(crate) selected: bool,
 }
 
 impl Edge {
@@ -50,6 +57,11 @@ impl Edge {
     /// One face corner on this edge, or `None` for a wire edge.
     pub fn first_corner(&self) -> Option<CornerId> {
         self.first_corner
+    }
+
+    /// True if the edge is selected.
+    pub fn is_selected(&self) -> bool {
+        self.selected
     }
 
     /// True if `vertex` is one of the two ends.
@@ -128,12 +140,17 @@ impl Corner {
 pub struct Face {
     pub(crate) first_corner: CornerId,
     pub(crate) corner_count: u32,
+    pub(crate) selected: bool,
 }
 
 impl Face {
     /// Any one corner of the face.
     pub fn first_corner(&self) -> CornerId {
         self.first_corner
+    }
+    /// True if the face is selected.
+    pub fn is_selected(&self) -> bool {
+        self.selected
     }
     /// How many corners, and therefore vertices and edges, the face has.
     pub fn corner_count(&self) -> usize {

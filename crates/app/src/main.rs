@@ -10,8 +10,10 @@ mod editor;
 mod export;
 mod grid;
 mod imgui_gl;
+mod picking;
 mod renderer;
 mod scene;
+mod transform;
 mod ui;
 
 use std::cell::RefCell;
@@ -94,7 +96,7 @@ fn run() -> Result<(), String> {
     gl_attr.set_multisample_samples(0);
 
     let mut window = video
-        .window(APP_NAME, 1024, 640)
+        .window(APP_NAME, 1200, 780)
         .opengl()
         .resizable()
         .position_centered()

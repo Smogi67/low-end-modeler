@@ -64,10 +64,8 @@
 //!
 //! Planned extensions that this design leaves room for:
 //!
-//! - **Selection (Stage 4):** store selection as fields on the elements. They are
-//!   then saved and restored automatically.
-//! - **Partial redraw (Stage 3):** each saved change lists exactly which elements
-//!   changed, which is what the renderer needs.
+//! - **Selection:** stored as fields on the elements, so undo restores it like anything
+//!   else. See `selection.rs`.
 //! - **Several objects (Stage 3 and later):** a history step can grow to hold one
 //!   change per mesh, without changing how a single mesh records changes.
 
@@ -82,6 +80,7 @@ mod obj;
 mod ops;
 mod pool;
 mod primitives;
+mod selection;
 mod triangulate;
 pub mod validate;
 
@@ -91,4 +90,5 @@ pub use id::{CornerId, EdgeId, FaceId, VertexId};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
+pub use selection::{Element, SelectMode, SelectOp};
 pub use validate::ValidationError;
