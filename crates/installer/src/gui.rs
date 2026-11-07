@@ -391,6 +391,10 @@ pub fn run() {
         });
 
         ShowWindow(window, SW_SHOW);
+        // For automated screenshots: press Continue straight away.
+        if std::env::args().any(|a| a == "--press-continue") {
+            PostMessageW(window, WM_COMMAND, CONTINUE, 0);
+        }
         let mut message: MSG = std::mem::zeroed();
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
             if IsDialogMessageW(window, &message) == 0 {

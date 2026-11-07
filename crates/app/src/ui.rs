@@ -1053,15 +1053,24 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                 ],
             ),
         ];
-        for (title, rows) in groups {
-            heading(ui, fonts, title);
-            for (what, keys) in rows {
-                ui.text_colored(color::MUTED, what);
-                ui.same_line_with_pos(190.0);
-                ui.text(keys);
-            }
-            ui.dummy([0.0, 4.0]);
-        }
+        // Two columns, so the sheet fits on small screens.
+        let column = |groups: &[(&str, &[(&str, &str)])]| {
+            ui.group(|| {
+                for (title, rows) in groups {
+                    heading(ui, fonts, title);
+                    for (what, keys) in *rows {
+                        ui.text_colored(color::MUTED, what);
+                        // Measured from the group's start.
+                        ui.same_line_with_pos(170.0);
+                        ui.text(keys);
+                    }
+                    ui.dummy([0.0, 4.0]);
+                }
+            });
+        };
+        column(&groups[..2]);
+        ui.same_line_with_spacing(0.0, 32.0);
+        column(&groups[2..]);
     }
     drop(padding);
 }
@@ -1087,7 +1096,11 @@ fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Optio
             .movable(false)
             .build(|| {
                 ui.text(question);
-                ui.dummy([0.0, 6.0]);
+                // Wide enough for three readable buttons.
+                ui.dummy([340.0, 6.0]);
+                if ui.is_key_pressed(imgui::Key::Escape) {
+                    *action = Some(Action::ConfirmCancel);
+                }
                 button_row(
                     ui,
                     action,
@@ -1114,6 +1127,13 @@ fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Optio
             .build(|| {
                 ui.text_colored(color::MUTED, "Path to the file");
                 ui.set_next_item_width(420.0);
+                // Ready for typing, so Enter alone accepts the suggested path.
+                if ui.is_window_appearing() {
+                    ui.set_keyboard_focus_here();
+                }
+                if ui.is_key_pressed(imgui::Key::Escape) {
+                    *action = Some(Action::PathCancelled);
+                }
                 if ui
                     .input_text("##path", &mut prompt.text)
                     .enter_returns_true(true)

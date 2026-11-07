@@ -83,6 +83,43 @@ jobs:
           if ($again.ExitCode -ne 0) { throw "second setup run failed" }
           if (-not (Select-String -Path setup-again.txt -Pattern "already installed" -Quiet)) { throw "second run should find SDL2 installed" }
 
+      # Screenshots of the real windows, printed into this log as text so they can be
+      # checked without downloading anything: setup's first screen, setup after
+      # Continue, and the app's message when SDL2.dll is missing.
+      - name: Take screenshots
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $bitmap.Size)
+            $bitmap.Save("$name.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            $text = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$name.png"))
+            Write-Output "SHOT $name BEGIN"
+            for ($i = 0; $i -lt $text.Length; $i += 2000) {
+              Write-Output ("SHOT " + $text.Substring($i, [Math]::Min(2000, $text.Length - $i)))
+            }
+            Write-Output "SHOT $name END"
+          }
+          Copy-Item -Recurse release fresh1
+          $first = Start-Process -FilePath fresh1/low-end-modeler-setup.exe -PassThru
+          Start-Sleep -Seconds 6
+          Shot "setup-first"
+          Stop-Process -Id $first.Id -Force
+          Copy-Item -Recurse release fresh2
+          $second = Start-Process -FilePath fresh2/low-end-modeler-setup.exe -ArgumentList "--press-continue" -PassThru
+          Start-Sleep -Seconds 12
+          Shot "setup-done"
+          Stop-Process -Id $second.Id -Force
+          Copy-Item -Recurse release fresh3
+          $app = Start-Process -FilePath fresh3/low-end-modeler.exe -PassThru
+          Start-Sleep -Seconds 6
+          Shot "app-without-sdl"
+          Stop-Process -Id $app.Id -Force
+
       - name: Upload the release folder
         uses: actions/upload-artifact@v4
         with:
