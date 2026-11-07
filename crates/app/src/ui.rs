@@ -263,6 +263,8 @@ pub struct PanelInfo<'a> {
     pub transform_help: Option<(Kind, Option<usize>)>,
     /// While choosing where to loop cut: how many cuts.
     pub loop_cut: Option<usize>,
+    /// While bevelling: the width and the number of segments.
+    pub bevel: Option<(f32, usize)>,
     pub undo_label: Option<&'static str>,
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
@@ -333,6 +335,7 @@ pub enum Action {
     /// Starts choosing where to cut, by hovering over an edge.
     LoopCut,
     Bridge,
+    Bevel,
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -972,6 +975,13 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
                 "Bridge two edge loops",
                 "",
             ),
+            (
+                "bevel",
+                icon::BEVEL,
+                Action::Bevel,
+                "Bevel edges: drag for width, scroll for segments",
+                "Ctrl+B",
+            ),
         ],
         &[("delete", icon::DELETE, Action::Delete, "Delete", "X")],
     ];
@@ -991,7 +1001,8 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
         for (id, glyph, choice, name, key) in group.iter() {
             let lit = matches!(choice, Action::Transform(kind) if Some(*kind) == active)
                 || (*choice == Action::Inset && active == Some(Kind::Inset))
-                || (*choice == Action::LoopCut && info.loop_cut.is_some());
+                || (*choice == Action::LoopCut && info.loop_cut.is_some())
+                || (*choice == Action::Bevel && active == Some(Kind::Bevel));
             // A loop cut picks its own edge, so it needs only something to cut.
             let enabled = if *choice == Action::LoopCut {
                 info.vertices > 0
@@ -1404,7 +1415,13 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
     }
     if let Some((kind, axis)) = info.transform_help {
         parts.push((kind.name().to_string(), color::ACCENT));
-        if !matches!(kind, Kind::Inset | Kind::Slide) {
+        if let Some((width, segments)) = info.bevel {
+            let plural = if segments == 1 { "segment" } else { "segments" };
+            parts.push((format!("Width {width:.2}"), color::TEXT));
+            parts.push((format!("{segments} {plural}"), color::TEXT));
+            parts.push(("Scroll for more".to_string(), color::FAINT));
+        }
+        if !matches!(kind, Kind::Inset | Kind::Slide | Kind::Bevel) {
             for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                 let lit = axis == Some(i);
                 parts.push((
@@ -1591,6 +1608,7 @@ mod tests {
             selected_vertices: 8,
             transform_help: transform.then_some((Kind::Move, Some(0))),
             loop_cut: None,
+            bevel: None,
             undo_label: Some("Add Cube"),
             redo_label: Some("Add Cube"),
             export_folder: "exports",
@@ -1631,6 +1649,10 @@ mod tests {
             if target == Target::Several {
                 info.mode = ModeChoice::Edge;
                 info.loop_cut = Some(2);
+            }
+            if target == Target::Edited(Shape::Icosphere) {
+                info.transform_help = Some((Kind::Bevel, None));
+                info.bevel = Some((0.25, 3));
             }
             let mut state = PanelState {
                 message: "Saved model.obj".to_string(),
@@ -1720,6 +1742,7 @@ mod tests {
             "SelectLoops",
             "SelectRings",
             "Transform(Slide)",
+            "Bevel",
         ] {
             assert!(
                 actions.contains(expected),

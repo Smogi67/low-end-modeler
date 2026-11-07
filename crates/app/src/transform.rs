@@ -22,6 +22,8 @@ pub enum Kind {
     Inset,
     /// Each vertex slides along a neighboring edge, to one side or the other.
     Slide,
+    /// New bevel vertices move out from their original vertex as the width grows.
+    Bevel,
 }
 
 impl Kind {
@@ -32,6 +34,7 @@ impl Kind {
             Kind::Scale => "Scale",
             Kind::Inset => "Inset",
             Kind::Slide => "Slide",
+            Kind::Bevel => "Bevel",
         }
     }
 }
@@ -84,7 +87,7 @@ pub struct Transform {
     pub kind: Kind,
     /// 0, 1 or 2 when locked to X, Y or Z.
     pub axis: Option<usize>,
-    start_mouse: [f32; 2],
+    pub start_mouse: [f32; 2],
     pub originals: Vec<(VertexId, V3)>,
     pub pivot: V3,
     /// For extruding: the direction to move in until an axis key is pressed.
@@ -96,6 +99,10 @@ pub struct Transform {
     pub rails: Vec<[V3; 2]>,
     /// For sliding: the average way side 0 lies, which the mouse follows.
     pub slide_toward: V3,
+    /// For bevelling: how far each vertex moves per unit of width, in the same order
+    /// as `originals`, and the widest the bevel may go.
+    pub bevel_steps: Vec<V3>,
+    pub max_width: f32,
     /// Cancelling puts the vertices back but keeps the edit, as after a loop cut.
     pub keep_on_cancel: bool,
     /// Started without extruding, duplicating or cutting first.
@@ -119,6 +126,8 @@ impl Transform {
             centers: Vec::new(),
             rails: Vec::new(),
             slide_toward: [0.0; 3],
+            bevel_steps: Vec::new(),
+            max_width: f32::MAX,
             keep_on_cancel: false,
             plain: true,
         }
@@ -167,6 +176,10 @@ impl Transform {
             let center = self.centers.get(index).copied().unwrap_or(start);
             return add(start, scaled(sub(center, start), self.inset_amount(input)));
         }
+        if self.kind == Kind::Bevel {
+            let step = self.bevel_steps.get(index).copied().unwrap_or([0.0; 3]);
+            return add(start, scaled(step, self.bevel_width(input)));
+        }
         if self.kind == Kind::Slide {
             let amount = self.slide_amount(input);
             let Some(ends) = self.rails.get(index) else {
@@ -180,6 +193,19 @@ impl Transform {
             return add(start, scaled(sub(end, start), share));
         }
         self.apply(start, input)
+    }
+
+    /// The bevel width: how far the mouse has moved from where it started, in model
+    /// units at the selection's distance, up to the widest allowed.
+    pub fn bevel_width(&self, input: &Input) -> f32 {
+        let dx = input.mouse[0] - self.start_mouse[0];
+        let dy = input.mouse[1] - self.start_mouse[1];
+        let per_pixel = input.camera.world_per_pixel_at(self.pivot, input.height);
+        let mut width = (dx * dx + dy * dy).sqrt() * per_pixel;
+        if input.snap {
+            width = snapped(width, SNAP_SCALE);
+        }
+        width.min(self.max_width)
     }
 
     /// How far a slide has gone: from -1, all the way to side 1, to 1, all the way to
@@ -218,7 +244,7 @@ impl Transform {
             Kind::Move => add(point, self.move_offset(input)),
             Kind::Rotate => self.rotate(point, input),
             Kind::Scale => self.scale(point, input),
-            Kind::Inset | Kind::Slide => point,
+            Kind::Inset | Kind::Slide | Kind::Bevel => point,
         }
     }
 
@@ -620,6 +646,33 @@ mod tests {
         // A slide pointing at the viewer does not jump.
         t.set_rails(&[([0.0; 3], [Some([0.0, 1.0, 0.0]), None])]);
         assert_eq!(t.slide_amount(&input(front(), [700.0, 100.0])), 0.0);
+    }
+
+    #[test]
+    fn bevel_width_follows_mouse_distance_and_stops_at_the_limit() {
+        let camera = front();
+        let id = {
+            let mut mesh = modeler_mesh::Mesh::new();
+            mesh.add_vertex([0.0; 3]).unwrap()
+        };
+        let mut t = Transform::new(Kind::Bevel, [400.0, 300.0], Vec::new(), [0.0; 3]);
+        t.originals = vec![(id, [1.0, 0.0, 0.0])];
+        t.bevel_steps = vec![[0.0, 0.0, -2.0]];
+        t.max_width = 0.5;
+        let per_pixel = camera.world_per_pixel_at([0.0; 3], 600.0);
+        // Either way the mouse goes, distance is width.
+        let pixels = 0.2 / per_pixel;
+        for mouse in [[400.0 + pixels, 300.0], [400.0, 300.0 - pixels]] {
+            let i = input(camera, mouse);
+            assert!((t.bevel_width(&i) - 0.2).abs() < 1e-4);
+            near(t.position_for(0, &i), [1.0, 0.0, -0.4]);
+        }
+        let far = input(camera, [400.0 + pixels * 10.0, 300.0]);
+        assert_eq!(t.bevel_width(&far), 0.5);
+        let mut with_snap = input(camera, [400.0 + 0.23 / per_pixel, 300.0]);
+        with_snap.snap = true;
+        assert!((t.bevel_width(&with_snap) - 0.2).abs() < 1e-5);
+        assert_eq!(Kind::Bevel.name(), "Bevel");
     }
 
     #[test]

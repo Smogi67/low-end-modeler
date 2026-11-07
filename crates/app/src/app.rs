@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
-use modeler_mesh::{EdgeId, Element, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode, SelectOp};
+use modeler_mesh::{
+    EdgeId, Element, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode, SelectOp,
+};
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::{MouseButton, MouseUtil, MouseWheelDirection};
@@ -54,6 +56,8 @@ enum Prepare {
     Inset,
     /// Cut this many loops across the ring through this edge.
     LoopCut(EdgeId, usize),
+    /// Bevel the selected edges with this many segments, starting at no width.
+    Bevel(usize),
 }
 
 /// The view and a depth image of it, for telling whether a point is hidden.
@@ -132,6 +136,10 @@ pub struct App {
     warnings: Vec<String>,
     /// The number of cuts last used, offered again next time.
     loop_cuts: usize,
+    /// The number of bevel segments last used.
+    bevel_segments: usize,
+    /// Whether Ctrl is held, for showing snapped values.
+    snapping: bool,
 }
 
 impl App {
@@ -169,6 +177,8 @@ impl App {
             export_folder_text,
             warnings: Vec::new(),
             loop_cuts: 1,
+            bevel_segments: 1,
+            snapping: false,
         })
     }
 
@@ -218,6 +228,20 @@ impl App {
             transform_help,
             loop_cut: match &self.mouse_state {
                 Mouse::LoopCut(choice) => Some(choice.cuts),
+                _ => None,
+            },
+            bevel: match &self.mouse_state {
+                Mouse::Transforming { transform, .. } if transform.kind == Kind::Bevel => {
+                    let size = self.imgui.io().display_size;
+                    let input = Input {
+                        mouse: self.pointer,
+                        snap: self.snapping,
+                        camera: self.camera,
+                        width: size[0].max(1.0),
+                        height: size[1].max(1.0),
+                    };
+                    Some((transform.bevel_width(&input), self.bevel_segments))
+                }
                 _ => None,
             },
             undo_label: document.undo_label(),
@@ -381,6 +405,9 @@ impl App {
                 self.finish_edit(result);
             }
             Action::LoopCut => self.start_loop_cut(),
+            Action::Bevel => {
+                self.start_transform(Kind::Bevel, Prepare::Bevel(self.bevel_segments));
+            }
             Action::Bridge => {
                 let result = self
                     .editor
@@ -465,6 +492,7 @@ impl App {
             Prepare::Extrude => "Extrude",
             Prepare::Inset => "Inset",
             Prepare::LoopCut(..) => "Loop cut",
+            Prepare::Bevel(_) => "Bevel",
         };
         if let Err(error) = self.editor.begin(label) {
             self.state.message = format!("That did not work: {error}");
@@ -474,6 +502,7 @@ impl App {
         let mut direction = None;
         let mut inset_targets = Vec::new();
         let mut cut_edges = None;
+        let mut bevel = None;
         let prepared = match self.editor.active_mesh() {
             None => Ok(()),
             Some(mesh) => match prepare {
@@ -489,6 +518,9 @@ impl App {
                 Prepare::LoopCut(edge, cuts) => mesh
                     .loop_cut(edge, cuts, mode)
                     .map(|made| cut_edges = Some(made)),
+                Prepare::Bevel(segments) => mesh
+                    .bevel_selected_edges(0.0, segments, mode)
+                    .map(|made| bevel = Some(made)),
             },
         };
         if let Err(error) = prepared {
@@ -529,6 +561,8 @@ impl App {
         };
         let (moving, centers): (Vec<_>, Vec<_>) = if prepare == Prepare::Inset {
             inset_targets.iter().copied().unzip()
+        } else if let Some(made) = &bevel {
+            (made.moving.iter().map(|m| m.0).collect(), Vec::new())
         } else if kind == Kind::Slide {
             (rails.iter().map(|r| r.0).collect(), Vec::new())
         } else {
@@ -560,6 +594,10 @@ impl App {
                 .map(|&(_, start, ends)| (start, ends))
                 .collect::<Vec<_>>(),
         );
+        if let Some(made) = bevel {
+            transform.bevel_steps = made.moving.iter().map(|m| m.2).collect();
+            transform.max_width = made.max_width;
+        }
         transform.keep_on_cancel = cutting;
         transform.plain = prepare == Prepare::Nothing;
         self.mouse_state = Mouse::Transforming {
@@ -759,6 +797,31 @@ impl App {
         }
     }
 
+    fn bevelling(&self) -> bool {
+        matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.kind == Kind::Bevel)
+    }
+
+    /// Redoes the bevel with more or fewer segments, keeping the width the mouse gives.
+    fn change_bevel_segments(&mut self, by: i32, snap: bool) {
+        let Mouse::Transforming { transform, .. } = &self.mouse_state else {
+            return;
+        };
+        let start = transform.start_mouse;
+        let segments =
+            (self.bevel_segments as i32 + by).clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
+        if segments == self.bevel_segments {
+            return;
+        }
+        self.bevel_segments = segments;
+        self.finish_transform(false);
+        self.start_transform(Kind::Bevel, Prepare::Bevel(segments));
+        if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
+            transform.start_mouse = start;
+        }
+        self.update_transform(snap);
+        self.request_frames();
+    }
+
     /// Selects the loop through the edge under the pointer, for a double-click.
     fn select_loop_under_pointer(&mut self, add: bool) {
         let [x, y] = self.pointer;
@@ -850,6 +913,7 @@ impl App {
             self.pointer = [x as f32, y as f32];
         }
         let snap = modifiers(mods).ctrl;
+        self.snapping = snap;
 
         // A transform takes all input until it ends, so nothing behind it can change.
         if matches!(self.mouse_state, Mouse::Transforming { .. }) {
@@ -1017,8 +1081,12 @@ impl App {
                 } else {
                     y
                 };
-                self.camera.zoom_steps(steps as f32);
-                self.update_transform(snap);
+                if self.bevelling() {
+                    self.change_bevel_segments(steps.signum(), snap);
+                } else {
+                    self.camera.zoom_steps(steps as f32);
+                    self.update_transform(snap);
+                }
             }
             Event::KeyDown {
                 keycode: Some(key), ..
@@ -1040,6 +1108,12 @@ impl App {
                     self.request_frames();
                 }
                 Keycode::LCtrl | Keycode::RCtrl => self.update_transform(true),
+                Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals if self.bevelling() => {
+                    self.change_bevel_segments(1, snap);
+                }
+                Keycode::Minus | Keycode::KP_MINUS if self.bevelling() => {
+                    self.change_bevel_segments(-1, snap);
+                }
                 // G again while moving slides instead, as in Blender.
                 Keycode::G => {
                     let plain_move = matches!(&self.mouse_state,
@@ -1163,6 +1237,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals => Some(Action::SelectMore),
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
             Keycode::R => Some(Action::LoopCut),
+            Keycode::B => Some(Action::Bevel),
             _ => None,
         };
     }
@@ -1341,6 +1416,7 @@ mod tests {
         assert_eq!(shortcut(Keycode::Plus, CTRL), Some(Action::SelectMore));
         assert_eq!(shortcut(Keycode::Minus, CTRL), Some(Action::SelectLess));
         assert_eq!(shortcut(Keycode::R, CTRL), Some(Action::LoopCut));
+        assert_eq!(shortcut(Keycode::B, CTRL), Some(Action::Bevel));
     }
 
     #[test]

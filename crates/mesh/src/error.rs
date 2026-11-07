@@ -86,6 +86,11 @@ pub enum MeshError {
     NothingToSlide,
     /// Bridging needs two separate loops with the same number of edges.
     BridgeNeedsTwoLoops,
+    /// A bevel has from 1 to `MAX_BEVEL_SEGMENTS` segments.
+    InvalidSegments,
+    /// An edge to bevel needs a face on each side, and its ends need simple fans of
+    /// faces that wind the same way.
+    CannotBevel,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -144,6 +149,11 @@ impl fmt::Display for MeshError {
             Self::BridgeNeedsTwoLoops => write!(
                 f,
                 "select two separate edge loops with the same number of edges"
+            ),
+            Self::InvalidSegments => write!(f, "a bevel has from 1 to 16 segments"),
+            Self::CannotBevel => write!(
+                f,
+                "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"
             ),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }

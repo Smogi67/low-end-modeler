@@ -72,6 +72,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod bevel;
 mod error;
 mod history;
 mod id;
@@ -86,6 +87,7 @@ mod tools;
 mod triangulate;
 pub mod validate;
 
+pub use bevel::{Bevel, MAX_BEVEL_SEGMENTS};
 pub use error::MeshError;
 pub use history::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits};
 pub use id::{CornerId, EdgeId, FaceId, VertexId};

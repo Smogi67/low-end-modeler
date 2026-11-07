@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 6 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 6, the interface redesign, and the Roblox import are still needed. See section 11.**
-Next step: **After those tests pass, Stage 7: bevel. It needs Aufwand Extra hoch.**
+Status: **Stage 7 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 7 and the interface redesign are still needed. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Next step: **Stage 8: save and load, glTF export, shortcuts, UI polish, the dependency installer, and the release .zip. It needs Aufwand Hoch.**
 
 ## 1. Goal
 
@@ -148,6 +148,17 @@ The mesh code is in `crates/mesh/src/loops.rs`.
 - **Bridge (tool button):** joins two loops with four-sided faces. With faces selected, their outlines are bridged and the faces removed, so two facing caps become a tube. Both loops must have the same number of edges and both be closed or both open. The faces wind like their neighbors, and the loops are lined up to avoid a twist. Loops with different edge counts are refused rather than guessed at.
 - **Input during a drag:** the interface now also hears mouse button releases during drags, so no button stays stuck down when a drag starts from a button.
 
+### Decisions made in Stage 7
+
+The mesh code is in `crates/mesh/src/bevel.rs`, whose top comment explains the method.
+
+- **Edge bevel only.** Selected edges are beveled; in face mode that means every edge of the selected faces, as in Blender. Vertex-only bevel and Blender's profile shape slider are not built.
+- **Using it (Ctrl + B or the tool button):** move the mouse away from where the bevel started to widen it, scroll or press + and - for 1 to 16 segments, Ctrl snaps the width to tenths, click to confirm, and Esc or right-click to cancel. The number of segments is remembered.
+- **Shape:** more than one segment gives a round profile: an exact quarter circle on a right-angled edge. Where three beveled edges meet, as at a cube corner, the corner becomes a triangle of a sphere divided into small triangles, so a fully rounded cube stays convex. Other corners with three or more points get a flat face (one segment) or a fan of triangles around a raised center.
+- **Width limit:** the width stops before any new point passes the middle of an edge it moves along, so the shape cannot fold over itself. This replaces Blender's "clamp overlap" option.
+- **Refused:** edges without a face on each side (borders and loose edges), and vertices whose faces do not form one simple fan facing the same way. The message says why.
+- **Drag speed:** every new point is its original vertex plus the width times a fixed direction, so dragging only moves points. Changing segments rebuilds the bevel.
+
 ## 6. Feature scope
 
 ### Core
@@ -263,6 +274,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 5 | The owner reported that sliders stopped working after selecting, and asked to select parts without dragging. Sliders now follow the selected shape, Part mode and click-only selecting added, and a slightly moved click no longer clears the selection. Extrude, inset, merge, delete, fill, and subdivide added, with a random test of all tools. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 | 2026-11-07 | 5 | Interface redesign at the owner's request: new layout, colors, fonts, icons, view gizmo, and a nicer 3D view. Run on Linux with OpenGL limited to 2.1 using simulated input; screenshots sent to the owner. A test clicks and drags over every point of the interface, including inside the popups | Not yet |
 | 2026-11-07 | 6 | Edge loops and rings, loop selection by double-click and buttons, loop cut with a preview and slide, edge slide, and bridge. 21 new mesh tests, including a random test that ran each new tool 66 to 249 times and checked exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: loop cut preview, extra cuts, cutting, sliding, cancelling, double-click loop selection, and G G slide all worked | Not yet |
+| 2026-11-07 | 7 | Edge bevel with width and 1 to 16 segments, round profiles, spherical cube corners, and a width limit. 13 new tests, including exact volumes for a flat cube-edge cut and a mitred loop, points lying on the true quarter circle and corner sphere, convexity of a rounded cube, and a random test of 310 bevels on six shapes that checked validity, holes, face direction and exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: drag, segment change, confirm, undo and cancel all worked | Not yet |
 
 ## 12. Open questions
 
@@ -271,7 +283,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] Windows version: Windows 10 Home 64-bit, so Stage 2 builds a 64-bit .exe
 - [x] The graphics chip supports OpenGL 2.1: the laptop reports OpenGL 3.1 on Intel HD Graphics 3000
 - [x] Owner has a GitHub account (Smogi67)
-- [ ] Test importing an exported OBJ into Roblox Studio (Stage 3 goal, not yet reported)
+- [ ] Test importing an exported OBJ into Roblox Studio (Stage 3 goal; the owner will do this later and asked not to wait for it)
 - [x] Roblox's mesh requirements checked 2026-11-06: 20,000 triangles per mesh, closed geometry with real thickness (https://create.roblox.com/docs/en-us/art/modeling/specifications)
 - [ ] List the real dependencies of the .exe for the installer (once the Stage 2 build exists)
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
