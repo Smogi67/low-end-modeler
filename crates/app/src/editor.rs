@@ -73,6 +73,16 @@ impl Editor {
         &self.document
     }
 
+    /// Starts over with this mesh, as after opening a file. History and shape records
+    /// are cleared; the selection mode stays.
+    pub fn replace(&mut self, mesh: Mesh) {
+        self.document = Document::new(mesh);
+        self.records.clear();
+        self.session = None;
+        self.target_record = None;
+        self.changed();
+    }
+
     fn changed(&mut self) {
         self.revision += 1;
     }

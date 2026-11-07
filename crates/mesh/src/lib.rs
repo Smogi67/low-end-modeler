@@ -74,6 +74,7 @@
 
 mod bevel;
 mod error;
+mod gltf;
 mod history;
 mod id;
 mod loops;
@@ -82,6 +83,7 @@ mod obj;
 mod ops;
 mod pool;
 mod primitives;
+mod project;
 mod selection;
 mod tools;
 mod triangulate;
@@ -95,5 +97,6 @@ pub use loops::{MAX_LOOP_CUTS, SlideRail};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
+pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError};
 pub use selection::{Element, SelectMode, SelectOp};
 pub use validate::ValidationError;

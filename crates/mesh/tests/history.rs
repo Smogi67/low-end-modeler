@@ -619,3 +619,47 @@ fn a_lone_redo_step_survives_a_tiny_cap() {
     assert_eq!((doc.undo_count(), doc.redo_count()), (0, 1));
     assert_eq!(doc.redo(), Some("move"));
 }
+
+#[test]
+fn the_version_tells_whether_the_mesh_is_back_where_it_was() {
+    let mut doc = Document::with_limits(
+        Mesh::new(),
+        HistoryLimits {
+            max_bytes: usize::MAX,
+            max_steps: 2,
+        },
+    );
+    let start = doc.version();
+    doc.edit("a", |m| m.add_vertex([0.0; 3]).map(|_| ()))
+        .unwrap();
+    let one = doc.version();
+    assert_ne!(one, start);
+    // An edit that changes nothing keeps the version.
+    doc.edit("nothing", |_| Ok(())).unwrap();
+    assert_eq!(doc.version(), one);
+    doc.undo();
+    assert_eq!(doc.version(), start);
+    doc.redo();
+    assert_eq!(doc.version(), one);
+    // A new edit after undoing gets a new version, even though the history is as long.
+    doc.undo();
+    doc.edit("b", |m| m.add_vertex([1.0; 3]).map(|_| ()))
+        .unwrap();
+    assert_ne!(doc.version(), one);
+    assert_ne!(doc.version(), start);
+    // Dropping old steps must not make the start look reached again.
+    let saved = doc.version();
+    for i in 0..4 {
+        doc.edit("more", |m| m.add_vertex([i as f32; 3]).map(|_| ()))
+            .unwrap();
+    }
+    while doc.undo().is_some() {}
+    assert_ne!(doc.version(), start);
+    assert_ne!(doc.version(), saved);
+    // A cancelled edit leaves the version alone.
+    let before = doc.version();
+    doc.begin_edit("drag").unwrap();
+    doc.active_mesh().unwrap().add_vertex([5.0; 3]).unwrap();
+    doc.cancel_edit().unwrap();
+    assert_eq!(doc.version(), before);
+}

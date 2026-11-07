@@ -11,6 +11,7 @@ mod export;
 mod grid;
 mod imgui_gl;
 mod picking;
+mod platform;
 mod renderer;
 mod scene;
 mod theme;
@@ -30,12 +31,39 @@ use sdl2::video::{GLProfile, SwapInterval};
 const APP_NAME: &str = "Low-End Modeler";
 
 fn main() {
+    // Before anything touches SDL, which would fail without its DLL.
+    #[cfg(any(windows, check_windows))]
+    if platform::sdl_is_missing() {
+        explain_missing_sdl();
+        return;
+    }
     std::panic::set_hook(Box::new(|info| {
         show_error(&format!("Internal error:\n{info}"))
     }));
     if let Err(message) = run() {
         show_error(&message);
         std::process::exit(1);
+    }
+}
+
+/// SDL2.dll comes from the setup program. Offers to start it.
+#[cfg(any(windows, check_windows))]
+fn explain_missing_sdl() {
+    let setup = std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name("low-end-modeler-setup.exe"));
+    let text = "Low-End Modeler needs SDL2.dll, which is not installed in this folder yet.\n\n\
+                Start the setup program now? It downloads SDL2 from its official site and \
+                puts it next to the modeler. Then start the modeler again.";
+    if platform::ask(APP_NAME, text)
+        && let Some(setup) = setup
+        && std::process::Command::new(&setup).spawn().is_err()
+    {
+        platform::ask(
+            APP_NAME,
+            "Could not start low-end-modeler-setup.exe. Is it in the same folder as the \
+             modeler? Unzip the whole download into one folder, then try again.\n\nClose?",
+        );
     }
 }
 
@@ -79,13 +107,18 @@ impl Log {
 }
 
 fn run() -> Result<(), String> {
-    let screenshot_path = {
-        let mut args = std::env::args().skip(1);
-        match (args.next().as_deref(), args.next()) {
-            (Some("--screenshot"), Some(path)) => Some(path),
-            _ => None,
+    // A file to open, as when one is dropped onto the .exe, and a screenshot path for
+    // automated checks.
+    let mut screenshot_path = None;
+    let mut open_path = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--screenshot" {
+            screenshot_path = args.next();
+        } else {
+            open_path = Some(PathBuf::from(arg));
         }
-    };
+    }
 
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
@@ -135,6 +168,9 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let app = RefCell::new(App::new(renderer)?);
+    if let Some(path) = open_path {
+        app.borrow_mut().open_at_start(path);
+    }
 
     // Windows pauses this thread's main loop while a window edge is being dragged,
     // and only keeps delivering events to the watch below, so window events draw
@@ -161,6 +197,9 @@ fn run() -> Result<(), String> {
     let mut reported_gl_error = false;
 
     'main: loop {
+        if app.borrow().quit_now() {
+            break 'main;
+        }
         let wants_frame = app.borrow().wants_frame();
         if wants_frame {
             let mut app = app.borrow_mut();
@@ -188,8 +227,13 @@ fn run() -> Result<(), String> {
             Some(events.wait_event())
         };
         while let Some(event) = next {
+            // Closing with unsaved changes asks first; the answer comes in later frames.
             if let Event::Quit { .. } = event {
-                break 'main;
+                if app.borrow_mut().request_quit() {
+                    break 'main;
+                }
+                next = events.poll_event();
+                continue;
             }
             app.borrow_mut()
                 .handle_event(&event, &mouse, keyboard.mod_state());

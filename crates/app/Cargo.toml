@@ -11,9 +11,22 @@ modeler-mesh = { path = "../mesh" }
 glow = "0.18"
 imgui = "0.12"
 sdl2 = { version = "0.38", default-features = false }
+# Windows file dialogs and message boxes. Only used on Windows, but kept for every
+# platform so the Windows code can be type-checked anywhere (see `platform.rs`).
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
-# On Windows, build SDL2 from source and link it into the .exe, so test builds
-# need no separate SDL2.dll. Review this with the owner when the dependency
-# installer is designed (spec section 6).
+# On Windows, SDL2 is built from source only to get its import library. The .exe
+# then needs SDL2.dll, which the setup program downloads (owner's decision,
+# 2026-11-07, spec section 6). The DLL loads late, so a missing one gets a clear
+# message instead of a Windows error. See build.rs.
 [target.'cfg(windows)'.dependencies]
-sdl2 = { version = "0.38", default-features = false, features = ["bundled", "static-link"] }
+sdl2 = { version = "0.38", default-features = false, features = ["bundled"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(check_windows)"] }

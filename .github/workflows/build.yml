@@ -28,20 +28,64 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build the .exe
-        run: cargo build --release --package low-end-modeler
+      - name: Build the app and setup
+        run: cargo build --release --package low-end-modeler --package low-end-modeler-setup
 
-      - name: Check the .exe size
+      # The release zip: both programs, the README and the font licenses. SDL2.dll is
+      # left out on purpose; setup downloads it (spec section 6).
+      - name: Put the release folder together
         shell: pwsh
         run: |
-          $size = (Get-Item target/release/low-end-modeler.exe).Length
-          $megabytes = [math]::Round($size / 1MB, 2)
-          Write-Output "Size: $megabytes MB"
-          if ($size -gt 10MB) { Write-Output "::warning::The .exe is over the 10 MB goal: $megabytes MB" }
+          New-Item -ItemType Directory -Force release/licenses | Out-Null
+          Copy-Item target/release/low-end-modeler.exe release/
+          Copy-Item target/release/low-end-modeler-setup.exe release/
+          Copy-Item dist/README.txt release/
+          Copy-Item crates/app/assets/fonts/Inter-LICENSE.txt release/licenses/
+          Copy-Item crates/app/assets/fonts/Lucide-LICENSE.txt release/licenses/
+          foreach ($file in Get-ChildItem release -Recurse -File) {
+            $megabytes = [math]::Round($file.Length / 1MB, 2)
+            Write-Output "$($file.Name): $megabytes MB"
+          }
+          if ((Get-Item release/low-end-modeler.exe).Length -gt 10MB) {
+            Write-Output "::warning::The app is over the 10 MB goal"
+          }
+          if (Test-Path release/SDL2.dll) { throw "SDL2.dll must not ship in the zip" }
 
-      - name: Upload the .exe
+      # The app must load SDL2.dll late, so a missing one gets a clear message.
+      - name: Check how the app loads SDL2.dll
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $report = & $dumpbin /DEPENDENTS release/low-end-modeler.exe | Out-String
+          Write-Output $report
+          $delayed = $report.Substring($report.IndexOf("delay load"))
+          if ($report.IndexOf("delay load") -lt 0 -or $delayed -notmatch "SDL2.dll") {
+            throw "SDL2.dll is not delay-loaded"
+          }
+          $setup = & $dumpbin /DEPENDENTS release/low-end-modeler-setup.exe | Out-String
+          Write-Output $setup
+          if ($setup -match "SDL2") { throw "setup must not need SDL2" }
+
+      # Runs setup's real download, check and install, in a copy of the folder.
+      - name: Run setup without a window
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse release trial
+          $process = Start-Process -FilePath trial/low-end-modeler-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-output.txt
+          Get-Content setup-output.txt
+          if ($process.ExitCode -ne 0) { throw "setup failed with code $($process.ExitCode)" }
+          if (-not (Test-Path trial/SDL2.dll)) { throw "setup did not install SDL2.dll" }
+          if (-not (Test-Path trial/README-SDL.txt)) { throw "setup did not install README-SDL.txt" }
+          # A second run finds everything in place and downloads nothing.
+          $again = Start-Process -FilePath trial/low-end-modeler-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-again.txt
+          Get-Content setup-again.txt
+          if ($again.ExitCode -ne 0) { throw "second setup run failed" }
+          if (-not (Select-String -Path setup-again.txt -Pattern "already installed" -Quiet)) { throw "second run should find SDL2 installed" }
+
+      - name: Upload the release folder
         uses: actions/upload-artifact@v4
         with:
-          name: low-end-modeler-windows
-          path: target/release/low-end-modeler.exe
+          name: low-end-modeler
+          path: release/
           if-no-files-found: error

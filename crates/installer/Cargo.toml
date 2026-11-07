@@ -1,0 +1,32 @@
+[package]
+name = "low-end-modeler-setup"
+description = "Installs what Low-End Modeler needs, and nothing else. See spec section 6."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Checks downloads against their pinned fingerprints.
+sha2 = { version = "0.10", default-features = false }
+# Unpacks the downloaded zip.
+miniz_oxide = "0.8"
+# The window, the download and the graphics check use Windows itself, so the setup
+# program needs nothing it would have to install first. Kept for every platform so
+# the Windows code can be type-checked anywhere.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_Networking_WinHttp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(check_windows)"] }

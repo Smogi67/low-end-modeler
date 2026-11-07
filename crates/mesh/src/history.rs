@@ -37,6 +37,8 @@ impl Default for HistoryLimits {
 
 #[derive(Debug)]
 struct Step {
+    /// Unique among this document's steps, so a saved state can be recognized.
+    id: u64,
     label: &'static str,
     delta: MeshDelta,
     bytes: usize,
@@ -55,6 +57,11 @@ pub struct Document {
     limits: HistoryLimits,
     history_bytes: usize,
     active_edit: Option<&'static str>,
+    /// The ID the next step gets.
+    next_id: u64,
+    /// The ID of the newest step dropped from history, which the mesh still includes
+    /// once everything kept has been undone.
+    dropped_id: u64,
 }
 
 impl Document {
@@ -72,6 +79,8 @@ impl Document {
             limits,
             history_bytes: 0,
             active_edit: None,
+            next_id: 1,
+            dropped_id: 0,
         }
     }
 
@@ -143,7 +152,10 @@ impl Document {
 
         let bytes = size_of::<Step>() + delta.memory_bytes();
         self.clear_redo();
+        let id = self.next_id;
+        self.next_id += 1;
         self.undo.push_back(Step {
+            id,
             label,
             delta,
             bytes,
@@ -186,6 +198,14 @@ impl Document {
         let label = step.label;
         self.undo.push_back(step);
         Some(label)
+    }
+
+    /// A number for the mesh's current state in history. It changes with every edit,
+    /// undo and redo, and comes back when undo or redo returns to the same state, so
+    /// comparing it with the number at the last save tells whether there are unsaved
+    /// changes.
+    pub fn version(&self) -> u64 {
+        self.undo.back().map_or(self.dropped_id, |step| step.id)
     }
 
     /// Label of the step [`undo`](Self::undo) would undo, for the UI.
@@ -269,6 +289,7 @@ impl Document {
     fn drop_oldest_undo(&mut self) {
         if let Some(step) = self.undo.pop_front() {
             self.history_bytes -= step.bytes;
+            self.dropped_id = step.id;
         }
     }
 }

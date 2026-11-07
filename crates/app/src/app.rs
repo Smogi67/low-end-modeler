@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
 use modeler_mesh::{
-    EdgeId, Element, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode, SelectOp,
+    EdgeId, Element, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode,
+    SelectOp,
 };
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
@@ -19,7 +20,7 @@ use sdl2::video::Window;
 use crate::camera::Camera;
 use crate::controls::{Button, Drag, Modifiers, drag_for};
 use crate::editor::Editor;
-use crate::export::{warnings, write_obj};
+use crate::export::{PROJECT_EXTENSION, open_file, save_project, warnings, write_export};
 use crate::imgui_gl::ImguiGl;
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
 use crate::renderer::{Renderer, View};
@@ -27,8 +28,8 @@ use crate::scene::{MovedParts, Scene};
 use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, ModeChoice, PanelInfo, PanelState, ViewState, build as build_ui, draw_lines,
-    draw_region,
+    Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, ViewState, build as build_ui,
+    draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -46,6 +47,25 @@ const MERGE_DISTANCE: f32 = 0.001;
 const LOOP_CUT_REACH: f32 = 40.0;
 /// How near the pointer an edge must be for double-click loop selection, in pixels.
 const LOOP_SELECT_REACH: f32 = 14.0;
+
+/// Something that would throw away unsaved changes, waiting for an answer.
+#[derive(Debug, Clone, PartialEq)]
+enum Pending {
+    New,
+    /// Open this file, or ask which one.
+    Open(Option<PathBuf>),
+    Quit,
+}
+
+/// The result of asking for a file path. Windows uses the first two, other systems
+/// the last.
+#[allow(dead_code)]
+enum Picked {
+    Path(PathBuf),
+    Cancelled,
+    /// The app's own path box is open; the answer comes as an action.
+    Asking,
+}
 
 /// What must happen to the selection before a drag starts.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -140,6 +160,16 @@ pub struct App {
     bevel_segments: usize,
     /// Whether Ctrl is held, for showing snapped values.
     snapping: bool,
+    /// The project file being edited, if it has been saved or opened.
+    project_path: Option<PathBuf>,
+    document_name: String,
+    /// The history version when last saved or opened.
+    saved_version: u64,
+    /// Waiting for an answer about unsaved changes, and the question.
+    confirming: Option<(Pending, String)>,
+    /// What to do once a typed Save As path arrives.
+    after_save: Option<Pending>,
+    quit: bool,
 }
 
 impl App {
@@ -179,6 +209,12 @@ impl App {
             loop_cuts: 1,
             bevel_segments: 1,
             snapping: false,
+            project_path: None,
+            document_name: "Untitled".to_string(),
+            saved_version: 0,
+            confirming: None,
+            after_save: None,
+            quit: false,
         })
     }
 
@@ -248,6 +284,12 @@ impl App {
             redo_label: document.redo_label(),
             export_folder: &self.export_folder_text,
             open_edges: mesh.open_edge_count(),
+            document: &self.document_name,
+            unsaved: document.version() != self.saved_version,
+            confirm: self
+                .confirming
+                .as_ref()
+                .map(|(_, question)| question.as_str()),
             view: {
                 let (right, up) = self.camera.right_and_up();
                 ViewState {
@@ -363,12 +405,48 @@ impl App {
                     self.stale = Stale::Everything;
                 }
             }
+            Action::New => self.request(Pending::New),
+            Action::Open => self.request(Pending::Open(None)),
+            Action::Save => self.save(false, None),
+            Action::SaveAs => self.save(true, None),
+            Action::ConfirmSave => {
+                if let Some((pending, _)) = self.confirming.take() {
+                    self.save(false, Some(pending));
+                }
+            }
+            Action::ConfirmDiscard => {
+                if let Some((pending, _)) = self.confirming.take() {
+                    self.perform(pending);
+                }
+            }
+            Action::ConfirmCancel => self.confirming = None,
+            Action::PathChosen => {
+                if let Some(prompt) = self.state.path_prompt.take() {
+                    let path = PathBuf::from(prompt.text.trim());
+                    match prompt.purpose {
+                        PathPurpose::Open => self.perform(Pending::Open(Some(path))),
+                        PathPurpose::SaveAs => {
+                            let then = self.after_save.take();
+                            if self.save_to(path)
+                                && let Some(pending) = then
+                            {
+                                self.perform(pending);
+                            }
+                        }
+                    }
+                }
+            }
+            Action::PathCancelled => {
+                self.state.path_prompt = None;
+                self.after_save = None;
+            }
             Action::Export => {
-                self.state.message = match write_obj(
+                self.state.message = match write_export(
                     self.editor.document().mesh(),
                     &self.export_folder,
                     &self.state.file_name,
                     self.state.scale,
+                    self.state.export_format,
                 ) {
                     Ok(path) => {
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -473,6 +551,212 @@ impl App {
                     .spawn();
             }
         }
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.editor.document().version() != self.saved_version
+    }
+
+    /// Does something that replaces the model, asking first if that would lose changes.
+    fn request(&mut self, pending: Pending) {
+        if self.has_unsaved_changes() {
+            let question = match pending {
+                Pending::Quit => format!("Save changes to {} before closing?", self.document_name),
+                _ => format!("Save changes to {} first?", self.document_name),
+            };
+            self.confirming = Some((pending, question));
+        } else {
+            self.perform(pending);
+        }
+        self.request_frames();
+    }
+
+    /// Asks for a file: with Windows's own dialog, or elsewhere in the app's own box.
+    fn pick_path(&mut self, purpose: PathPurpose) -> Picked {
+        let folder = self
+            .project_path
+            .as_ref()
+            .and_then(|p| p.parent().map(PathBuf::from))
+            .unwrap_or_else(|| self.export_folder.with_file_name("projects"));
+        #[cfg(any(windows, check_windows))]
+        {
+            use crate::platform::{FileType, pick_file};
+            let _ = std::fs::create_dir_all(&folder);
+            let chosen = match purpose {
+                PathPurpose::Open => pick_file(
+                    false,
+                    "Open",
+                    &[
+                        FileType {
+                            name: "Projects and OBJ files",
+                            pattern: "*.lem;*.obj",
+                        },
+                        FileType {
+                            name: "All files",
+                            pattern: "*.*",
+                        },
+                    ],
+                    &folder,
+                    "",
+                    PROJECT_EXTENSION,
+                ),
+                PathPurpose::SaveAs => pick_file(
+                    true,
+                    "Save as",
+                    &[FileType {
+                        name: "Low-End Modeler project",
+                        pattern: "*.lem",
+                    }],
+                    &folder,
+                    &self.document_name,
+                    PROJECT_EXTENSION,
+                ),
+            };
+            match chosen {
+                Some(path) => Picked::Path(path),
+                None => Picked::Cancelled,
+            }
+        }
+        #[cfg(not(any(windows, check_windows)))]
+        {
+            let name = match purpose {
+                PathPurpose::Open => String::new(),
+                PathPurpose::SaveAs => format!("{}.{PROJECT_EXTENSION}", self.state.file_name),
+            };
+            self.state.path_prompt = Some(crate::ui::PathPrompt {
+                purpose,
+                text: folder.join(name).display().to_string(),
+            });
+            Picked::Asking
+        }
+    }
+
+    /// Saves to the open project, or asks where first. Then does `then`, if saved.
+    fn save(&mut self, as_new: bool, then: Option<Pending>) {
+        let path = match (&self.project_path, as_new) {
+            (Some(path), false) => path.clone(),
+            _ => match self.pick_path(PathPurpose::SaveAs) {
+                Picked::Path(path) => path,
+                Picked::Cancelled => return,
+                Picked::Asking => {
+                    self.after_save = then;
+                    return;
+                }
+            },
+        };
+        if self.save_to(path)
+            && let Some(pending) = then
+        {
+            self.perform(pending);
+        }
+    }
+
+    fn save_to(&mut self, mut path: PathBuf) -> bool {
+        if path.extension().is_none() {
+            path.set_extension(PROJECT_EXTENSION);
+        }
+        match save_project(self.editor.document().mesh(), &path) {
+            Ok(()) => {
+                self.document_name = file_name(&path);
+                self.state.message = format!("Saved {}", self.document_name);
+                self.state.file_name = file_stem(&path);
+                self.project_path = Some(path);
+                self.saved_version = self.editor.document().version();
+                true
+            }
+            Err(error) => {
+                self.state.message = error;
+                false
+            }
+        }
+    }
+
+    fn perform(&mut self, pending: Pending) {
+        match pending {
+            Pending::Quit => self.quit = true,
+            Pending::New => {
+                self.editor.replace(Mesh::new());
+                self.project_path = None;
+                self.document_name = "Untitled".to_string();
+                self.saved_version = self.editor.document().version();
+                self.state.message = "New project.".to_string();
+                self.stale = Stale::Everything;
+            }
+            Pending::Open(None) => {
+                if let Picked::Path(path) = self.pick_path(PathPurpose::Open) {
+                    self.perform(Pending::Open(Some(path)));
+                }
+            }
+            Pending::Open(Some(path)) => match open_file(&path) {
+                Ok((mesh, report, kind)) => {
+                    self.editor.replace(mesh);
+                    self.state.file_name = file_stem(&path);
+                    if kind == FileKind::Project {
+                        self.project_path = Some(path.clone());
+                        self.document_name = file_name(&path);
+                    } else {
+                        // An imported OBJ is saved as a new project, never over the OBJ.
+                        self.project_path = None;
+                        self.document_name = format!("{} (imported)", file_stem(&path));
+                    }
+                    self.saved_version = self.editor.document().version();
+                    let skipped = match report.skipped_faces {
+                        0 => String::new(),
+                        1 => " 1 broken face was left out.".to_string(),
+                        n => format!(" {n} broken faces were left out."),
+                    };
+                    self.state.message = format!("Opened {}.{skipped}", file_name(&path));
+                    self.frame_model();
+                    self.stale = Stale::Everything;
+                }
+                Err(error) => self.state.message = error,
+            },
+        }
+        self.request_frames();
+    }
+
+    /// Points the camera at the whole model, as after opening a file.
+    fn frame_model(&mut self) {
+        let mesh = self.editor.document().mesh();
+        let mut low = [f32::MAX; 3];
+        let mut high = [f32::MIN; 3];
+        for (_, vertex) in mesh.vertices() {
+            let p = vertex.position();
+            for i in 0..3 {
+                low[i] = low[i].min(p[i]);
+                high[i] = high[i].max(p[i]);
+            }
+        }
+        self.camera = Camera::default();
+        if low[0] <= high[0] {
+            self.camera.target = std::array::from_fn(|i| (low[i] + high[i]) / 2.0);
+            let size = (0..3).map(|i| high[i] - low[i]).fold(0.0, f32::max);
+            self.camera.distance = (size * 1.8).clamp(2.0, 5000.0);
+        }
+    }
+
+    /// Opens a file named when the app was started.
+    pub fn open_at_start(&mut self, path: PathBuf) {
+        self.perform(Pending::Open(Some(path)));
+    }
+
+    /// The window is closing. True if it may close now; otherwise the app asks about
+    /// unsaved changes first, and `quit_now` turns true once that is settled.
+    pub fn request_quit(&mut self) -> bool {
+        if matches!(self.mouse_state, Mouse::Transforming { .. }) {
+            self.finish_transform(false);
+        }
+        self.mouse_state = Mouse::Idle;
+        if self.has_unsaved_changes() {
+            self.request(Pending::Quit);
+            false
+        } else {
+            true
+        }
+    }
+
+    pub fn quit_now(&self) -> bool {
+        self.quit
     }
 
     /// Starts dragging the selection. Anything prepared first shares its undo step, so
@@ -1045,6 +1329,9 @@ impl App {
                 }
             }
             Event::KeyUp { .. } | Event::TextInput { .. } => self.request_frames(),
+            Event::DropFile { ref filename, .. } => {
+                self.request(Pending::Open(Some(PathBuf::from(filename))));
+            }
             _ => {}
         }
     }
@@ -1191,6 +1478,16 @@ impl App {
     }
 }
 
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map_or("Untitled".to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+fn file_stem(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map_or("model".to_string(), |n| n.to_string_lossy().into_owned())
+}
+
 /// True if (x, y) is inside any of the rectangles, given as x, y, width and height.
 fn in_rects(rects: &[[f32; 4]], x: f32, y: f32) -> bool {
     rects
@@ -1238,6 +1535,11 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
             Keycode::R => Some(Action::LoopCut),
             Keycode::B => Some(Action::Bevel),
+            Keycode::S if mods.shift => Some(Action::SaveAs),
+            Keycode::S => Some(Action::Save),
+            Keycode::N => Some(Action::New),
+            Keycode::O => Some(Action::Open),
+            Keycode::E => Some(Action::Export),
             _ => None,
         };
     }
@@ -1417,6 +1719,15 @@ mod tests {
         assert_eq!(shortcut(Keycode::Minus, CTRL), Some(Action::SelectLess));
         assert_eq!(shortcut(Keycode::R, CTRL), Some(Action::LoopCut));
         assert_eq!(shortcut(Keycode::B, CTRL), Some(Action::Bevel));
+        let ctrl_shift = Modifiers {
+            shift: true,
+            ..CTRL
+        };
+        assert_eq!(shortcut(Keycode::S, CTRL), Some(Action::Save));
+        assert_eq!(shortcut(Keycode::S, ctrl_shift), Some(Action::SaveAs));
+        assert_eq!(shortcut(Keycode::N, CTRL), Some(Action::New));
+        assert_eq!(shortcut(Keycode::O, CTRL), Some(Action::Open));
+        assert_eq!(shortcut(Keycode::E, CTRL), Some(Action::Export));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use imgui::{
 use modeler_mesh::{MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES};
 
 use crate::editor::Target;
+use crate::export::ExportFormat;
 use crate::picking::Region;
 use crate::theme::{Fonts, color, icon};
 use crate::transform::Kind;
@@ -142,6 +143,23 @@ pub struct PanelState {
     pub show_defaults: bool,
     /// How tall the panel's contents were last frame, so that it can end below them.
     pub panel_content: f32,
+    pub export_format: ExportFormat,
+    /// Where there are no system file dialogs, the path being typed.
+    pub path_prompt: Option<PathPrompt>,
+}
+
+/// What a typed path is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathPurpose {
+    Open,
+    SaveAs,
+}
+
+/// A path being typed, where the system has no file dialog the app can use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathPrompt {
+    pub purpose: PathPurpose,
+    pub text: String,
 }
 
 impl Default for PanelState {
@@ -159,6 +177,8 @@ impl Default for PanelState {
             tool: DragTool::ClickOnly,
             show_defaults: false,
             panel_content: f32::MAX,
+            export_format: ExportFormat::Obj,
+            path_prompt: None,
         }
     }
 }
@@ -269,6 +289,11 @@ pub struct PanelInfo<'a> {
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
     pub view: ViewState,
+    /// The open file's name, or "Untitled".
+    pub document: &'a str,
+    pub unsaved: bool,
+    /// A question about unsaved changes, while one is waiting for an answer.
+    pub confirm: Option<&'a str>,
 }
 
 /// Standard views, as in Blender's numpad 1, 3 and 7 and their opposites.
@@ -343,6 +368,17 @@ pub enum Action {
     View(ViewPreset),
     ToggleOrtho,
     ResetView,
+    New,
+    Open,
+    Save,
+    SaveAs,
+    /// The typed path in `PanelState::path_prompt` is ready.
+    PathChosen,
+    PathCancelled,
+    /// Answers to "Save changes first?"
+    ConfirmSave,
+    ConfirmDiscard,
+    ConfirmCancel,
     #[cfg(windows)]
     OpenExportFolder,
 }
@@ -684,6 +720,7 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
         drop(padding);
     }
 
+    dialogs(ui, state, info, &mut action);
     viewport_overlays(ui, info, fonts, display);
     UiOutput { action, rects }
 }
@@ -711,7 +748,24 @@ fn top_bar(
     let font = ui.push_font(fonts.tool);
     ui.text("Low-End Modeler");
     drop(font);
-    ui.same_line_with_spacing(0.0, 28.0);
+    ui.same_line_with_spacing(0.0, 16.0);
+    ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 2.0]);
+    file_menu(ui, info, action, height);
+    ui.same_line_with_spacing(0.0, 10.0);
+    ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 9.0]);
+    // The file's name, shortened if long, with a dot while there are unsaved changes.
+    let mut name: String = info.document.chars().take(22).collect();
+    if info.document.chars().count() > 22 {
+        name.push('\u{2026}');
+    }
+    ui.text_colored(color::MUTED, &name);
+    tooltip(ui, info.document, "");
+    if info.unsaved {
+        ui.same_line_with_spacing(0.0, 6.0);
+        ui.text_colored(color::ACCENT, "\u{2022}");
+        tooltip(ui, "Unsaved changes", "Ctrl+S");
+    }
+    ui.same_line_with_spacing(0.0, 24.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1]]);
 
     let modes = [
@@ -792,8 +846,14 @@ fn top_bar(
         .map_or("Nothing to redo".to_string(), |l| format!("Redo {l}"));
     tooltip(ui, &redo, "Ctrl+Y");
 
-    // Export, at the right edge.
+    // Shortcuts, then Export, at the right edge.
     let width = 112.0;
+    ui.same_line_with_pos(ui.window_size()[0] - width - 12.0 - (height + 4.0) - 8.0);
+    if icon_button(ui, "help", icon::KEYBOARD, false, true, height + 4.0) {
+        ui.open_popup("##help_popup");
+    }
+    tooltip(ui, "Keyboard and mouse", "");
+    help_popup(ui, fonts);
     ui.same_line_with_pos(ui.window_size()[0] - width - 12.0);
     let colors = [
         ui.push_style_color(StyleColor::Button, color::ACCENT),
@@ -810,7 +870,7 @@ fn top_bar(
     }
     drop(font);
     drop(colors);
-    tooltip(ui, "Export an OBJ file for Roblox Studio", "");
+    tooltip(ui, "Export for Roblox Studio", "Ctrl+E");
     export_popup(ui, state, info, fonts, action);
 }
 
@@ -824,7 +884,30 @@ fn export_popup(
     let padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 14.0]));
     if let Some(_popup) = ui.begin_popup("##export_popup") {
         ui.dummy([300.0, 0.0]);
-        heading(ui, fonts, "EXPORT OBJ");
+        heading(ui, fonts, "EXPORT FOR ROBLOX");
+        let formats = [
+            (
+                icon::EXPORT,
+                "OBJ",
+                ExportFormat::Obj,
+                "One mesh. Works everywhere.",
+            ),
+            (
+                icon::EXPORT,
+                "glTF (.glb)",
+                ExportFormat::Glb,
+                "Each separate part becomes its own MeshPart in Roblox.",
+            ),
+        ];
+        let items: Vec<_> = formats
+            .iter()
+            .map(|(glyph, label, format, tip)| {
+                (*glyph, *label, state.export_format == *format, *tip)
+            })
+            .collect();
+        if let Some(i) = segmented(ui, "format", &items, 28.0) {
+            state.export_format = formats[i].2;
+        }
         row(ui, "File name");
         ui.input_text("##file_name", &mut state.file_name).build();
         row(ui, "Scale");
@@ -847,7 +930,11 @@ fn export_popup(
             ui.push_style_color(StyleColor::Text, color::ON_ACCENT),
         ];
         let disabled = ui.begin_disabled(info.triangles == 0);
-        if ui.button_with_size("Save OBJ file##save", [-1.0, 34.0]) {
+        let label = match state.export_format {
+            ExportFormat::Obj => "Save OBJ file##save",
+            ExportFormat::Glb => "Save GLB file##save",
+        };
+        if ui.button_with_size(label, [-1.0, 34.0]) {
             *action = Some(Action::Export);
         }
         disabled.end();
@@ -862,6 +949,188 @@ fn export_popup(
         let wrap = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + 300.0);
         ui.text_colored(color::FAINT, format!("Saved in {}", info.export_folder));
         drop(wrap);
+    }
+    drop(padding);
+}
+
+fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32) {
+    if ui.button_with_size(format!("{}  File##file", icon::MENU), [76.0, height]) {
+        ui.open_popup("##file_menu");
+    }
+    let padding = ui.push_style_var(StyleVar::WindowPadding([8.0, 8.0]));
+    let spacing = ui.push_style_var(StyleVar::ItemSpacing([8.0, 6.0]));
+    if let Some(_menu) = ui.begin_popup("##file_menu") {
+        let items = [
+            (icon::NEW, "New", "Ctrl+N", Action::New),
+            (icon::FOLDER, "Open\u{2026}", "Ctrl+O", Action::Open),
+            (icon::SAVE, "Save", "Ctrl+S", Action::Save),
+            (
+                icon::SAVE,
+                "Save as\u{2026}",
+                "Ctrl+Shift+S",
+                Action::SaveAs,
+            ),
+        ];
+        for (glyph, label, key, choice) in items {
+            if ui
+                .menu_item_config(format!("{glyph}  {label}"))
+                .shortcut(key)
+                .build()
+            {
+                *action = Some(choice);
+            }
+        }
+        ui.separator();
+        if ui
+            .menu_item_config(format!("{}  Export\u{2026}", icon::EXPORT))
+            .shortcut("Ctrl+E")
+            .enabled(info.triangles > 0)
+            .build()
+        {
+            *action = Some(Action::Export);
+        }
+        ui.text_colored(color::FAINT, "Open reads .lem projects and .obj files.");
+    }
+    drop(spacing);
+    drop(padding);
+}
+
+/// Every shortcut, for looking up.
+fn help_popup(ui: &Ui, fonts: &Fonts) {
+    let padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 14.0]));
+    if let Some(_popup) = ui.begin_popup("##help_popup") {
+        let groups: [(&str, &[(&str, &str)]); 5] = [
+            (
+                "VIEW",
+                &[
+                    ("Turn", "Right-drag"),
+                    ("Slide", "Hold the wheel and drag"),
+                    ("Zoom", "Scroll"),
+                    ("Front, right, top", "F1, F3, F7 (Ctrl: opposite)"),
+                    ("Flat view", "F5"),
+                    ("Reset view", "Home"),
+                ],
+            ),
+            (
+                "SELECT",
+                &[
+                    ("Vertex, edge, face, part", "1, 2, 3, 4"),
+                    ("Select, add, remove", "Click, Shift, Ctrl"),
+                    ("Loop", "Double-click an edge"),
+                    ("All", "A"),
+                    ("Linked", "L or Ctrl+L"),
+                    ("More, less", "Ctrl + plus, Ctrl + minus"),
+                    ("Invert", "Ctrl+I"),
+                ],
+            ),
+            (
+                "CHANGE",
+                &[
+                    ("Move, rotate, scale", "G, R, S (then X, Y, Z)"),
+                    ("Slide edges", "G G"),
+                    ("Extrude, inset", "E, I"),
+                    ("Loop cut", "Ctrl+R"),
+                    ("Bevel", "Ctrl+B"),
+                    ("Duplicate", "Shift+D"),
+                    ("Merge, fill, delete", "M, F, X"),
+                ],
+            ),
+            (
+                "WHILE DRAGGING",
+                &[
+                    ("Snap", "Hold Ctrl"),
+                    ("Confirm, cancel", "Click or Enter, Esc or right-click"),
+                    ("More cuts or segments", "Scroll"),
+                ],
+            ),
+            (
+                "FILE",
+                &[
+                    ("New, open, save", "Ctrl+N, Ctrl+O, Ctrl+S"),
+                    ("Save as", "Ctrl+Shift+S"),
+                    ("Export", "Ctrl+E"),
+                    ("Undo, redo", "Ctrl+Z, Ctrl+Y"),
+                ],
+            ),
+        ];
+        for (title, rows) in groups {
+            heading(ui, fonts, title);
+            for (what, keys) in rows {
+                ui.text_colored(color::MUTED, what);
+                ui.same_line_with_pos(190.0);
+                ui.text(keys);
+            }
+            ui.dummy([0.0, 4.0]);
+        }
+    }
+    drop(padding);
+}
+
+/// True if this popup is open. Opening an open popup again would reset it, which
+/// loses typing in progress. The bindings lack this call, so it goes to Dear ImGui.
+fn popup_is_open(id: &str) -> bool {
+    let id = std::ffi::CString::new(id).unwrap_or_default();
+    // SAFETY: a context exists while the interface is built, and `id` ends in a zero.
+    unsafe { imgui::sys::igIsPopupOpen(id.as_ptr(), 0) }
+}
+
+/// Asks what to do about unsaved changes, and takes typed paths where there is no
+/// system file dialog. Both block the rest of the interface while open.
+fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Option<Action>) {
+    let padding = ui.push_style_var(StyleVar::WindowPadding([18.0, 16.0]));
+    if let Some(question) = info.confirm {
+        if !popup_is_open("Unsaved changes") {
+            ui.open_popup("Unsaved changes");
+        }
+        ui.modal_popup_config("Unsaved changes")
+            .always_auto_resize(true)
+            .movable(false)
+            .build(|| {
+                ui.text(question);
+                ui.dummy([0.0, 6.0]);
+                button_row(
+                    ui,
+                    action,
+                    &[
+                        ("Save##confirm", Action::ConfirmSave, ""),
+                        ("Don't save##confirm", Action::ConfirmDiscard, ""),
+                        ("Cancel##confirm", Action::ConfirmCancel, ""),
+                    ],
+                    true,
+                );
+            });
+    }
+    if let Some(prompt) = &mut state.path_prompt {
+        let title = match prompt.purpose {
+            PathPurpose::Open => "Open a file",
+            PathPurpose::SaveAs => "Save as",
+        };
+        if !popup_is_open(title) {
+            ui.open_popup(title);
+        }
+        ui.modal_popup_config(title)
+            .always_auto_resize(true)
+            .movable(false)
+            .build(|| {
+                ui.text_colored(color::MUTED, "Path to the file");
+                ui.set_next_item_width(420.0);
+                if ui
+                    .input_text("##path", &mut prompt.text)
+                    .enter_returns_true(true)
+                    .build()
+                {
+                    *action = Some(Action::PathChosen);
+                }
+                button_row(
+                    ui,
+                    action,
+                    &[
+                        ("OK##path", Action::PathChosen, ""),
+                        ("Cancel##path", Action::PathCancelled, ""),
+                    ],
+                    true,
+                );
+            });
     }
     drop(padding);
 }
@@ -1618,6 +1887,9 @@ mod tests {
                 toward: [0.55, -0.66, 0.5],
                 orthographic: false,
             },
+            document: "a rather long project name that needs shortening.lem",
+            unsaved: true,
+            confirm: None,
         }
     }
 
@@ -1638,13 +1910,23 @@ mod tests {
         let warnings = vec!["A warning".to_string()];
 
         let mut actions = std::collections::HashSet::new();
-        for (target, transform) in [
+        // The last two cases show the save-changes question and the path box, which
+        // block everything else while open.
+        for (case, (target, transform)) in [
             (Target::Nothing, false),
             (Target::Shape(Shape::Cube), true),
             (Target::Edited(Shape::Icosphere), false),
             (Target::Several, false),
-        ] {
+            (Target::Nothing, false),
+            (Target::Nothing, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut info = info(target, &warnings, transform);
+            if case == 4 {
+                info.confirm = Some("Save changes to sword.lem first?");
+            }
             // Some buttons only work in edge mode, and the loop cut hint must draw too.
             if target == Target::Several {
                 info.mode = ModeChoice::Edge;
@@ -1656,6 +1938,15 @@ mod tests {
             }
             let mut state = PanelState {
                 message: "Saved model.obj".to_string(),
+                export_format: if case == 2 {
+                    ExportFormat::Glb
+                } else {
+                    ExportFormat::Obj
+                },
+                path_prompt: (case == 5).then(|| PathPrompt {
+                    purpose: PathPurpose::SaveAs,
+                    text: "/somewhere/model.lem".to_string(),
+                }),
                 ..Default::default()
             };
             let mut frame = |context: &mut imgui::Context, state: &mut PanelState| {
@@ -1710,6 +2001,8 @@ mod tests {
             for (opener, xs, ys) in [
                 ([1215.0, 25.0], 900..1280, 52..480),
                 ([38.0, 365.0], 60..320, 300..520),
+                // The File menu, beside the name at the top left.
+                ([200.0, 25.0], 150..460, 40..260),
             ] {
                 for y in ys.step_by(11) {
                     for x in xs.clone().step_by(13) {
@@ -1743,6 +2036,15 @@ mod tests {
             "SelectRings",
             "Transform(Slide)",
             "Bevel",
+            "New",
+            "Open",
+            "Save",
+            "SaveAs",
+            "ConfirmSave",
+            "ConfirmDiscard",
+            "ConfirmCancel",
+            "PathChosen",
+            "PathCancelled",
         ] {
             assert!(
                 actions.contains(expected),
