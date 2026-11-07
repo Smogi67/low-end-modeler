@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 7 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 7 and the interface redesign are still needed. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
-Next step: **Stage 8: save and load, glTF export, shortcuts, UI polish, the dependency installer, and the release .zip. It needs Aufwand Hoch.**
+Status: **Stage 8 code written. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner's laptop tests of Stages 3 to 8 and the interface redesign are still needed. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Next step: **The owner's laptop test of the release zip. Then Stage 9, later features one at a time; ask the owner which first.**
 
 ## 1. Goal
 
@@ -93,7 +93,7 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **Axes:** Z is up, as in Blender. Roblox uses Y up, so Stage 3's export must convert this.
 - **Camera controls (owner's choice, replaces Blender's here):** right drag turns the view and middle drag (holding the wheel) slides it, with no keys held. The wheel zooms, and Ctrl + middle drag also zooms. Plain left stays free for selecting in Stage 4. Alt + left drag turns the view on touchpads, and Alt + Shift + left drag slides it.
 - **View keys:** F1, F3, and F7 or numpad 1, 3, and 7 give front, right, and top views (add Ctrl for the opposite side). F5 or numpad 5 switches to orthographic. Numpad 2, 4, 6, and 8 turn the view, and Home resets it.
-- **Linking:** on Windows, SDL2 and the C runtime are built into the .exe. Review this when designing the dependency installer (section 6).
+- **Linking:** on Windows, the C runtime is built into the .exe. SDL2 was too, until Stage 8 moved it into SDL2.dll, which the setup program installs (section 6).
 - **Grid:** it lies on the ground, except in level views along an axis (such as front and right), where it stands upright, as in Blender.
 - **Dear ImGui:** not added yet, because Stage 2 needs no UI. Check the bindings work with OpenGL 2.1 when the first UI is added.
 - **Log file:** `low-end-modeler.log` beside the .exe records the OpenGL details and any errors. The title bar shows the OpenGL version too.
@@ -159,6 +159,16 @@ The mesh code is in `crates/mesh/src/bevel.rs`, whose top comment explains the m
 - **Refused:** edges without a face on each side (borders and loose edges), and vertices whose faces do not form one simple fan facing the same way. The message says why.
 - **Drag speed:** every new point is its original vertex plus the width times a fixed direction, so dragging only moves points. Changing segments rebuilds the bevel.
 
+### Decisions made in Stage 8
+
+- **Project files (`.lem`):** plain text in OBJ style, so they can be read and repaired by hand. They keep everything: faces with any number of corners, loose edges and vertices, and exact positions. Selection, shape records and camera are not saved. A newer format version is refused instead of misread. Code: `crates/mesh/src/project.rs`.
+- **Open:** reads `.lem` projects, and imports `.obj` files from other programs (turning Y up into Z up). Broken faces are left out and counted. An imported OBJ is never overwritten by Save; Save asks for a new project name. Dropping a file onto the window, or onto the .exe, opens it.
+- **Saving safely:** every file is written whole to a temporary file, then renamed, so a failure cannot damage the old file. Unsaved changes show as a dot after the file name, and New, Open and closing the window ask first. Selecting counts as a change, as in Blender.
+- **Dialogs:** Windows gets its own Open and Save As dialogs. Elsewhere the app asks for a path in its own box, which is only used in development.
+- **glTF export:** a single `.glb` file. Each separate part becomes its own mesh, so Roblox makes one MeshPart per part. It passes the official Khronos glTF validator with no errors or warnings. OBJ stays the default.
+- **Shortcuts:** Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+E added. The keyboard button in the top bar shows every shortcut.
+- **Release zip:** GitHub Actions makes the `low-end-modeler` download with `low-end-modeler.exe`, `low-end-modeler-setup.exe`, `README.txt` and the font licenses. It also runs setup on Windows without a window, checks the app loads SDL2.dll late, and screenshots both programs into its log.
+
 ## 6. Feature scope
 
 ### Core
@@ -184,8 +194,10 @@ The owner decided this on 2026-11-05.
 - **Honest list:** show only what the real .exe needs or can use. Do not add dummy entries. Skip or mark anything already present. If a dependency cannot be installed by a program, such as OpenGL support in the graphics driver, show it as a check with clear advice.
 - **Must run first:** the installer itself cannot depend on anything it installs.
 - **Downloads:** use official sources over HTTPS and verify each file before installing it.
-- **List not final:** check the real dependencies of the .exe once the Stage 2 build exists. Linking everything into the .exe would leave the installer little to do, so raise that choice with the owner rather than deciding it alone.
-- **Before the installer exists:** test builds must run on the owner's laptop without it.
+- **The list (owner's decision, 2026-11-07):** asked whether to keep everything built into the .exe and make setup a system check, or to move SDL2 out so setup downloads it, the owner chose to download SDL2. So the list is: SDL2 (required, downloaded) and a graphics driver with OpenGL 2.1 (required, checked only; setup gives advice, since no program can install drivers). Nothing is optional: the C runtime stays built into the .exe.
+- **How it is built (Stage 8):** `crates/installer`, a separate 0.4 MB .exe using only Windows itself: its own controls for the window, WinHTTP for the download, and OpenGL for the check. SDL2 2.32.10 comes from SDL's GitHub releases, checked against SHA-256 fingerprints pinned in `core.rs` for the zip and for each file in it, then checked again by having Windows load the DLL. A file already in place with the right fingerprint is not downloaded again. A wrong one is replaced. Setup writes only `SDL2.dll` and `README-SDL.txt` (SDL's license notice, which it asks to ship with the DLL), into its own folder.
+- **The app without SDL2.dll:** the .exe loads SDL2.dll late, checks for it first, and offers to start setup, instead of Windows showing a missing-DLL error.
+- **Updating SDL2:** change the version, address, size and fingerprints in `crates/installer/src/core.rs`. The test `the_pinned_sdl_fingerprints_match_the_real_download` checks them against a downloaded copy (set `SDL_ZIP`).
 
 ### Later
 
@@ -275,6 +287,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-07 | 5 | Interface redesign at the owner's request: new layout, colors, fonts, icons, view gizmo, and a nicer 3D view. Run on Linux with OpenGL limited to 2.1 using simulated input; screenshots sent to the owner. A test clicks and drags over every point of the interface, including inside the popups | Not yet |
 | 2026-11-07 | 6 | Edge loops and rings, loop selection by double-click and buttons, loop cut with a preview and slide, edge slide, and bridge. 21 new mesh tests, including a random test that ran each new tool 66 to 249 times and checked exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: loop cut preview, extra cuts, cutting, sliding, cancelling, double-click loop selection, and G G slide all worked | Not yet |
 | 2026-11-07 | 7 | Edge bevel with width and 1 to 16 segments, round profiles, spherical cube corners, and a width limit. 13 new tests, including exact volumes for a flat cube-edge cut and a mitred loop, points lying on the true quarter circle and corner sphere, convexity of a rounded cube, and a random test of 310 bevels on six shapes that checked validity, holes, face direction and exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: drag, segment change, confirm, undo and cancel all worked | Not yet |
+| 2026-11-07 | 8 | Project files, OBJ import, glTF export, File menu, shortcuts sheet, unsaved-changes prompts, and the setup program. 18 new tests, including exact project round trips and glTF read back for volume and winding; sample files passed the Khronos glTF validator. On GitHub's Windows machine, setup downloaded SDL2 in 0.3 seconds, matched both fingerprints, installed it, and Windows loaded it; a second run found it in place. Save, prompts and menus run on Linux with simulated input | Not yet |
 
 ## 12. Open questions
 
@@ -285,5 +298,5 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] Owner has a GitHub account (Smogi67)
 - [ ] Test importing an exported OBJ into Roblox Studio (Stage 3 goal; the owner will do this later and asked not to wait for it)
 - [x] Roblox's mesh requirements checked 2026-11-06: 20,000 triangles per mesh, closed geometry with real thickness (https://create.roblox.com/docs/en-us/art/modeling/specifications)
-- [ ] List the real dependencies of the .exe for the installer (once the Stage 2 build exists)
+- [x] List the real dependencies of the .exe for the installer: done in Stage 8, see section 6
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
