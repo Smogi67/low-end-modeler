@@ -115,6 +115,45 @@ impl Camera {
         self.rotation_rows()[2]
     }
 
+    /// The main light: from near the camera, a little above and to the left, so that
+    /// faces turned toward the viewer differ in brightness.
+    pub fn key_light(&self) -> [f32; 3] {
+        let [right, up, toward] = self.rotation_rows();
+        let v: [f32; 3] = std::array::from_fn(|i| toward[i] + up[i] * 0.55 - right[i] * 0.35);
+        let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        v.map(|c| c / length)
+    }
+
+    /// How far from the target the grid stays visible.
+    pub fn grid_fade_radius(&self) -> f32 {
+        (self.distance * 3.0).clamp(8.0, 60.0)
+    }
+
+    /// The depth shift that brings a point 2% of the camera distance closer, at the
+    /// target's depth. Perspective depth is not linear, so this depends on the view.
+    pub fn point_depth_bias(&self) -> f32 {
+        let pull = self.distance * 0.02;
+        let (near, far) = self.depth_range();
+        if self.orthographic {
+            -2.0 * pull / (far - near)
+        } else {
+            // The slope of depth at distance d is 2 * far * near / ((far - near) * d^2).
+            -2.0 * far * near * pull / ((far - near) * self.distance * self.distance)
+        }
+    }
+
+    /// The near and far limits of the view.
+    fn depth_range(&self) -> (f32, f32) {
+        // The far limit must always reach the whole grid, whatever the zoom.
+        let far = (self.distance * 100.0).max(1000.0);
+        let near = if self.orthographic {
+            -far
+        } else {
+            self.distance * 0.01
+        };
+        (near, far)
+    }
+
     /// The grid plane to draw from this angle.
     pub fn grid_plane(&self) -> GridPlane {
         const LIMIT: f32 = 0.01;
@@ -155,11 +194,9 @@ impl Camera {
 
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
         let aspect = if aspect > 0.0 { aspect } else { 1.0 };
-        // The far limit must always reach the whole grid, whatever the zoom.
-        let far = (self.distance * 100.0).max(1000.0);
+        let (near, far) = self.depth_range();
         if self.orthographic {
             let half_height = self.world_height_at_target() / 2.0;
-            let near = -far;
             [
                 1.0 / (half_height * aspect),
                 0.0,
@@ -179,7 +216,6 @@ impl Camera {
                 1.0,
             ]
         } else {
-            let near = self.distance * 0.01;
             let f = 1.0 / (FIELD_OF_VIEW / 2.0).tan();
             [
                 f / aspect,
@@ -447,6 +483,50 @@ mod tests {
             flat.world_per_pixel_at([0.0, -5.0, 0.0], 600.0),
             flat.world_per_pixel_at([0.0, 5.0, 0.0], 600.0)
         );
+    }
+
+    #[test]
+    fn the_key_light_comes_from_the_front_and_is_one_unit_long() {
+        for (yaw, pitch) in [(0.0, 0.0), (40.0, 30.0), (170.0, -60.0)] {
+            let cam = camera(yaw, pitch);
+            let light = cam.key_light();
+            let length = (light[0].powi(2) + light[1].powi(2) + light[2].powi(2)).sqrt();
+            assert!(close(length, 1.0));
+            let toward = cam.toward_camera();
+            assert!((0..3).map(|i| light[i] * toward[i]).sum::<f32>() > 0.5);
+        }
+        for (distance, radius) in [(0.1, 8.0), (1000.0, 60.0)] {
+            let cam = Camera {
+                distance,
+                ..Camera::default()
+            };
+            assert_eq!(cam.grid_fade_radius(), radius);
+        }
+    }
+
+    #[test]
+    fn the_point_bias_moves_a_point_two_percent_closer_at_the_target() {
+        for orthographic in [false, true] {
+            for distance in [0.5, 6.0, 40.0, 300.0] {
+                let cam = Camera {
+                    distance,
+                    orthographic,
+                    ..Camera::default()
+                };
+                let m = multiply(&cam.projection_matrix(1.5), &cam.view_matrix());
+                let toward = cam.toward_camera();
+                let depth = |pull: f32| {
+                    let p: [f32; 3] = std::array::from_fn(|i| cam.target[i] + toward[i] * pull);
+                    project(&m, p)[2]
+                };
+                let wanted = depth(distance * 0.02) - depth(0.0);
+                let got = cam.point_depth_bias();
+                assert!(
+                    (got - wanted).abs() <= wanted.abs() * 0.05,
+                    "ortho {orthographic}, distance {distance}: {got} vs {wanted}"
+                );
+            }
+        }
     }
 
     #[test]

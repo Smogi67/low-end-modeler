@@ -5,12 +5,12 @@ pub const FLOATS_PER_VERTEX: usize = 6;
 
 const EXTENT: i32 = 50;
 const MAJOR_EVERY: i32 = 10;
-const MINOR: [f32; 3] = [0.30, 0.30, 0.30];
-const MAJOR: [f32; 3] = [0.42, 0.42, 0.42];
+const MINOR: [f32; 3] = [0.31, 0.32, 0.345];
+const MAJOR: [f32; 3] = [0.40, 0.41, 0.44];
 /// The X axis is red, Y green and Z blue, as in Blender.
-const X_AXIS: [f32; 3] = [0.80, 0.25, 0.28];
-const Y_AXIS: [f32; 3] = [0.45, 0.70, 0.20];
-const Z_AXIS: [f32; 3] = [0.30, 0.50, 0.90];
+const X_AXIS: [f32; 3] = [0.93, 0.33, 0.38];
+const Y_AXIS: [f32; 3] = [0.55, 0.80, 0.25];
+const Z_AXIS: [f32; 3] = [0.30, 0.56, 0.96];
 
 /// Which plane the grid lies in. It stays on the ground, except in level views
 /// along an axis, where a flat grid would be seen edge-on as a single line.

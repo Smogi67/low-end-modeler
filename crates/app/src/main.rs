@@ -13,6 +13,7 @@ mod imgui_gl;
 mod picking;
 mod renderer;
 mod scene;
+mod theme;
 mod transform;
 mod ui;
 
@@ -96,9 +97,10 @@ fn run() -> Result<(), String> {
     gl_attr.set_multisample_samples(0);
 
     let mut window = video
-        .window(APP_NAME, 1200, 780)
+        .window(APP_NAME, 1280, 800)
         .opengl()
         .resizable()
+        .maximized()
         .position_centered()
         .build()
         .map_err(|error| format!("Could not open a window: {error}"))?;

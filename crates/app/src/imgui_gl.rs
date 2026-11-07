@@ -24,7 +24,8 @@ uniform sampler2D u_texture;
 varying vec2 v_uv;
 varying vec4 v_color;
 void main() {
-    gl_FragColor = v_color * texture2D(u_texture, v_uv);
+    // The font texture holds coverage in its alpha only, which saves memory.
+    gl_FragColor = vec4(v_color.rgb, v_color.a * texture2D(u_texture, v_uv).a);
 }
 "#;
 
@@ -63,16 +64,16 @@ impl ImguiGl {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, name, value as i32);
             }
             let fonts = context.fonts();
-            let atlas = fonts.build_rgba32_texture();
+            let atlas = fonts.build_alpha8_texture();
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA as i32,
+                glow::ALPHA as i32,
                 atlas.width as i32,
                 atlas.height as i32,
                 0,
-                glow::RGBA,
+                glow::ALPHA,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(atlas.data)),
             );

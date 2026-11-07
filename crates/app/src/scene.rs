@@ -13,7 +13,7 @@ pub const FLOATS_PER_TRIANGLE_VERTEX: usize = 7;
 /// Position and color, for each end of an edge and each point.
 pub const FLOATS_PER_LINE_VERTEX: usize = 6;
 
-const NORMAL_COLOR: [f32; 3] = [0.05, 0.05, 0.05];
+const NORMAL_COLOR: [f32; 3] = [0.11, 0.115, 0.13];
 const SELECTED_COLOR: [f32; 3] = [1.0, 0.55, 0.10];
 
 /// A range of floats that changed, to send to the graphics card.

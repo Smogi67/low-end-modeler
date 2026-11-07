@@ -126,6 +126,17 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/lo
 - **Tools:** in `crates/mesh/src/tools.rs`. Extrude keeps the selected faces as a region and moves along their average normal. Inset treats each face separately. Merge removes a face left with too few corners or crossing itself. Merging two faces onto the same vertices keeps one. Subdivide turns triangles into four, and larger faces into one quad per corner. Unselected neighbors gain a corner on each cut edge, so they stay whole.
 - **Holes show red:** the inside of an open shape shows its back faces, which draw red by design.
 
+### Interface redesign (owner's request, after Stage 5)
+
+The owner found the default Dear ImGui look ugly. The UI library stays: Rune was checked and needs Vulkan or DirectX 12, which the HD 3000 lacks. Instead:
+
+- **Layout:** a top bar (mode, drag tool, undo, redo, Export), a tool strip on the left, a settings panel on the right that is only as tall as its contents, a view gizmo, and a status bar. All are floating rounded panels over the 3D view, in `crates/app/src/ui.rs`.
+- **Look:** dark grey with one orange accent, in `crates/app/src/theme.rs`. All colors are named there; change them there only.
+- **Fonts:** Inter (text) and Lucide (icons), both under free licenses whose texts ship next to the fonts in `crates/app/assets/fonts`. They are cut down to the characters used and built into the .exe (about 95 KB). `scripts/make-fonts.sh` remakes them and explains how to add an icon. The font texture stays within 1024 × 1024, which a test checks.
+- **View gizmo:** click an axis ball for that view, plus Home and orthographic buttons.
+- **3D view:** a gradient background, a grid that fades out with distance instead of flickering, light from just above and left of the camera plus soft light from above, and points pulled slightly toward the camera so sloped faces do not cut them.
+- **Settings for new shapes** are folded away while nothing is selected, since they then only affect the next shape added.
+
 ## 6. Feature scope
 
 ### Core
@@ -239,6 +250,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 3 | The owner reported a crash when changing the Icosphere slider, and that changing values did not affect shapes. Reproduced the crash: the slider and the shape button shared a label, so a shared ID hit an out-of-range mouse button in Dear ImGui. Labels are now unique. Panel values now adjust the newest shape. Also fixed a null draw list on the first frame | Fix not yet confirmed |
 | 2026-11-06 | 4 | Vertex, edge, and face selection with click, box, circle, and lasso; all, none, invert, linked, more, and less; move, rotate, and scale with axis lock and snapping; duplicate and mirror; partial graphics updates. Started at the owner's request before the Stage 3 tests were reported, so the Roblox import is still untested. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 | 2026-11-06 | 5 | The owner reported that sliders stopped working after selecting, and asked to select parts without dragging. Sliders now follow the selected shape, Part mode and click-only selecting added, and a slightly moved click no longer clears the selection. Extrude, inset, merge, delete, fill, and subdivide added, with a random test of all tools. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
+| 2026-11-07 | 5 | Interface redesign at the owner's request: new layout, colors, fonts, icons, view gizmo, and a nicer 3D view. Run on Linux with OpenGL limited to 2.1 using simulated input; screenshots sent to the owner. A test clicks and drags over every point of the interface, including inside the popups | Not yet |
 
 ## 12. Open questions
 

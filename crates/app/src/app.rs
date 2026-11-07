@@ -22,10 +22,10 @@ use crate::imgui_gl::ImguiGl;
 use crate::picking::{DepthImage, Region, ViewInfo, pick_point, pick_region};
 use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
+use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, ModeChoice, PANEL_MARGIN, PANEL_WIDTH, PanelInfo, PanelState, draw_region,
-    panel,
+    Action, DragTool, ModeChoice, PanelInfo, PanelState, ViewState, build as build_ui, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -87,7 +87,8 @@ pub struct App {
     frames_wanted: u32,
     frames_drawn: u64,
     last_frame: Instant,
-    panel_height: f32,
+    ui_rects: Vec<[f32; 4]>,
+    fonts: Fonts,
     pointer: [f32; 2],
     pointer_over_panel: bool,
     export_folder: PathBuf,
@@ -102,6 +103,7 @@ impl App {
         imgui.set_ini_filename(None);
         imgui.set_log_filename(None);
         imgui.io_mut().config_input_text_cursor_blink = false;
+        let fonts = theme::install(&mut imgui);
         let imgui_gl = ImguiGl::new(renderer.gl(), &mut imgui)?;
         let export_folder = std::env::current_exe()
             .ok()
@@ -121,7 +123,8 @@ impl App {
             frames_wanted: UI_SETTLE_FRAMES,
             frames_drawn: 0,
             last_frame: Instant::now(),
-            panel_height: 0.0,
+            ui_rects: Vec::new(),
+            fonts,
             pointer: [0.0; 2],
             pointer_over_panel: false,
             export_folder,
@@ -177,9 +180,20 @@ impl App {
             undo_label: document.undo_label(),
             redo_label: document.redo_label(),
             export_folder: &self.export_folder_text,
+            open_edges: mesh.open_edge_count(),
+            view: {
+                let (right, up) = self.camera.right_and_up();
+                ViewState {
+                    right,
+                    up,
+                    toward: self.camera.toward_camera(),
+                    orthographic: self.camera.orthographic,
+                }
+            },
         };
         let ui = self.imgui.new_frame();
-        let (action, panel_height) = panel(ui, &mut self.state, &info);
+        let output = build_ui(ui, &mut self.state, &info, &self.fonts);
+        let action = output.action;
         if let Mouse::Selecting {
             region,
             moved: true,
@@ -188,7 +202,7 @@ impl App {
         {
             draw_region(ui, region);
         }
-        self.panel_height = panel_height;
+        self.ui_rects = output.rects;
         let draw_data = self.imgui.render();
 
         // Results appear in the frames that follow.
@@ -219,8 +233,11 @@ impl App {
         let aspect = width as f32 / height.max(1) as f32;
         let view = View {
             view_projection: self.camera.view_projection(aspect),
-            light: self.camera.toward_camera(),
+            light: self.camera.key_light(),
             plane: self.camera.grid_plane(),
+            fade_center: self.camera.target,
+            fade_radius: self.camera.grid_fade_radius(),
+            point_depth_bias: self.camera.point_depth_bias(),
         };
         self.renderer.render(width, height, &view);
         self.imgui_gl.render(self.renderer.gl(), draw_data, height);
@@ -309,6 +326,12 @@ impl App {
             Action::SelectLess => {
                 self.select_edit("Select less", |mesh, mode| mesh.select_less(mode));
             }
+            Action::View(preset) => {
+                let (yaw, pitch) = preset.angles();
+                self.camera.set_view(yaw, pitch);
+            }
+            Action::ToggleOrtho => self.camera.orthographic = !self.camera.orthographic,
+            Action::ResetView => self.camera = Camera::default(),
             Action::Transform(kind) => self.start_transform(kind, Prepare::Nothing),
             Action::Duplicate => self.start_transform(Kind::Move, Prepare::Duplicate),
             Action::Extrude => self.start_transform(Kind::Move, Prepare::Extrude),
@@ -665,7 +688,7 @@ impl App {
                 }
                 // Moving over empty viewport needs no drawing. The panel highlights
                 // its buttons, so it does, as does leaving it or using a slider.
-                let over = in_panel(x as f32, y as f32, self.panel_height);
+                let over = in_rects(&self.ui_rects, x as f32, y as f32);
                 if over || self.pointer_over_panel || ui_mouse {
                     self.request_frames();
                 }
@@ -829,9 +852,11 @@ impl App {
     }
 }
 
-fn in_panel(x: f32, y: f32, panel_height: f32) -> bool {
-    (PANEL_MARGIN..=PANEL_MARGIN + PANEL_WIDTH).contains(&x)
-        && (PANEL_MARGIN..=PANEL_MARGIN + panel_height).contains(&y)
+/// True if (x, y) is inside any of the rectangles, given as x, y, width and height.
+fn in_rects(rects: &[[f32; 4]], x: f32, y: f32) -> bool {
+    rects
+        .iter()
+        .any(|r| (r[0]..=r[0] + r[2]).contains(&x) && (r[1]..=r[1] + r[3]).contains(&y))
 }
 
 /// Keys that text fields need.
@@ -1052,16 +1077,14 @@ mod tests {
     }
 
     #[test]
-    fn panel_area_includes_its_edges_only() {
-        assert!(in_panel(PANEL_MARGIN, PANEL_MARGIN, 100.0));
-        assert!(in_panel(
-            PANEL_MARGIN + PANEL_WIDTH,
-            PANEL_MARGIN + 100.0,
-            100.0
-        ));
-        assert!(!in_panel(PANEL_MARGIN - 1.0, 50.0, 100.0));
-        assert!(!in_panel(PANEL_MARGIN + PANEL_WIDTH + 1.0, 50.0, 100.0));
-        assert!(!in_panel(50.0, PANEL_MARGIN + 101.0, 100.0));
+    fn interface_areas_include_their_edges_only() {
+        let rects = [[10.0, 20.0, 100.0, 50.0], [500.0, 0.0, 10.0, 10.0]];
+        assert!(in_rects(&rects, 10.0, 20.0));
+        assert!(in_rects(&rects, 110.0, 70.0));
+        assert!(in_rects(&rects, 505.0, 5.0));
+        assert!(!in_rects(&rects, 9.0, 30.0));
+        assert!(!in_rects(&rects, 50.0, 71.0));
+        assert!(!in_rects(&[], 0.0, 0.0));
     }
 
     #[test]
