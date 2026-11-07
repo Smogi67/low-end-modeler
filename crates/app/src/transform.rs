@@ -20,6 +20,8 @@ pub enum Kind {
     Scale,
     /// Each vertex moves toward its own face's center.
     Inset,
+    /// Each vertex slides along a neighboring edge, to one side or the other.
+    Slide,
 }
 
 impl Kind {
@@ -29,6 +31,7 @@ impl Kind {
             Kind::Rotate => "Rotate",
             Kind::Scale => "Scale",
             Kind::Inset => "Inset",
+            Kind::Slide => "Slide",
         }
     }
 }
@@ -88,6 +91,15 @@ pub struct Transform {
     pub direction: Option<V3>,
     /// For insetting: each vertex's target, in the same order as `originals`.
     pub centers: Vec<V3>,
+    /// For sliding: each vertex's end point on either side, in the same order as
+    /// `originals`. A side with nowhere to go holds the start point.
+    pub rails: Vec<[V3; 2]>,
+    /// For sliding: the average way side 0 lies, which the mouse follows.
+    pub slide_toward: V3,
+    /// Cancelling puts the vertices back but keeps the edit, as after a loop cut.
+    pub keep_on_cancel: bool,
+    /// Started without extruding, duplicating or cutting first.
+    pub plain: bool,
 }
 
 impl Transform {
@@ -105,7 +117,38 @@ impl Transform {
             pivot,
             direction: None,
             centers: Vec::new(),
+            rails: Vec::new(),
+            slide_toward: [0.0; 3],
+            keep_on_cancel: false,
+            plain: true,
         }
+    }
+
+    /// Sets up a slide. Each rail holds a vertex's start and its end on either side, if
+    /// it has one there.
+    pub fn set_rails(&mut self, rails: &[(V3, [Option<V3>; 2])]) {
+        self.rails = rails
+            .iter()
+            .map(|&(start, ends)| ends.map(|end| end.unwrap_or(start)))
+            .collect();
+        // The mouse follows side 0, or the reverse of side 1 if side 0 goes nowhere.
+        let average = |side: usize| {
+            let mut sum = [0.0; 3];
+            let mut count = 0.0;
+            for &(start, ends) in rails {
+                if let Some(end) = ends[side] {
+                    sum = add(sum, sub(end, start));
+                    count += 1.0;
+                }
+            }
+            scaled(sum, 1.0 / f32::max(count, 1.0))
+        };
+        let toward = average(0);
+        self.slide_toward = if dot(toward, toward) > 1e-12 {
+            toward
+        } else {
+            scaled(average(1), -1.0)
+        };
     }
 
     /// Pressing an axis key locks to it, and pressing it again unlocks.
@@ -124,7 +167,38 @@ impl Transform {
             let center = self.centers.get(index).copied().unwrap_or(start);
             return add(start, scaled(sub(center, start), self.inset_amount(input)));
         }
+        if self.kind == Kind::Slide {
+            let amount = self.slide_amount(input);
+            let Some(ends) = self.rails.get(index) else {
+                return start;
+            };
+            let (end, share) = if amount >= 0.0 {
+                (ends[0], amount)
+            } else {
+                (ends[1], -amount)
+            };
+            return add(start, scaled(sub(end, start), share));
+        }
         self.apply(start, input)
+    }
+
+    /// How far a slide has gone: from -1, all the way to side 1, to 1, all the way to
+    /// side 0. The mouse moving by the slide's length on screen goes all the way.
+    pub fn slide_amount(&self, input: &Input) -> f32 {
+        let from = self.screen_point(self.pivot, input);
+        let to = self.screen_point(add(self.pivot, self.slide_toward), input);
+        let (sx, sy) = (to[0] - from[0], to[1] - from[1]);
+        let squared = sx * sx + sy * sy;
+        if squared < 1.0 {
+            return 0.0; // The slide points straight at the viewer.
+        }
+        let dx = input.mouse[0] - self.start_mouse[0];
+        let dy = input.mouse[1] - self.start_mouse[1];
+        let mut amount = (dx * sx + dy * sy) / squared;
+        if input.snap {
+            amount = snapped(amount, SNAP_SCALE);
+        }
+        amount.clamp(-1.0, 1.0)
     }
 
     /// How far insetting has gone, from 0 to just under 1, by distance from the start.
@@ -144,7 +218,7 @@ impl Transform {
             Kind::Move => add(point, self.move_offset(input)),
             Kind::Rotate => self.rotate(point, input),
             Kind::Scale => self.scale(point, input),
-            Kind::Inset => point,
+            Kind::Inset | Kind::Slide => point,
         }
     }
 
@@ -174,9 +248,12 @@ impl Transform {
     }
 
     fn pivot_on_screen(&self, input: &Input) -> [f32; 2] {
+        self.screen_point(self.pivot, input)
+    }
+
+    fn screen_point(&self, p: V3, input: &Input) -> [f32; 2] {
         let aspect = input.width / input.height.max(1.0);
         let m = input.camera.view_projection(aspect);
-        let p = self.pivot;
         let at = |row: usize| m[row] * p[0] + m[4 + row] * p[1] + m[8 + row] * p[2] + m[12 + row];
         let w = at(3);
         if w <= 1e-6 {
@@ -502,9 +579,54 @@ mod tests {
     }
 
     #[test]
+    fn slide_follows_the_mouse_toward_either_side_and_stops_at_the_ends() {
+        let id = {
+            let mut mesh = modeler_mesh::Mesh::new();
+            mesh.add_vertex([0.0; 3]).unwrap()
+        };
+        let camera = front();
+        // In the front view, +Z is up on screen. Side 0 lies above, side 1 below.
+        let mut t = Transform::new(Kind::Slide, [400.0, 300.0], Vec::new(), [0.0; 3]);
+        t.originals = vec![(id, [0.0; 3]), (id, [1.0, 0.0, 0.0])];
+        t.set_rails(&[
+            ([0.0; 3], [Some([0.0, 0.0, 1.0]), Some([0.0, 0.0, -1.0])]),
+            ([1.0, 0.0, 0.0], [Some([1.0, 0.0, 2.0]), None]),
+        ]);
+        near(t.slide_toward, [0.0, 0.0, 1.5]);
+        let up = project(&camera, [0.0, 0.0, 1.5], 800.0, 600.0);
+        let full = 300.0 - up[1];
+        let at = |dy: f32, i: usize| t.position_for(i, &input(camera, [400.0, 300.0 - dy]));
+        near(at(0.0, 0), [0.0; 3]);
+        near(at(full / 2.0, 0), [0.0, 0.0, 0.5]);
+        near(at(full / 2.0, 1), [1.0, 0.0, 1.0]);
+        // Past the end it stops.
+        near(at(full * 3.0, 0), [0.0, 0.0, 1.0]);
+        // The other way goes to side 1, and a vertex with no side 1 stays put.
+        near(at(-full / 2.0, 0), [0.0, 0.0, -0.5]);
+        near(at(-full / 2.0, 1), [1.0, 0.0, 0.0]);
+        // Sideways mouse movement does nothing.
+        near(t.position_for(0, &input(camera, [700.0, 300.0])), [0.0; 3]);
+        // Snapping goes in tenths.
+        let mut with_snap = input(camera, [400.0, 300.0 - full * 0.33]);
+        with_snap.snap = true;
+        near(t.position_for(0, &with_snap), [0.0, 0.0, 0.3]);
+    }
+
+    #[test]
+    fn a_slide_with_only_side_1_follows_its_reverse() {
+        let mut t = Transform::new(Kind::Slide, [400.0, 300.0], Vec::new(), [0.0; 3]);
+        t.set_rails(&[([0.0; 3], [None, Some([2.0, 0.0, 0.0])])]);
+        near(t.slide_toward, [-2.0, 0.0, 0.0]);
+        // A slide pointing at the viewer does not jump.
+        t.set_rails(&[([0.0; 3], [Some([0.0, 1.0, 0.0]), None])]);
+        assert_eq!(t.slide_amount(&input(front(), [700.0, 100.0])), 0.0);
+    }
+
+    #[test]
     fn names_are_for_the_panel() {
         assert_eq!(Kind::Move.name(), "Move");
         assert_eq!(Kind::Rotate.name(), "Rotate");
         assert_eq!(Kind::Scale.name(), "Scale");
+        assert_eq!(Kind::Slide.name(), "Slide");
     }
 }

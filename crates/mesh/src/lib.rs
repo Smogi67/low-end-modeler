@@ -75,6 +75,7 @@
 mod error;
 mod history;
 mod id;
+mod loops;
 mod mesh;
 mod obj;
 mod ops;
@@ -88,6 +89,7 @@ pub mod validate;
 pub use error::MeshError;
 pub use history::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits};
 pub use id::{CornerId, EdgeId, FaceId, VertexId};
+pub use loops::{MAX_LOOP_CUTS, SlideRail};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};

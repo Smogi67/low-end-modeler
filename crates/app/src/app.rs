@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
-use modeler_mesh::{Element, Mesh, MeshError, SelectMode, SelectOp};
+use modeler_mesh::{EdgeId, Element, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode, SelectOp};
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::{MouseButton, MouseUtil, MouseWheelDirection};
@@ -19,13 +19,14 @@ use crate::controls::{Button, Drag, Modifiers, drag_for};
 use crate::editor::Editor;
 use crate::export::{warnings, write_obj};
 use crate::imgui_gl::ImguiGl;
-use crate::picking::{DepthImage, Region, ViewInfo, pick_point, pick_region};
+use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
 use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
 use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, ModeChoice, PanelInfo, PanelState, ViewState, build as build_ui, draw_region,
+    Action, DragTool, ModeChoice, PanelInfo, PanelState, ViewState, build as build_ui, draw_lines,
+    draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -39,6 +40,10 @@ const CIRCLE_BRUSH_RADIUS: f32 = 30.0;
 const DEPTH_TOLERANCE: f32 = 0.004;
 /// "Merge close vertices" joins vertices closer together than this, in model units.
 const MERGE_DISTANCE: f32 = 0.001;
+/// How near the pointer an edge must be to choose it for a loop cut, in pixels.
+const LOOP_CUT_REACH: f32 = 40.0;
+/// How near the pointer an edge must be for double-click loop selection, in pixels.
+const LOOP_SELECT_REACH: f32 = 14.0;
 
 /// What must happen to the selection before a drag starts.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -47,6 +52,36 @@ enum Prepare {
     Duplicate,
     Extrude,
     Inset,
+    /// Cut this many loops across the ring through this edge.
+    LoopCut(EdgeId, usize),
+}
+
+/// The view and a depth image of it, for telling whether a point is hidden.
+struct Sight {
+    view: ViewInfo,
+    image: DepthImage,
+    toward: [f32; 3],
+    tolerance: f32,
+}
+
+impl Sight {
+    fn visible(&self, p: [f32; 3]) -> bool {
+        let lifted = std::array::from_fn(|i| p[i] + self.toward[i] * self.tolerance);
+        match (self.view.project(p), self.view.project(lifted)) {
+            (Some(screen), Some(near)) => self.image.shows(screen[0], screen[1], near[2]),
+            _ => false,
+        }
+    }
+}
+
+/// Choosing where to loop cut.
+struct LoopCutChoice {
+    cuts: usize,
+    edge: Option<EdgeId>,
+    /// Where the cut would go, on screen.
+    lines: Vec<[[f32; 2]; 2]>,
+    /// Read once at the start, since the view does not change meanwhile.
+    sight: Sight,
 }
 
 /// What the mouse is in the middle of doing.
@@ -64,6 +99,7 @@ enum Mouse {
         transform: Box<Transform>,
         parts: MovedParts,
     },
+    LoopCut(Box<LoopCutChoice>),
 }
 
 /// Which scene data must go to the graphics card before the next draw.
@@ -94,6 +130,8 @@ pub struct App {
     export_folder: PathBuf,
     export_folder_text: String,
     warnings: Vec<String>,
+    /// The number of cuts last used, offered again next time.
+    loop_cuts: usize,
 }
 
 impl App {
@@ -130,6 +168,7 @@ impl App {
             export_folder,
             export_folder_text,
             warnings: Vec::new(),
+            loop_cuts: 1,
         })
     }
 
@@ -177,6 +216,10 @@ impl App {
             mode: self.editor.mode_choice(),
             selected_vertices: mesh.vertices().filter(|(_, v)| v.is_selected()).count(),
             transform_help,
+            loop_cut: match &self.mouse_state {
+                Mouse::LoopCut(choice) => Some(choice.cuts),
+                _ => None,
+            },
             undo_label: document.undo_label(),
             redo_label: document.redo_label(),
             export_folder: &self.export_folder_text,
@@ -201,6 +244,9 @@ impl App {
         } = &self.mouse_state
         {
             draw_region(ui, region);
+        }
+        if let Mouse::LoopCut(choice) = &self.mouse_state {
+            draw_lines(ui, &choice.lines);
         }
         self.ui_rects = output.rects;
         let draw_data = self.imgui.render();
@@ -326,6 +372,21 @@ impl App {
             Action::SelectLess => {
                 self.select_edit("Select less", |mesh, mode| mesh.select_less(mode));
             }
+            Action::SelectLoops | Action::SelectRings => {
+                let ring = action == Action::SelectRings;
+                let label = if ring { "Select rings" } else { "Select loops" };
+                let result = self.editor.run(label, |mesh, mode| {
+                    mesh.select_loops_of_selection(mode, ring)
+                });
+                self.finish_edit(result);
+            }
+            Action::LoopCut => self.start_loop_cut(),
+            Action::Bridge => {
+                let result = self
+                    .editor
+                    .run("Bridge", |mesh, mode| mesh.bridge_selected_loops(mode));
+                self.finish_edit(result);
+            }
             Action::View(preset) => {
                 let (yaw, pitch) = preset.angles();
                 self.camera.set_view(yaw, pitch);
@@ -393,7 +454,8 @@ impl App {
         if !matches!(self.mouse_state, Mouse::Idle) {
             return;
         }
-        if self.editor.document().mesh().selection_center().is_none() {
+        let cutting = matches!(prepare, Prepare::LoopCut(..));
+        if !cutting && self.editor.document().mesh().selection_center().is_none() {
             self.state.message = "Select something first.".to_string();
             return;
         }
@@ -402,6 +464,7 @@ impl App {
             Prepare::Duplicate => "Duplicate",
             Prepare::Extrude => "Extrude",
             Prepare::Inset => "Inset",
+            Prepare::LoopCut(..) => "Loop cut",
         };
         if let Err(error) = self.editor.begin(label) {
             self.state.message = format!("That did not work: {error}");
@@ -410,6 +473,7 @@ impl App {
         let mode = self.editor.mode();
         let mut direction = None;
         let mut inset_targets = Vec::new();
+        let mut cut_edges = None;
         let prepared = match self.editor.active_mesh() {
             None => Ok(()),
             Some(mesh) => match prepare {
@@ -422,6 +486,9 @@ impl App {
                 Prepare::Inset => mesh
                     .inset_selected_faces(mode)
                     .map(|moving| inset_targets = moving),
+                Prepare::LoopCut(edge, cuts) => mesh
+                    .loop_cut(edge, cuts, mode)
+                    .map(|made| cut_edges = Some(made)),
             },
         };
         if let Err(error) = prepared {
@@ -436,20 +503,65 @@ impl App {
             self.renderer.upload_scene(&self.scene);
         }
         let mesh = self.editor.document().mesh();
+        let rails = if kind == Kind::Slide {
+            let edges = cut_edges.unwrap_or_else(|| {
+                mesh.edges()
+                    .filter(|(_, e)| e.is_selected())
+                    .map(|(id, _)| id)
+                    .collect()
+            });
+            match mesh.edge_slide_rails(&edges) {
+                Ok(rails) => rails,
+                Err(error) => {
+                    // A cut with nothing to slide along is still a finished cut.
+                    let result = if cutting {
+                        self.editor.commit().map(|_| ())
+                    } else {
+                        self.state.message = format!("Could not slide: {error}");
+                        self.editor.cancel()
+                    };
+                    self.finish_edit(result);
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let (moving, centers): (Vec<_>, Vec<_>) = if prepare == Prepare::Inset {
             inset_targets.iter().copied().unzip()
+        } else if kind == Kind::Slide {
+            (rails.iter().map(|r| r.0).collect(), Vec::new())
         } else {
             (mesh.selected_vertices(), Vec::new())
         };
-        let originals = moving
+        let originals: Vec<_> = moving
             .iter()
             .filter_map(|&id| Some((id, mesh.vertex(id)?.position())))
             .collect();
-        let pivot = mesh.selection_center().unwrap_or([0.0; 3]);
+        let pivot = if kind == Kind::Slide {
+            let count = originals.len().max(1) as f32;
+            let mut sum = [0.0; 3];
+            for (_, p) in &originals {
+                for i in 0..3 {
+                    sum[i] += p[i] / count;
+                }
+            }
+            sum
+        } else {
+            mesh.selection_center().unwrap_or([0.0; 3])
+        };
         let parts = Scene::moved_parts(mesh, &moving);
         let mut transform = Transform::new(kind, self.pointer, originals, pivot);
         transform.direction = direction;
         transform.centers = centers;
+        transform.set_rails(
+            &rails
+                .iter()
+                .map(|&(_, start, ends)| (start, ends))
+                .collect::<Vec<_>>(),
+        );
+        transform.keep_on_cancel = cutting;
+        transform.plain = prepare == Prepare::Nothing;
         self.mouse_state = Mouse::Transforming {
             transform: Box::new(transform),
             parts,
@@ -485,11 +597,18 @@ impl App {
     }
 
     fn finish_transform(&mut self, confirm: bool) {
-        if !matches!(self.mouse_state, Mouse::Transforming { .. }) {
+        let Mouse::Transforming { transform, .. } =
+            std::mem::replace(&mut self.mouse_state, Mouse::Idle)
+        else {
             return;
+        };
+        let keep = !confirm && transform.keep_on_cancel;
+        if keep && let Some(mesh) = self.editor.active_mesh() {
+            for &(id, position) in &transform.originals {
+                let _ = mesh.set_vertex_position(id, position);
+            }
         }
-        self.mouse_state = Mouse::Idle;
-        let result = if confirm {
+        let result = if confirm || keep {
             self.editor.commit().map(|_| ())
         } else {
             self.editor.cancel()
@@ -498,41 +617,166 @@ impl App {
         self.request_frames();
     }
 
+    /// The current view, with its depth read back from the graphics card.
+    fn sight(&self) -> Sight {
+        let (width, height) = self.viewport();
+        let matrix = self.camera.view_projection(width / height);
+        let depth = self
+            .renderer
+            .read_depth(width as i32, height as i32, &matrix);
+        Sight {
+            view: ViewInfo {
+                matrix,
+                width,
+                height,
+            },
+            image: DepthImage {
+                width: width as i32,
+                height: height as i32,
+                depth,
+            },
+            toward: self.camera.toward_camera(),
+            tolerance: self.camera.distance * DEPTH_TOLERANCE,
+        }
+    }
+
     /// Runs `pick` with a check for whether a point is hidden by the scene.
     fn with_visibility<T>(
         &self,
         pick: impl FnOnce(&Mesh, SelectMode, &ViewInfo, &dyn Fn([f32; 3]) -> bool) -> T,
     ) -> T {
-        let (width, height) = self.viewport();
-        let matrix = self.camera.view_projection(width / height);
-        let view = ViewInfo {
-            matrix,
-            width,
-            height,
-        };
-        let depth = self
-            .renderer
-            .read_depth(width as i32, height as i32, &matrix);
-        let image = DepthImage {
-            width: width as i32,
-            height: height as i32,
-            depth,
-        };
-        let toward = self.camera.toward_camera();
-        let tolerance = self.camera.distance * DEPTH_TOLERANCE;
-        let visible = |p: [f32; 3]| {
-            let lifted = std::array::from_fn(|i| p[i] + toward[i] * tolerance);
-            match (view.project(p), view.project(lifted)) {
-                (Some(screen), Some(near)) => image.shows(screen[0], screen[1], near[2]),
-                _ => false,
-            }
-        };
+        let sight = self.sight();
         pick(
             self.editor.document().mesh(),
             self.editor.mode(),
-            &view,
-            &visible,
+            &sight.view,
+            &|p| sight.visible(p),
         )
+    }
+
+    /// Starts choosing where to loop cut. The cut happens on a click.
+    fn start_loop_cut(&mut self) {
+        if !matches!(self.mouse_state, Mouse::Idle) {
+            return;
+        }
+        if self.editor.document().mesh().edge_count() == 0 {
+            self.state.message = "Add a shape first.".to_string();
+            return;
+        }
+        self.mouse_state = Mouse::LoopCut(Box::new(LoopCutChoice {
+            cuts: self.loop_cuts,
+            edge: None,
+            lines: Vec::new(),
+            sight: self.sight(),
+        }));
+        self.update_loop_cut();
+        self.request_frames();
+    }
+
+    /// Finds the edge under the pointer and where the cut would go.
+    fn update_loop_cut(&mut self) {
+        let [x, y] = self.pointer;
+        let mesh = self.editor.document().mesh();
+        let Mouse::LoopCut(choice) = &mut self.mouse_state else {
+            return;
+        };
+        let sight = &choice.sight;
+        choice.edge = pick_edge(mesh, &sight.view, x, y, LOOP_CUT_REACH, &|p| {
+            sight.visible(p)
+        });
+        choice.lines = choice
+            .edge
+            .and_then(|edge| mesh.loop_cut_preview(edge, choice.cuts).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|[a, b]| {
+                let (a, b) = (sight.view.project(a)?, sight.view.project(b)?);
+                Some([[a[0], a[1]], [b[0], b[1]]])
+            })
+            .collect();
+        self.frames_wanted = self.frames_wanted.max(1);
+    }
+
+    fn change_cuts(&mut self, by: i32) {
+        if let Mouse::LoopCut(choice) = &mut self.mouse_state {
+            let cuts = (choice.cuts as i32 + by).clamp(1, MAX_LOOP_CUTS as i32) as usize;
+            choice.cuts = cuts;
+            self.loop_cuts = cuts;
+        }
+        self.update_loop_cut();
+    }
+
+    fn handle_loop_cut_event(&mut self, event: &Event) {
+        self.request_frames();
+        match *event {
+            Event::MouseMotion { .. } => self.update_loop_cut(),
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                ..
+            } => {
+                let Mouse::LoopCut(choice) = &self.mouse_state else {
+                    return;
+                };
+                match (choice.edge, choice.lines.is_empty()) {
+                    (Some(edge), false) => {
+                        let cuts = choice.cuts;
+                        self.mouse_state = Mouse::Idle;
+                        self.start_transform(Kind::Slide, Prepare::LoopCut(edge, cuts));
+                    }
+                    (Some(_), true) => {
+                        self.state.message =
+                            "A loop cut needs a four-sided face next to the edge.".to_string();
+                    }
+                    (None, _) => self.state.message = "Point at an edge to cut.".to_string(),
+                }
+            }
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Right,
+                ..
+            }
+            | Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } => self.mouse_state = Mouse::Idle,
+            Event::MouseWheel { y, direction, .. } if y != 0 => {
+                let steps = if direction == MouseWheelDirection::Flipped {
+                    -y
+                } else {
+                    y
+                };
+                self.change_cuts(steps.signum());
+            }
+            Event::KeyDown {
+                keycode: Some(key), ..
+            } => match key {
+                Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals | Keycode::Up => {
+                    self.change_cuts(1);
+                }
+                Keycode::Minus | Keycode::KP_MINUS | Keycode::Down => self.change_cuts(-1),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Selects the loop through the edge under the pointer, for a double-click.
+    fn select_loop_under_pointer(&mut self, add: bool) {
+        let [x, y] = self.pointer;
+        let hit = self.with_visibility(|mesh, _, view, visible| {
+            pick_edge(mesh, view, x, y, LOOP_SELECT_REACH, visible)
+        });
+        let Some(edge) = hit else {
+            return;
+        };
+        let op = if add {
+            SelectOp::Add
+        } else {
+            SelectOp::Replace
+        };
+        let result = self
+            .editor
+            .run("Select loop", |mesh, mode| mesh.select_loop(mode, edge, op));
+        self.finish_edit(result);
     }
 
     fn finish_selecting(&mut self) {
@@ -613,13 +857,20 @@ impl App {
             self.handle_transform_event(event, snap);
             return;
         }
+        if matches!(self.mouse_state, Mouse::LoopCut(_)) {
+            self.imgui_pointer_only(event);
+            self.handle_loop_cut_event(event);
+            return;
+        }
 
         self.feed_imgui(event);
         let io = self.imgui.io();
         let (ui_mouse, ui_keyboard) = (io.want_capture_mouse, io.want_capture_keyboard);
 
         match *event {
-            Event::MouseButtonDown { mouse_btn, .. } => {
+            Event::MouseButtonDown {
+                mouse_btn, clicks, ..
+            } => {
                 self.request_frames();
                 if !matches!(self.mouse_state, Mouse::Idle) || ui_mouse || self.pointer_over_panel {
                     return;
@@ -635,6 +886,9 @@ impl App {
                     self.mouse_state = Mouse::Camera(drag);
                     // Keeps the drag going if the mouse leaves the window.
                     mouse.capture(true);
+                } else if button == Button::Left && clicks >= 2 && !self.editor.whole_parts() {
+                    // The first click already selected; the second widens it to a loop.
+                    self.select_loop_under_pointer(mods.shift);
                 } else if button == Button::Left {
                     self.start_selecting(mods);
                     mouse.capture(true);
@@ -786,6 +1040,16 @@ impl App {
                     self.request_frames();
                 }
                 Keycode::LCtrl | Keycode::RCtrl => self.update_transform(true),
+                // G again while moving slides instead, as in Blender.
+                Keycode::G => {
+                    let plain_move = matches!(&self.mouse_state,
+                        Mouse::Transforming { transform, .. }
+                            if transform.kind == Kind::Move && transform.plain);
+                    if plain_move {
+                        self.finish_transform(false);
+                        self.start_transform(Kind::Slide, Prepare::Nothing);
+                    }
+                }
                 _ => {}
             },
             Event::KeyUp {
@@ -796,11 +1060,12 @@ impl App {
         }
     }
 
+    /// While a drag or loop cut takes the input, the interface still follows the
+    /// pointer, and hears of button releases so that no button stays held down.
     fn imgui_pointer_only(&mut self, event: &Event) {
-        if let Event::MouseMotion { x, y, .. } = event {
-            self.imgui
-                .io_mut()
-                .add_mouse_pos_event([*x as f32, *y as f32]);
+        match event {
+            Event::MouseMotion { .. } | Event::MouseButtonUp { .. } => self.feed_imgui(event),
+            _ => {}
         }
     }
 
@@ -897,6 +1162,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::L => Some(Action::SelectLinked),
             Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals => Some(Action::SelectMore),
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
+            Keycode::R => Some(Action::LoopCut),
             _ => None,
         };
     }
@@ -1074,6 +1340,7 @@ mod tests {
         assert_eq!(shortcut(Keycode::L, CTRL), Some(Action::SelectLinked));
         assert_eq!(shortcut(Keycode::Plus, CTRL), Some(Action::SelectMore));
         assert_eq!(shortcut(Keycode::Minus, CTRL), Some(Action::SelectLess));
+        assert_eq!(shortcut(Keycode::R, CTRL), Some(Action::LoopCut));
     }
 
     #[test]

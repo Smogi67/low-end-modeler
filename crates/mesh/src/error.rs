@@ -74,6 +74,18 @@ pub enum MeshError {
     CannotFill,
     /// A merge distance must be a positive number.
     InvalidDistance,
+    /// The tool works on edges, so it needs vertex or edge mode.
+    NeedsEdgeMode,
+    /// A loop cut makes from 1 to `MAX_LOOP_CUTS` cuts.
+    InvalidCutCount,
+    /// A loop cut needs a four-sided face beside the edge.
+    CannotLoopCut,
+    /// The edges branch: a vertex has more than two of them.
+    NotLoops,
+    /// No neighboring edge leads away from the slid edges.
+    NothingToSlide,
+    /// Bridging needs two separate loops with the same number of edges.
+    BridgeNeedsTwoLoops,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -122,6 +134,17 @@ impl fmt::Display for MeshError {
             Self::NoFacesSelected => write!(f, "select at least one face first"),
             Self::CannotFill => write!(f, "these already form an edge or face"),
             Self::InvalidDistance => write!(f, "the merge distance must be a positive number"),
+            Self::NeedsEdgeMode => write!(f, "switch to vertex or edge mode first"),
+            Self::InvalidCutCount => write!(f, "a loop cut makes from 1 to 32 cuts"),
+            Self::CannotLoopCut => {
+                write!(f, "a loop cut needs a four-sided face next to the edge")
+            }
+            Self::NotLoops => write!(f, "select edge loops or lines that do not branch"),
+            Self::NothingToSlide => write!(f, "there is no neighboring edge to slide along"),
+            Self::BridgeNeedsTwoLoops => write!(
+                f,
+                "select two separate edge loops with the same number of edges"
+            ),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

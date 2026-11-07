@@ -261,6 +261,8 @@ pub struct PanelInfo<'a> {
     pub mode: ModeChoice,
     pub selected_vertices: usize,
     pub transform_help: Option<(Kind, Option<usize>)>,
+    /// While choosing where to loop cut: how many cuts.
+    pub loop_cut: Option<usize>,
     pub undo_label: Option<&'static str>,
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
@@ -328,6 +330,13 @@ pub enum Action {
     Transform(Kind),
     Duplicate,
     Mirror(usize),
+    /// Starts choosing where to cut, by hovering over an edge.
+    LoopCut,
+    Bridge,
+    /// Grows the selected edges to their whole loops.
+    SelectLoops,
+    /// Grows the selected edges to their whole rings.
+    SelectRings,
     View(ViewPreset),
     ToggleOrtho,
     ResetView,
@@ -467,18 +476,27 @@ fn row(ui: &Ui, label: &str) {
 }
 
 /// Equal-width buttons filling a row.
-fn button_row(ui: &Ui, action: &mut Option<Action>, buttons: &[(&str, Action)], enabled: bool) {
+/// A row of equal buttons: label, action, and a tooltip if not empty.
+fn button_row(
+    ui: &Ui,
+    action: &mut Option<Action>,
+    buttons: &[(&str, Action, &str)],
+    enabled: bool,
+) {
     let gap = 6.0;
     let count = buttons.len() as f32;
     let width = ((ui.content_region_avail()[0] - gap * (count - 1.0)) / count).floor();
     let spacing = ui.push_style_var(StyleVar::ItemSpacing([gap, 8.0]));
     let disabled = ui.begin_disabled(!enabled);
-    for (i, (label, choice)) in buttons.iter().enumerate() {
+    for (i, (label, choice, help)) in buttons.iter().enumerate() {
         if i > 0 {
             ui.same_line();
         }
         if ui.button_with_size(label, [width, 30.0]) {
             *action = Some(*choice);
+        }
+        if !help.is_empty() {
+            tooltip(ui, help, "");
         }
     }
     disabled.end();
@@ -874,7 +892,7 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
     let any = info.selected_vertices > 0;
     let active = info.transform_help.map(|(kind, _)| kind);
     let font = ui.push_font(fonts.tool);
-    let groups: [&[Tool]; 4] = [
+    let groups: [&[Tool]; 5] = [
         &[
             (
                 "move",
@@ -932,6 +950,29 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
                 "",
             ),
         ],
+        &[
+            (
+                "loopcut",
+                icon::LOOP_CUT,
+                Action::LoopCut,
+                "Loop cut: point at an edge, then click",
+                "Ctrl+R",
+            ),
+            (
+                "slide",
+                icon::SLIDE,
+                Action::Transform(Kind::Slide),
+                "Slide edges along their neighbors",
+                "G G",
+            ),
+            (
+                "bridge",
+                icon::BRIDGE,
+                Action::Bridge,
+                "Bridge two edge loops",
+                "",
+            ),
+        ],
         &[("delete", icon::DELETE, Action::Delete, "Delete", "X")],
     ];
     for (g, group) in groups.iter().enumerate() {
@@ -949,8 +990,15 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
         }
         for (id, glyph, choice, name, key) in group.iter() {
             let lit = matches!(choice, Action::Transform(kind) if Some(*kind) == active)
-                || (*choice == Action::Inset && active == Some(Kind::Inset));
-            if icon_button(ui, id, *glyph, lit, any, TOOL_BUTTON) {
+                || (*choice == Action::Inset && active == Some(Kind::Inset))
+                || (*choice == Action::LoopCut && info.loop_cut.is_some());
+            // A loop cut picks its own edge, so it needs only something to cut.
+            let enabled = if *choice == Action::LoopCut {
+                info.vertices > 0
+            } else {
+                any
+            };
+            if icon_button(ui, id, *glyph, lit, enabled, TOOL_BUTTON) {
                 *action = Some(*choice);
             }
             tooltip(ui, name, key);
@@ -1101,9 +1149,9 @@ fn panel(
         ui,
         action,
         &[
-            ("All##sel", Action::SelectAll),
-            ("None##sel", Action::SelectNone),
-            ("Invert##sel", Action::SelectInvert),
+            ("All##sel", Action::SelectAll, ""),
+            ("None##sel", Action::SelectNone, ""),
+            ("Invert##sel", Action::SelectInvert, ""),
         ],
         true,
     );
@@ -1111,11 +1159,29 @@ fn panel(
         ui,
         action,
         &[
-            ("Linked##sel", Action::SelectLinked),
-            ("More##sel", Action::SelectMore),
-            ("Less##sel", Action::SelectLess),
+            ("Linked##sel", Action::SelectLinked, "Whole connected parts"),
+            ("More##sel", Action::SelectMore, ""),
+            ("Less##sel", Action::SelectLess, ""),
         ],
         true,
+    );
+    let edge_modes = matches!(info.mode, ModeChoice::Vertex | ModeChoice::Edge);
+    button_row(
+        ui,
+        action,
+        &[
+            (
+                "Loop##sel",
+                Action::SelectLoops,
+                "Grow selected edges along their loops. Double-click an edge for the same.",
+            ),
+            (
+                "Ring##sel",
+                Action::SelectRings,
+                "Grow selected edges across their faces, side by side",
+            ),
+        ],
+        edge_modes && info.selected_vertices > 0,
     );
     let disabled = ui.begin_disabled(info.selected_vertices == 0);
     if ui.button_with_size(
@@ -1169,7 +1235,11 @@ fn shape_settings(ui: &Ui, state: &mut PanelState, shows: impl Fn(Setting) -> bo
 }
 
 fn status_bar(ui: &Ui, state: &PanelState, info: &PanelInfo) {
-    let hint = "Right-drag to orbit  \u{2022}  Hold the wheel to pan  \u{2022}  Scroll to zoom";
+    let hint = if info.mode == ModeChoice::Part {
+        "Right-drag to orbit  \u{2022}  Hold the wheel to pan  \u{2022}  Scroll to zoom"
+    } else {
+        "Right-drag to orbit  \u{2022}  Hold the wheel to pan  \u{2022}  Scroll to zoom  \u{2022}  Double-click an edge for its loop"
+    };
     if state.message.is_empty() {
         ui.text_colored(color::FAINT, hint);
     } else {
@@ -1323,9 +1393,18 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
     let list = ui.get_background_draw_list();
     let center_x = area[0] + area[2] / 2.0;
 
+    let mut parts: Vec<(String, [f32; 4])> = Vec::new();
+    if let Some(cuts) = info.loop_cut {
+        parts.push(("Loop cut".to_string(), color::ACCENT));
+        let plural = if cuts == 1 { "cut" } else { "cuts" };
+        parts.push((format!("{cuts} {plural}"), color::TEXT));
+        parts.push(("Scroll or +/- for more".to_string(), color::FAINT));
+        parts.push(("Click an edge to cut".to_string(), color::FAINT));
+        parts.push(("Esc cancel".to_string(), color::FAINT));
+    }
     if let Some((kind, axis)) = info.transform_help {
-        let mut parts: Vec<(String, [f32; 4])> = vec![(kind.name().to_string(), color::ACCENT)];
-        if kind != Kind::Inset {
+        parts.push((kind.name().to_string(), color::ACCENT));
+        if !matches!(kind, Kind::Inset | Kind::Slide) {
             for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                 let lit = axis == Some(i);
                 parts.push((
@@ -1338,6 +1417,8 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
         parts.push(("Ctrl snap".to_string(), color::FAINT));
         parts.push(("Click confirm".to_string(), color::FAINT));
         parts.push(("Esc cancel".to_string(), color::FAINT));
+    }
+    if !parts.is_empty() {
         let gap = 12.0;
         let total = parts
             .iter()
@@ -1361,7 +1442,7 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
         }
     }
 
-    if info.vertices == 0 && info.transform_help.is_none() {
+    if info.vertices == 0 && parts.is_empty() {
         let middle = area[1] + area[3] / 2.0 - 40.0;
         let font = ui.push_font(fonts.title);
         let glyph = icon::CUBE.to_string();
@@ -1386,6 +1467,16 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
 }
 
 /// Draws a selection shape being dragged.
+/// Lines on top of the 3D view, such as where a loop cut will go.
+pub fn draw_lines(ui: &Ui, lines: &[[[f32; 2]; 2]]) {
+    let list = ui.get_foreground_draw_list();
+    for &[a, b] in lines {
+        list.add_line(a, b, [1.0, 0.85, 0.25, 1.0])
+            .thickness(2.0)
+            .build();
+    }
+}
+
 pub fn draw_region(ui: &Ui, region: &Region) {
     let list = ui.get_foreground_draw_list();
     let line = [1.0, 0.72, 0.36, 1.0];
@@ -1499,6 +1590,7 @@ mod tests {
             mode: ModeChoice::Part,
             selected_vertices: 8,
             transform_help: transform.then_some((Kind::Move, Some(0))),
+            loop_cut: None,
             undo_label: Some("Add Cube"),
             redo_label: Some("Add Cube"),
             export_folder: "exports",
@@ -1534,7 +1626,12 @@ mod tests {
             (Target::Edited(Shape::Icosphere), false),
             (Target::Several, false),
         ] {
-            let info = info(target, &warnings, transform);
+            let mut info = info(target, &warnings, transform);
+            // Some buttons only work in edge mode, and the loop cut hint must draw too.
+            if target == Target::Several {
+                info.mode = ModeChoice::Edge;
+                info.loop_cut = Some(2);
+            }
             let mut state = PanelState {
                 message: "Saved model.obj".to_string(),
                 ..Default::default()
@@ -1618,6 +1715,11 @@ mod tests {
             "ResetView",
             "Export",
             "Mirror(1)",
+            "LoopCut",
+            "Bridge",
+            "SelectLoops",
+            "SelectRings",
+            "Transform(Slide)",
         ] {
             assert!(
                 actions.contains(expected),

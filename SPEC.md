@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 5 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 5 and the Roblox import are still needed. See section 11.**
-Next step: **After those tests pass, Stage 6: loop selection, loop cut, edge slide, bridge. It needs Aufwand Extra hoch.**
+Status: **Stage 6 code written and working on Linux with OpenGL limited to 2.1. The owner's laptop tests of Stages 3 to 6, the interface redesign, and the Roblox import are still needed. See section 11.**
+Next step: **After those tests pass, Stage 7: bevel. It needs Aufwand Extra hoch.**
 
 ## 1. Goal
 
@@ -137,6 +137,17 @@ The owner found the default Dear ImGui look ugly. The UI library stays: Rune was
 - **3D view:** a gradient background, a grid that fades out with distance instead of flickering, light from just above and left of the camera plus soft light from above, and points pulled slightly toward the camera so sloped faces do not cut them.
 - **Settings for new shapes** are folded away while nothing is selected, since they then only affect the next shape added.
 
+### Decisions made in Stage 6
+
+The mesh code is in `crates/mesh/src/loops.rs`.
+
+- **Edge loops follow Blender's rules:** straight through vertices with four edges; along a hole's border; along the outline of a face with more than four sides, such as a cylinder cap; and along loose edges. Elsewhere a loop stops, so a cube edge's loop is just that edge.
+- **Selecting loops (no extra keys, owner's wish):** double-click an edge for its loop, and Shift + double-click to add one. In face mode this selects the band of faces across the edge. Blender's Alt + click is not used, because Alt + left drag already turns the view on touchpads. The Loop and Ring buttons grow selected edges in vertex and edge mode.
+- **Loop cut (Ctrl + R or the tool button):** point at an edge to see the cut in yellow, scroll or press + and - for 1 to 32 cuts, and click to cut. The new loops then slide with the mouse. Esc or right-click only cancels the slide, keeping the cut in the middle, as in Blender. The number of cuts is remembered for next time. The cut needs a four-sided face beside the edge, and it stops at faces that are not four-sided, which gain a corner instead.
+- **Edge slide (G twice, or the tool button):** selected edges slide along their neighboring edges, to either side, without leaving them. They must form loops or lines that do not branch. Ctrl snaps in tenths. Vertex slide is not built.
+- **Bridge (tool button):** joins two loops with four-sided faces. With faces selected, their outlines are bridged and the faces removed, so two facing caps become a tube. Both loops must have the same number of edges and both be closed or both open. The faces wind like their neighbors, and the loops are lined up to avoid a twist. Loops with different edge counts are refused rather than guessed at.
+- **Input during a drag:** the interface now also hears mouse button releases during drags, so no button stays stuck down when a drag starts from a button.
+
 ## 6. Feature scope
 
 ### Core
@@ -251,6 +262,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-06 | 4 | Vertex, edge, and face selection with click, box, circle, and lasso; all, none, invert, linked, more, and less; move, rotate, and scale with axis lock and snapping; duplicate and mirror; partial graphics updates. Started at the owner's request before the Stage 3 tests were reported, so the Roblox import is still untested. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 | 2026-11-06 | 5 | The owner reported that sliders stopped working after selecting, and asked to select parts without dragging. Sliders now follow the selected shape, Part mode and click-only selecting added, and a slightly moved click no longer clears the selection. Extrude, inset, merge, delete, fill, and subdivide added, with a random test of all tools. Run on Linux with OpenGL limited to 2.1 using simulated input, and idle CPU measured 0.00% | Not yet |
 | 2026-11-07 | 5 | Interface redesign at the owner's request: new layout, colors, fonts, icons, view gizmo, and a nicer 3D view. Run on Linux with OpenGL limited to 2.1 using simulated input; screenshots sent to the owner. A test clicks and drags over every point of the interface, including inside the popups | Not yet |
+| 2026-11-07 | 6 | Edge loops and rings, loop selection by double-click and buttons, loop cut with a preview and slide, edge slide, and bridge. 21 new mesh tests, including a random test that ran each new tool 66 to 249 times and checked exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: loop cut preview, extra cuts, cutting, sliding, cancelling, double-click loop selection, and G G slide all worked | Not yet |
 
 ## 12. Open questions
 

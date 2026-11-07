@@ -179,26 +179,40 @@ pub fn pick_point(
             }
         }
         SelectMode::Edge => {
-            for (id, _) in mesh.edges() {
-                let Some((a, b)) = edge_ends(mesh, id) else {
-                    continue;
-                };
-                let (Some(sa), Some(sb)) = (view.project(a), view.project(b)) else {
-                    continue;
-                };
-                let d = segment_distance([x, y], [sa[0], sa[1]], [sb[0], sb[1]]);
-                if d <= EDGE_PICK_PIXELS && best.is_none_or(|(nearest, _)| d < nearest) {
-                    let seen = (0..=EDGE_SAMPLES)
-                        .any(|i| visible(sample(a, b, i as f32 / EDGE_SAMPLES as f32)));
-                    if seen {
-                        best = Some((d, Element::Edge(id)));
-                    }
-                }
-            }
+            return pick_edge(mesh, view, x, y, EDGE_PICK_PIXELS, visible).map(Element::Edge);
         }
         SelectMode::Face => return pick_face(mesh, view, x, y),
     }
     best.map(|(_, element)| element)
+}
+
+/// The visible edge nearest to (x, y), if one is within `reach` pixels.
+pub fn pick_edge(
+    mesh: &Mesh,
+    view: &ViewInfo,
+    x: f32,
+    y: f32,
+    reach: f32,
+    visible: &dyn Fn([f32; 3]) -> bool,
+) -> Option<EdgeId> {
+    let mut best: Option<(f32, EdgeId)> = None;
+    for (id, _) in mesh.edges() {
+        let Some((a, b)) = edge_ends(mesh, id) else {
+            continue;
+        };
+        let (Some(sa), Some(sb)) = (view.project(a), view.project(b)) else {
+            continue;
+        };
+        let d = segment_distance([x, y], [sa[0], sa[1]], [sb[0], sb[1]]);
+        if d <= reach && best.is_none_or(|(nearest, _)| d < nearest) {
+            let seen =
+                (0..=EDGE_SAMPLES).any(|i| visible(sample(a, b, i as f32 / EDGE_SAMPLES as f32)));
+            if seen {
+                best = Some((d, id));
+            }
+        }
+    }
+    best.map(|(_, edge)| edge)
 }
 
 /// Everything visible inside a dragged shape.
