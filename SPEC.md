@@ -41,6 +41,7 @@ Do not assume a graphics feature newer than OpenGL 2.1 is available.
 
 Rejected options:
 - **wgpu:** not suited to very old integrated graphics.
+- **Rune (github.com/anomalyco/rune), suggested by the owner on 2026-11-07:** its Windows build draws only through Vulkan or DirectX 12 (via wgpu), and the laptop's HD Graphics 3000 supports neither: dxdiag shows feature level 10_1 and driver model WDDM 1.2. It would not open. It is also pre-release.
 - **C++:** the main remaining reason to choose it was FBX support, which is not needed.
 - **Python or Electron:** too slow or too memory-hungry for this hardware.
 - **Browser app:** slower and dependent on browser WebGL support.
