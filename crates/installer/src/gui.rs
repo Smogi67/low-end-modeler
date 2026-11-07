@@ -524,7 +524,15 @@ fn start_work(window: HWND) {
                 wake();
             };
             let result = work(&folder, opengl_ok, &opengl_line, &mut send, &shared, &wake);
-            shared.lock().unwrap_or_else(|e| e.into_inner()).finished = Some(result);
+            {
+                // The status line keeps the outcome, whatever wake-ups are still queued.
+                let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
+                shared.status = match &result {
+                    Ok(message) => message.clone(),
+                    Err(_) => "Something went wrong. See above.".to_string(),
+                };
+                shared.finished = Some(result);
+            }
             wake();
         });
     });
@@ -665,7 +673,7 @@ fn show_progress() {
                 }
                 Some(Ok(message)) => {
                     append(state.console, &format!("{message}\r\n"));
-                    SetWindowTextW(state.status, wide(message).as_ptr());
+                    SetWindowTextW(state.status, wide(&status).as_ptr());
                     ShowWindow(state.continue_button, SW_HIDE);
                     ShowWindow(state.start_button, SW_SHOW);
                     state
@@ -676,10 +684,7 @@ fn show_progress() {
                 }
                 Some(Err(message)) => {
                     append(state.console, &format!("ERROR: {message}\r\n"));
-                    SetWindowTextW(
-                        state.status,
-                        wide("Something went wrong. See above.").as_ptr(),
-                    );
+                    SetWindowTextW(state.status, wide(&status).as_ptr());
                     SetWindowTextW(state.continue_button, wide("Try again").as_ptr());
                     EnableWindow(state.continue_button, 1);
                     state
