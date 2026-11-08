@@ -110,7 +110,7 @@ pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use modifiers::{
     DEFAULT_MERGE_DISTANCE, MAX_ARRAY_COUNT, MAX_MERGE_DISTANCE, Modifier, ModifierEntry,
 };
-pub use obj::ROBLOX_MAX_TRIANGLES;
+pub use obj::DEFAULT_TRIANGLE_LIMIT;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
 pub use profile::{CustomProfile, MAX_PROFILE_POINTS, ProfilePoint, ProfilePreset};
 pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError, ProjectSettings};

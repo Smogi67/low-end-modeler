@@ -371,6 +371,7 @@ impl App {
         let info = PanelInfo {
             // What gets exported, modifiers' copies included.
             triangles: self.scene.triangle_count(),
+            triangle_limit: self.settings.triangle_limit(),
             vertices: mesh.vertex_count(),
             faces: mesh.face_count(),
             warnings: &self.warnings,
@@ -500,7 +501,11 @@ impl App {
             self.gpu.upload_scene(&self.scene);
             // Warnings are about what gets exported.
             let shown = mesh.evaluated();
-            self.warnings = warnings(shown.triangle_count(), shown.open_edge_count());
+            self.warnings = warnings(
+                shown.triangle_count(),
+                shown.open_edge_count(),
+                self.settings.triangle_limit(),
+            );
         } else if self.stale == Stale::Moved
             && let Mouse::Transforming { parts, .. } = &self.mouse_state
         {
@@ -579,6 +584,10 @@ impl App {
             self.ui_scale = new.ui_scale();
             self.fonts = theme::install_fonts(&mut self.imgui, self.ui_scale);
             self.gpu.reload_fonts(&mut self.imgui);
+        }
+        if new.triangle_limit != old.triangle_limit {
+            // The export warnings are worked out again with the new limit.
+            self.stale = Stale::Everything;
         }
         if new.undo_steps != old.undo_steps {
             self.editor.set_undo_steps(new.undo_steps as usize);

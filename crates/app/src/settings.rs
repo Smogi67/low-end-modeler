@@ -17,6 +17,8 @@ pub const FEWEST_RECENT: u32 = 3;
 pub const MOST_RECENT: usize = 20;
 pub const SLOWEST_TURN: u32 = 25;
 pub const FASTEST_TURN: u32 = 300;
+pub const LOWEST_TRIANGLE_LIMIT: u32 = 100;
+pub const HIGHEST_TRIANGLE_LIMIT: u32 = 10_000_000;
 
 /// The rendering engines: OpenGL 2.1 is Mixer's own; the others go through wgpu.
 pub const RENDERERS: [(&str, &str, &str); 4] = [
@@ -70,6 +72,9 @@ pub struct Settings {
     /// For new projects.
     pub export_format: ExportFormat,
     pub export_scale: f32,
+    /// Warn when a shape has more triangles than this; 0 is off. Some game engines
+    /// refuse bigger meshes (Roblox: 20,000).
+    pub triangle_limit: u32,
     /// Show the exported file in Explorer.
     pub open_export_folder: bool,
     /// The launcher checks GitHub when it opens.
@@ -97,6 +102,7 @@ impl Default for Settings {
             start_window: true,
             export_format: ExportFormat::Obj,
             export_scale: 1.0,
+            triangle_limit: mixer_mesh::DEFAULT_TRIANGLE_LIMIT as u32,
             open_export_folder: false,
             check_updates: true,
             others: Vec::new(),
@@ -174,6 +180,17 @@ impl Settings {
                     }
                 }
                 "openexportfolder" => s.open_export_folder = on(value),
+                "trianglelimit" => {
+                    s.triangle_limit = if value == "off" {
+                        0
+                    } else {
+                        number(
+                            LOWEST_TRIANGLE_LIMIT,
+                            HIGHEST_TRIANGLE_LIMIT,
+                            s.triangle_limit,
+                        )
+                    };
+                }
                 "updates" => s.check_updates = on(value),
                 _ if key.starts_with('#') => {}
                 // A line Mixer does not know, such as one of the launcher's, is kept.
@@ -206,6 +223,13 @@ impl Settings {
                 "openexportfolder",
                 word(self.open_export_folder).to_string(),
             ),
+            (
+                "trianglelimit",
+                match self.triangle_limit {
+                    0 => "off".to_string(),
+                    limit => limit.to_string(),
+                },
+            ),
             ("updates", word(self.check_updates).to_string()),
         ];
         for (key, value) in lines {
@@ -220,6 +244,11 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         write_whole(&Self::path(), self.text().as_bytes())
+    }
+
+    /// The triangle limit to warn about, or `None` when it is off.
+    pub fn triangle_limit(&self) -> Option<usize> {
+        (self.triangle_limit > 0).then_some(self.triangle_limit as usize)
     }
 
     /// The interface size as a factor, 1.0 to 1.5.
@@ -251,6 +280,7 @@ mod tests {
             export_format: ExportFormat::Glb,
             export_scale: 0.25,
             open_export_folder: true,
+            triangle_limit: 0,
             check_updates: false,
             ..Settings::default()
         };
@@ -270,6 +300,15 @@ mod tests {
         assert_eq!(s.recent, FEWEST_RECENT);
         assert_eq!(s.undo_steps, Settings::default().undo_steps);
         assert_eq!(s.export_scale, 1.0);
+        assert_eq!(
+            Settings::parse("trianglelimit 5\n").triangle_limit,
+            LOWEST_TRIANGLE_LIMIT
+        );
+        assert_eq!(
+            Settings::parse("trianglelimit off\n").triangle_limit(),
+            None
+        );
+        assert_eq!(Settings::default().triangle_limit(), Some(20_000));
         assert_eq!(s.renderer, "opengl2.1");
         assert!(s.text().ends_with("launcherthing 7\n"));
         // The launcher's own lines are understood, not duplicated.

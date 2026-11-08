@@ -1,7 +1,7 @@
 Mixer
 =====
 
-A small 3D modeler for low-end Windows laptops, made for Roblox Studio.
+A small 3D modeler for low-end Windows laptops.
 
 FIRST TIME
 1. Unzip this whole folder somewhere you can write to, such as Documents.
@@ -22,7 +22,7 @@ FILES
   project, or open a recent one.
 - Projects (.mix) live in Documents > Mixer > Projects, and quick ones in
   Documents > Mixer > Quick Projects, each in a folder of its own with an
-  Exports folder for Roblox (.obj or .glb).
+  Exports folder (.obj or .glb).
 - Settings live in Documents > Mixer > settings.txt.
 - mixer.log in this folder records the graphics details and any
   errors. Send it along when reporting a problem.

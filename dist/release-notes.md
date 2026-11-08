@@ -1,8 +1,7 @@
-Mixer 0.13.0
+Mixer 0.13.1
 
-- Pick the rendering engine: OpenGL 2.1, Vulkan, DirectX 12 or OpenGL 3.3 (Settings > Display or the launcher's Advanced page)
-- Selected and sharp edges glow, like in Blender, so corners and borders stand out
-- With shadows off, an option to show edge lines in View mode
-- The leftover mixer-launcher.old.exe is now deleted right after an update
+- Mixer no longer calls itself a Roblox tool: the start window, Export and README are general now
+- Triangle limit is a setting (Settings > Export & updates): 20,000 by default, any number, or off
+- Includes 0.13.0: pick the rendering engine (OpenGL 2.1, Vulkan, DirectX 12, OpenGL 3.3) and glowing selected edges
 
-Mixer recommends an engine for your PC. If one does not start, Mixer uses OpenGL 2.1 and tells you.
+If a rendering engine does not start, Mixer uses another one and tells you.

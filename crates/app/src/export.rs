@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mixer_mesh::{FileKind, LoadReport, Mesh, ProjectSettings, ROBLOX_MAX_TRIANGLES};
+use mixer_mesh::{FileKind, LoadReport, Mesh, ProjectSettings};
 
 /// The project file's extension.
 pub const PROJECT_EXTENSION: &str = "mix";
@@ -59,17 +59,20 @@ pub fn clean_file_name(name: &str) -> String {
     }
 }
 
-/// Things to warn about before exporting to Roblox.
-pub fn warnings(triangles: usize, open_edges: usize) -> Vec<String> {
+/// Things to warn about before exporting. `limit` is the triangle limit from the
+/// settings, or `None` when it is off.
+pub fn warnings(triangles: usize, open_edges: usize, limit: Option<usize>) -> Vec<String> {
     let mut out = Vec::new();
-    if triangles > ROBLOX_MAX_TRIANGLES {
+    if let Some(limit) = limit
+        && triangles > limit
+    {
         out.push(format!(
-            "Over Roblox's limit of {ROBLOX_MAX_TRIANGLES} triangles per mesh."
+            "Over the limit of {limit} triangles per mesh, which some game engines have."
         ));
     }
     if open_edges > 0 {
         out.push(format!(
-            "{open_edges} open edges. Roblox asks for closed shapes with thickness."
+            "{open_edges} open edges. Some game engines need closed shapes with thickness."
         ));
     }
     out
@@ -159,14 +162,18 @@ mod tests {
 
     #[test]
     fn warnings_appear_only_when_needed() {
-        assert!(warnings(ROBLOX_MAX_TRIANGLES, 0).is_empty());
-        let over = warnings(ROBLOX_MAX_TRIANGLES + 1, 0);
+        use mixer_mesh::DEFAULT_TRIANGLE_LIMIT;
+        let limit = Some(DEFAULT_TRIANGLE_LIMIT);
+        assert!(warnings(DEFAULT_TRIANGLE_LIMIT, 0, limit).is_empty());
+        // With the limit off, any number is fine.
+        assert!(warnings(DEFAULT_TRIANGLE_LIMIT * 10, 0, None).is_empty());
+        let over = warnings(DEFAULT_TRIANGLE_LIMIT + 1, 0, limit);
         assert_eq!(over.len(), 1);
         assert!(over[0].contains("20000"));
-        let open = warnings(10, 4);
+        let open = warnings(10, 4, limit);
         assert_eq!(open.len(), 1);
         assert!(open[0].starts_with("4 open edges"));
-        assert_eq!(warnings(ROBLOX_MAX_TRIANGLES + 1, 1).len(), 2);
+        assert_eq!(warnings(DEFAULT_TRIANGLE_LIMIT + 1, 1, limit).len(), 2);
     }
 
     #[test]

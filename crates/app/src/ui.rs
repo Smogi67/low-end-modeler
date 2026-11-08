@@ -12,7 +12,7 @@ use imgui::{
 use mixer_mesh::{
     AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, CustomProfile, DEFAULT_MERGE_DISTANCE,
     Intersection, MAX_ARRAY_COUNT, MAX_BEVEL_SEGMENTS, MAX_SPREAD, MAX_SUBDIVISIONS, Miter,
-    Modifier, ModifierId, Primitive, ProfilePreset, ProfileType, ROBLOX_MAX_TRIANGLES, WidthType,
+    Modifier, ModifierId, Primitive, ProfilePreset, ProfileType, WidthType,
 };
 
 use crate::editor::Target;
@@ -309,6 +309,8 @@ pub struct ViewState {
 /// What the document looks like, for showing in the interface.
 pub struct PanelInfo<'a> {
     pub triangles: usize,
+    /// The triangle limit from the settings, or `None` when it is off.
+    pub triangle_limit: Option<usize>,
     pub vertices: usize,
     pub faces: usize,
     pub open_edges: usize,
@@ -1032,7 +1034,7 @@ fn top_bar(
     }
     drop(font);
     drop(colors);
-    tooltip(ui, "Export for Roblox Studio", "Ctrl+E");
+    tooltip(ui, "Export as OBJ or glTF", "Ctrl+E");
     export_popup(ui, state, info, fonts, action);
 }
 
@@ -1046,7 +1048,7 @@ fn export_popup(
     let padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 14.0]));
     if let Some(_popup) = ui.begin_popup("##export_popup") {
         ui.dummy([300.0, 0.0]);
-        heading(ui, fonts, "EXPORT FOR ROBLOX");
+        heading(ui, fonts, "EXPORT");
         let formats = [
             (
                 icon::EXPORT,
@@ -1058,7 +1060,7 @@ fn export_popup(
                 icon::EXPORT,
                 "glTF (.glb)",
                 ExportFormat::Glb,
-                "Each separate part becomes its own MeshPart in Roblox.",
+                "Each separate part becomes its own object in the file.",
             ),
         ];
         let items: Vec<_> = formats
@@ -1079,9 +1081,9 @@ fn export_popup(
             .display_format("%.3f")
             .flags(SliderFlags::ALWAYS_CLAMP)
             .build(ui, &mut state.scale);
-        ui.text_colored(color::FAINT, "At scale 1, one unit is one stud in Roblox.");
+        ui.text_colored(color::FAINT, "At scale 1, sizes are exported as they are.");
         ui.spacing();
-        triangle_budget(ui, info.triangles);
+        triangle_budget(ui, info.triangles, info.triangle_limit);
         for warning in info.warnings {
             note(ui, icon::WARNING, color::WARNING, warning);
         }
@@ -1334,16 +1336,25 @@ fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Optio
     drop(padding);
 }
 
-fn triangle_budget(ui: &Ui, triangles: usize) {
-    let fraction = triangles as f32 / ROBLOX_MAX_TRIANGLES as f32;
+fn triangle_budget(ui: &Ui, triangles: usize, limit: Option<usize>) {
     ui.text_colored(color::MUTED, "Triangles");
     ui.same_line();
-    let text = format!("{triangles} / {ROBLOX_MAX_TRIANGLES}");
+    let Some(limit) = limit else {
+        let text = triangles.to_string();
+        let width = ui.calc_text_size(&text)[0];
+        ui.same_line_with_pos(
+            ui.cursor_pos()[0].max(ui.content_region_avail()[0] + ui.cursor_pos()[0] - width),
+        );
+        ui.text(text);
+        return;
+    };
+    let fraction = triangles as f32 / limit.max(1) as f32;
+    let text = format!("{triangles} / {limit}");
     let width = ui.calc_text_size(&text)[0];
     ui.same_line_with_pos(
         ui.cursor_pos()[0].max(ui.content_region_avail()[0] + ui.cursor_pos()[0] - width),
     );
-    let over = triangles > ROBLOX_MAX_TRIANGLES;
+    let over = triangles > limit;
     ui.text_colored(if over { color::DANGER } else { color::TEXT }, text);
     let bar = ui.push_style_color(
         StyleColor::PlotHistogram,
@@ -1997,7 +2008,9 @@ fn status_bar(ui: &Ui, state: &PanelState, info: &PanelInfo) {
         color::MUTED,
     ));
     parts.push((format!("Faces {}", info.faces), color::MUTED));
-    let over = info.triangles > ROBLOX_MAX_TRIANGLES;
+    let over = info
+        .triangle_limit
+        .is_some_and(|limit| info.triangles > limit);
     parts.push((
         format!("Triangles {}", info.triangles),
         if over { color::DANGER } else { color::MUTED },
@@ -2869,6 +2882,7 @@ mod tests {
     fn info<'a>(target: Target, warnings: &'a [String], transform: bool) -> PanelInfo<'a> {
         PanelInfo {
             triangles: 12,
+            triangle_limit: Some(20_000),
             vertices: 8,
             faces: 6,
             open_edges: 4,

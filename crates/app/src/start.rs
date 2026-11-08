@@ -131,10 +131,7 @@ fn title(ui: &Ui, fonts: &Fonts) {
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 12.0]);
     ui.text_colored(
         color::MUTED,
-        concat!(
-            "Low-poly models for Roblox  \u{2022}  version ",
-            env!("CARGO_PKG_VERSION")
-        ),
+        concat!("3D modeling  \u{2022}  version ", env!("CARGO_PKG_VERSION")),
     );
 }
 
@@ -267,7 +264,7 @@ fn left_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opti
         .flags(SliderFlags::ALWAYS_CLAMP)
         .build(ui, &mut state.scale);
     if ui.is_item_hovered() {
-        ui.tooltip_text("At 1, one unit is one stud in Roblox.");
+        ui.tooltip_text("At 1, sizes are exported as they are.");
     }
     ui.dummy([0.0, 4.0]);
     let accent = [

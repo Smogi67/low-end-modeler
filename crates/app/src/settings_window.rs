@@ -6,8 +6,9 @@ use imgui::{Condition, Drag, SliderFlags, StyleColor, StyleVar, Ui, WindowFlags}
 use crate::engines::Report;
 use crate::export::ExportFormat;
 use crate::settings::{
-    AUTOSAVE_CHOICES, FASTEST_TURN, FEWEST_RECENT, FEWEST_UNDO_STEPS, INTERFACE_SIZES, MOST_RECENT,
-    MOST_UNDO_STEPS, RENDERERS, SLOWEST_TURN, Settings,
+    AUTOSAVE_CHOICES, FASTEST_TURN, FEWEST_RECENT, FEWEST_UNDO_STEPS, HIGHEST_TRIANGLE_LIMIT,
+    INTERFACE_SIZES, LOWEST_TRIANGLE_LIMIT, MOST_RECENT, MOST_UNDO_STEPS, RENDERERS, SLOWEST_TURN,
+    Settings,
 };
 use crate::theme::{Fonts, color, icon};
 use crate::wgpu_renderer::{Engine, Support};
@@ -411,6 +412,31 @@ fn export_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
         ui,
         color::FAINT,
         "Quick Projects and the New Project form start with these. Each project keeps its own.",
+    );
+    ui.dummy([0.0, 8.0]);
+    heading(ui, fonts, "TRIANGLE LIMIT");
+    let mut limited = values.triangle_limit > 0;
+    if ui.checkbox("Warn above a triangle limit", &mut limited) {
+        values.triangle_limit = if limited {
+            mixer_mesh::DEFAULT_TRIANGLE_LIMIT as u32
+        } else {
+            0
+        };
+    }
+    if limited {
+        label(ui, "Triangles per mesh");
+        ui.set_next_item_width(-1.0);
+        Drag::new("##triangle_limit")
+            .range(LOWEST_TRIANGLE_LIMIT, HIGHEST_TRIANGLE_LIMIT)
+            .speed(100.0)
+            .flags(SliderFlags::ALWAYS_CLAMP)
+            .build(ui, &mut values.triangle_limit);
+    }
+    note(
+        ui,
+        color::FAINT,
+        "The counter in the side panel turns red above it, and exporting warns. Some \
+         game engines refuse bigger meshes.",
     );
     ui.dummy([0.0, 8.0]);
     heading(ui, fonts, "AFTER EXPORTING");

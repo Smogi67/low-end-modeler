@@ -9,7 +9,7 @@ Next step: **Stage 10 step 4: rendering engines (Vulkan, DirectX 12, OpenGL 3.3 
 
 ## 1. Goal
 
-Build a small, Blender-inspired desktop 3D modeler for very low-end Windows laptops. Its job is to create low-poly models and export them for use in games, mainly Roblox Studio.
+Build a small, Blender-inspired desktop 3D modeler for very low-end Windows laptops. Its job is to create models and export them for use in games and other programs. It started out aimed at Roblox Studio, but on 2026-11-08 the owner said Mixer is not specialized to Roblox: the interface must not present it as a Roblox tool. Roblox stays one of the places exports should work (section 7).
 
 It is not a Blender replacement. If a feature does not help someone model and export a game asset, it is out of scope.
 
@@ -203,6 +203,11 @@ Step 4 is done (version 0.13.0); see its decisions below.
 - **A software stand-in is allowed:** if only a software adapter offers the engine, Mixer still uses it (marked "software, slow" in the title bar and log), since the owner wants the freedom to choose.
 - **Grid lines** are cut into 2-unit pieces for the newer engines: Mesa's drivers drew long lines reaching behind the camera as stray triangles.
 - **Size:** mixer.exe grows by several MB (accepted by the owner when choosing this).
+
+### Not a Roblox tool (owner's request, 2026-11-08)
+
+- Every "for Roblox" wording is gone from the interface and README: the start window says "3D modeling", the export button and popup just say Export, and scale is explained as "sizes are exported as they are".
+- The triangle counter and export warnings stay, worded for game engines in general. The limit is a setting (Settings > Export & updates > Triangle limit): on by default at 20,000, any number from 100 to 10,000,000, or off, which leaves a plain count with no bar or warning. Stored as `trianglelimit` in settings.txt.
 
 ### Edge glow (owner's request, from a Blender screenshot)
 
@@ -403,6 +408,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-08 | 10 | Step 3, settings page, version 0.11.0: the Settings window with Display, Mouse, Saving, and Export and updates; interface size; touchpad mode; zoom toward the pointer; auto-save; undo steps; start window off. 5 new tests: settings read back exactly, odd values brought into range with other lines kept, zooming at the pointer keeping the point under it, and clicking all over every settings page. Run on Linux with OpenGL limited to 2.1 using simulated input: every page, switching to 125 % (sharp letters, clicks and the 3D view still lined up, the top bar fitting), and an auto-save two minutes after adding a cone. Touchpad scrolling could not be tried without a touchpad | Not yet |
 | 2026-11-08 | 10 | Before step 4, at the owner's request, version 0.12.0: Blender's bevel options (width types, custom profile with six presets and sampling options, miters with spread, Cutoff intersection, loop slide, mark sharp), sharp edges in general, and a shadows setting. 16 new tests: 11 for the bevel options (each width type's measured size, loop slide, the bevel's sharp borders, chamfer and round custom profiles matching the plain ones, every preset closed, both sides of a one-sided profile matching, miters, a cube cut off at all eight corners with every face flat, refusing a bad spread, and 540 combinations of options with exact undo), 4 for custom profiles, and 1 for sharp edges splitting smooth shading and being saved. The interface test now keeps the Bevel panel open so it clicks its controls. Run on Linux with OpenGL limited to 2.1 using simulated input: the panel with each profile type, typing a width and segments, the Steps and Cornice Molding presets, More options, Mark sharp, Cutoff, smooth shading with blue sharp borders, and shadows off (saved as `shadows off`). Miters were checked by tests only | Not yet |
 | 2026-11-08 | 10 | Step 4, version 0.13.0: Vulkan, DirectX 12 and OpenGL 3.3 through wgpu beside OpenGL 2.1, with the engine check, recommendations, "May be unsupported" marks and falling back; at the owner's request, a glow on selected and sharp edges (both renderers), "Edge lines in View mode" for shadows off (the owner chose to offer both), and Mixer deleting the leftover old launcher. 11 new tests: engine names, support words and report files read back with sensible recommendations (app and launcher), driver version texts, the uniform layout, the WGSL shaders compiling, and every engine being pickable in both windows. Run on Linux with simulated input: Vulkan (Mesa's software Vulkan) through a whole bevel session with picking, Cutoff, smooth shading and View mode, looking the same as OpenGL 2.1; OpenGL 3.3 (Mesa's OpenGL ES); falling back from DirectX 12; the settings marks. That found two problems, both fixed: the interface's clipping cut the OpenGL 3.3 picture, and long grid lines turned into stray triangles. On GitHub's Windows machine: DirectX 12 started on Windows' software adapter and drew the start window; Vulkan and OpenGL 3.3, missing there, fell back as planned. No newer engine has run on a real graphics card yet | Not yet |
+| 2026-11-08 | 10 | Version 0.13.1, at the owner's request: Roblox wording removed from the interface and README; the triangle limit became a setting (the owner chose both neutral wording and a setting). Tests updated for warnings with the limit on and off and for reading the setting. Run on Linux with simulated input: the start window and the new settings section | Not yet |
 
 ## 12. Open questions
 

@@ -12,9 +12,10 @@ use crate::error::MeshError;
 use crate::id::VertexId;
 use crate::mesh::Mesh;
 
-/// Roblox allows at most this many triangles per mesh. Checked 2026-11-06 at
+/// The triangle limit Mixer warns about unless the settings say otherwise: Roblox's
+/// limit per mesh, among others, checked 2026-11-06 at
 /// <https://create.roblox.com/docs/en-us/art/modeling/specifications>.
-pub const ROBLOX_MAX_TRIANGLES: usize = 20_000;
+pub const DEFAULT_TRIANGLE_LIMIT: usize = 20_000;
 
 fn to_y_up(p: [f32; 3], scale: f32) -> [f32; 3] {
     // Adding zero turns -0 into 0, which keeps the file tidy.
