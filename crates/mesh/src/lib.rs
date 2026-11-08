@@ -82,6 +82,7 @@ mod history;
 mod id;
 mod loops;
 mod mesh;
+mod modifiers;
 mod obj;
 mod ops;
 mod pool;
@@ -98,9 +99,13 @@ pub use boolean::BooleanOp;
 pub use cut::CutPoint;
 pub use error::MeshError;
 pub use history::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits};
+pub use id::ModifierId;
 pub use id::{CornerId, EdgeId, FaceId, VertexId};
 pub use loops::{MAX_LOOP_CUTS, SlideRail};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
+pub use modifiers::{
+    DEFAULT_MERGE_DISTANCE, MAX_ARRAY_COUNT, MAX_MERGE_DISTANCE, Modifier, ModifierEntry,
+};
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
 pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError, ProjectSettings};

@@ -93,6 +93,14 @@ pub enum MeshError {
     /// An edge to bevel needs a face on each side, and its ends need simple fans of
     /// faces that wind the same way.
     CannotBevel,
+    /// A modifier's settings are out of range.
+    InvalidModifier,
+    /// The modifier no longer exists.
+    StaleModifier,
+    /// Modifiers belong to one part at a time.
+    NeedsOnePart,
+    /// The part has no modifiers to apply.
+    NoModifiers,
     /// Smooth shading's angle runs from 0 (flat) to 180.
     InvalidSmoothAngle,
     /// A cut must cross a face from one edge or corner to another.
@@ -109,6 +117,8 @@ pub enum MeshError {
     NeedsTwoParts,
     /// None of the selected parts are joined to others.
     NotJoined,
+    /// The tool cannot work on parts with modifiers until they are applied.
+    HasModifiers,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -174,6 +184,10 @@ impl fmt::Display for MeshError {
                 f,
                 "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"
             ),
+            Self::InvalidModifier => write!(f, "a modifier setting is out of range"),
+            Self::StaleModifier => write!(f, "that modifier no longer exists"),
+            Self::NeedsOnePart => write!(f, "select one part in Part mode first"),
+            Self::NoModifiers => write!(f, "this part has no modifiers"),
             Self::InvalidSmoothAngle => write!(f, "a smoothing angle runs from 0 to 180 degrees"),
             Self::NothingToCut => write!(
                 f,
@@ -188,6 +202,10 @@ impl fmt::Display for MeshError {
             Self::TooComplex => write!(f, "the result would be too detailed to make"),
             Self::NeedsTwoParts => write!(f, "select at least two parts first"),
             Self::NotJoined => write!(f, "the selected parts are not joined to anything"),
+            Self::HasModifiers => write!(
+                f,
+                "apply or remove the modifiers of the selected parts first"
+            ),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

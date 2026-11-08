@@ -356,6 +356,14 @@ impl Mesh {
                 self.faces[new_face].group = copy;
             }
         }
+        // A copied part keeps its modifiers.
+        let mut copies: Vec<(u16, u16)> = groups.into_iter().collect();
+        copies.sort_unstable();
+        for (group, copy) in copies {
+            for (_, modifier) in self.modifiers_of_group(group) {
+                self.add_modifier_unchecked(copy, modifier)?;
+            }
+        }
         self.flush_selection(mode);
         Ok(())
     }

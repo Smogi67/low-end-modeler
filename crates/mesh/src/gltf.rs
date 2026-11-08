@@ -40,6 +40,10 @@ impl Mesh {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(MeshError::InvalidScale);
         }
+        // What modifiers make is what gets exported.
+        if self.has_modifiers() {
+            return self.evaluated().to_glb(scale);
+        }
         let mut bin: Vec<u8> = Vec::new();
         let mut views = String::new();
         let mut accessors = String::new();

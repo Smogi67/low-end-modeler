@@ -4,8 +4,8 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 9, part 3 code written: smooth shading. Part 2 renamed the project to Mixer and added the start window and anti-aliasing; part 1 added knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
-Next step: **The owner's feedback on Stage 9. Then the next later feature; ask the owner which.**
+Status: **Stage 9, part 4 code written: mirror and array modifiers. Part 3 added smooth shading; part 2 renamed the project to Mixer and added the start window and anti-aliasing; part 1 added knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Next step: **Feature search (promised to the owner as the next feature), then the owner's feedback on Stage 9.**
 
 ## 1. Goal
 
@@ -181,6 +181,17 @@ The owner asked for a free cut, for joining shapes ("merging"), and for a mode t
 - **Exports:** OBJ writes each different normal once (`vn`) and glTF one normal per corner, so Roblox shows the same shading.
 - **Anti-aliasing check:** confirmed on Linux with an off-screen display limited to OpenGL 2.1: 4 samples, visibly smoother edges, and no OpenGL errors from Mixer's own calls.
 
+### Decisions made in Stage 9, part 4: mirror and array modifiers (owner left the choice to Claude)
+
+- **Where:** in Part mode, with one shape clicked, the Modifiers section of the panel has Mirror and Array buttons, then each modifier's settings in the order they run, a Remove button for each, and Apply.
+- **Mirror:** across the middle of the world (X, Y and Z ticked separately), because Mixer has no objects with their own centers. Merge (on by default) welds points within 0.001 of the middle, and walls left between the halves disappear, so half a shape becomes one closed shape. A shape sitting across the middle stays whole instead of vanishing.
+- **Array:** 1 to 64 copies in a row. Offset is in shape sizes along X, Y and Z, like Blender's relative offset: 1 puts copies side by side. Merge (off by default) welds copies where they touch.
+- **Live:** the copies are drawn without lines or points, and follow every edit, also while dragging. The status bar's triangle count and the Roblox warnings count the copies, because exports (OBJ and glTF) include them. Applying makes the copies real faces.
+- **Stored:** each modifier belongs to its shape's group (see Join). Projects save them as `m` lines (`m 3 mirror 1 0 0 0.001`, `m 3 array 2 1 0 0 off`). Undo covers adding, changing, removing and applying; dragging a slider makes one undo step.
+- **With other tools:** faces a tool adds to a shape with modifiers join its group. Duplicating a shape copies its modifiers, and Separate gives each piece its own copy. Join keeps the one shape's modifiers for the joined whole, but refuses two shapes that both have modifiers, and Union, Subtract and Intersect refuse shapes with modifiers, with a message to apply or remove them first. Deleting a shape deletes its modifiers. Changing a new shape's size or location in the panel keeps its modifiers and shading.
+- **Not built:** Blender's other mirror and array options (mirror object, bisect, clipping, constant offset, fit length, start and end caps, UV options).
+- Code: `crates/mesh/src/modifiers.rs`.
+
 ### Decisions made in Stage 9, part 2 (owner's choices)
 
 - **Name:** the owner renamed the project **Mixer**: the programs are `mixer.exe` and `mixer-setup.exe`, the download is `mixer`, the crates are `mixer`, `mixer-setup` and `mixer-mesh`. The owner renamed the GitHub repository to `Smogi67/mixer`; the old address forwards.
@@ -233,7 +244,7 @@ The owner decided this on 2026-11-05.
 ### Later
 
 - Spin, screw, solidify, shrink/fatten, grid fill, convex hull
-- Modifiers: mirror and array first, then solidify, bevel, decimate, weld, triangulate, and boolean (the one-time boolean tools are done)
+- Modifiers: solidify, bevel, decimate, weld, triangulate, and boolean (mirror and array are done, and the one-time boolean tools are done)
 - UV seams, unwrapping, and UV editing
 - Simple materials
 - Mesh checks for bad geometry before export
@@ -323,6 +334,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-08 | 9 | Owner's choices: knife, bisect, join and separate, union, subtract and intersect, View mode, and M no longer squashing shapes in Part mode. 24 new mesh tests and 3 app tests, including exact volumes of combined cubes, a hole through a cube, and 150 random combinations that must stay closed (2,000 more ran while writing it). Run on Linux with OpenGL limited to 2.1 using simulated input: knife preview and cut, bisect, union, subtract, join, the M message, and View mode all worked | Not yet |
 | 2026-11-08 | 9 | Renamed to Mixer at the owner's request. Start window with Quick Project, New Project, recent projects and settings. Anti-aliasing with a fallback when the driver refuses it. Projects remember their export settings. New tests for project settings, dates, ages, setting files and clicking through the start window. Run on Linux with OpenGL limited to 2.1 using simulated input: quick project, new project with a cylinder and glTF, the File menu's Start window, reopening from Recent, and picking through the off-screen depth buffer all worked. Anti-aliasing itself could not be seen there, because the test display offers no multisampled window; the fallback ran instead | Not yet |
 | 2026-11-08 | 9 | Smooth shading at the owner's request: Flat, Smooth and Auto smooth, kept through tools, saved, and exported. 8 new tests, including a cylinder whose side normals point straight out and a smooth bevel whose big faces stay flat. Run on Linux with OpenGL limited to 2.1 using simulated input: a 10-segment bevel looked faceted flat and round with Auto smooth | Not yet |
+| 2026-11-08 | 9 | Mirror and array modifiers, chosen by Claude when the owner left the choice open. 12 new mesh tests, including exact volumes of a mirrored box, a closed result from an open half, merged arrays, a centered shape mirrored on all three axes, exact undo, saving, export, and how join, separate, duplicate, delete, extrude and the combine tools treat modifiers; 1 new app test for resizing a new shape with a mirror; the interface test now clicks every modifier control. Run on Linux with OpenGL limited to 2.1 using simulated input: adding mirror and array, ticking an axis, one-step undo, copies following a move while dragging, saving the `m` lines, and Apply all worked. That run found that resizing a new shape lost its mirror, now fixed and tested | Not yet |
 
 ## 12. Open questions
 

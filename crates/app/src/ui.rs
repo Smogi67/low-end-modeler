@@ -10,8 +10,8 @@ use imgui::{
     WindowFlags,
 };
 use mixer_mesh::{
-    AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive,
-    ROBLOX_MAX_TRIANGLES,
+    AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, DEFAULT_MERGE_DISTANCE, MAX_ARRAY_COUNT,
+    MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Modifier, ModifierId, Primitive, ROBLOX_MAX_TRIANGLES,
 };
 
 use crate::editor::Target;
@@ -167,6 +167,8 @@ pub struct PanelState {
     pub bevel: BevelSettings,
     /// Whether the bevel panel is folded down to its title.
     pub bevel_folded: bool,
+    /// A modifier's new settings, for [`Action::ChangeModifier`].
+    pub modifier_edit: Option<(ModifierId, Modifier)>,
 }
 
 /// What a typed path is for.
@@ -205,6 +207,7 @@ impl Default for PanelState {
                 ..BevelSettings::default()
             },
             bevel_folded: false,
+            modifier_edit: None,
         }
     }
 }
@@ -332,6 +335,8 @@ pub struct PanelInfo<'a> {
     pub view_only: bool,
     /// How many parts have something selected.
     pub parts_selected: usize,
+    /// The modifiers of the one selected part, in the order they run.
+    pub modifiers: Vec<(ModifierId, Modifier)>,
 }
 
 /// Standard views, as in Blender's numpad 1, 3 and 7 and their opposites.
@@ -421,6 +426,13 @@ pub enum Action {
     StartWindow,
     /// Shading for the selected faces: 0 flat, otherwise smooth up to that angle.
     Shade(u8),
+    /// Adds a modifier to the selected part.
+    AddModifier(ModifierKind),
+    /// Sets the modifier in `PanelState::modifier_edit`.
+    ChangeModifier,
+    RemoveModifier(ModifierId),
+    /// Makes the selected part's modifiers real geometry.
+    ApplyModifiers,
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -441,6 +453,13 @@ pub enum Action {
     ConfirmCancel,
     #[cfg(windows)]
     OpenExportFolder,
+}
+
+/// The kinds of modifier there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModifierKind {
+    Mirror,
+    Array,
 }
 
 /// The interface's result for one frame.
@@ -1145,6 +1164,7 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                     ("Loop cut", "Ctrl+R"),
                     ("Knife", "K, then click, Enter"),
                     ("Join, separate shapes", "Ctrl+J, P"),
+                    ("Mirror, array", "4, click, Modifiers"),
                     ("Edit or View mode", "Tab"),
                     ("Bevel edges", "Ctrl+B"),
                     ("Bevel vertices", "Ctrl+Shift+B"),
@@ -1708,6 +1728,145 @@ fn panel(
     if !two {
         ui.text_colored(color::FAINT, "Shift+click two or more shapes.");
     }
+    modifiers_section(ui, state, info, fonts, action);
+}
+
+/// Mirror and array on the selected part: buttons to add them, and each one's settings.
+fn modifiers_section(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+) {
+    // Only for one shape, which also keeps the panel short.
+    if info.parts_selected != 1 {
+        return;
+    }
+    ui.dummy([0.0, 6.0]);
+    heading(ui, fonts, "MODIFIERS");
+    let mirror = format!("{}  Mirror##add_modifier", icon::MIRROR);
+    let array = format!("{}  Array##add_modifier", icon::DUPLICATE);
+    button_row(
+        ui,
+        action,
+        &[
+            (
+                mirror.as_str(),
+                Action::AddModifier(ModifierKind::Mirror),
+                "Mirror the shape across the middle of the world. Edit one side, the other follows.",
+            ),
+            (
+                array.as_str(),
+                Action::AddModifier(ModifierKind::Array),
+                "Repeat the shape in a row. Edit one, the copies follow.",
+            ),
+        ],
+        true,
+    );
+    for (i, &(id, modifier)) in info.modifiers.iter().enumerate() {
+        let _id = ui.push_id_usize(i);
+        ui.dummy([0.0, 2.0]);
+        let name = match modifier {
+            Modifier::Mirror { .. } => "Mirror",
+            Modifier::Array { .. } => "Array",
+        };
+        ui.align_text_to_frame_padding();
+        ui.text(format!("{}. {name}", i + 1));
+        let remove = "Remove##modifier";
+        let width = ui.calc_text_size(remove.split("##").next().unwrap_or(""))[0] + 16.0;
+        ui.same_line_with_pos(ui.content_region_max()[0] - width);
+        if ui.button_with_size(remove, [width, 0.0]) {
+            *action = Some(Action::RemoveModifier(id));
+        }
+        tooltip(
+            ui,
+            "Delete this modifier. The shape goes back to how it is without it.",
+            "",
+        );
+        let mut edited = modifier;
+        match &mut edited {
+            Modifier::Mirror { axes, merge } => {
+                row(ui, "Axis");
+                for (k, letter) in ["X", "Y", "Z"].into_iter().enumerate() {
+                    if k > 0 {
+                        ui.same_line();
+                    }
+                    ui.checkbox(format!("{letter}##mirror_axis"), &mut axes[k]);
+                }
+                tooltip(ui, "Which way to mirror. Red X, green Y, blue Z.", "");
+                merge_row(
+                    ui,
+                    merge,
+                    "Weld the middle",
+                    "Join points on the middle so the halves become one closed shape",
+                );
+            }
+            Modifier::Array {
+                count,
+                offset,
+                merge,
+            } => {
+                row(ui, "Count");
+                let mut n = *count as i32;
+                if ui
+                    .slider_config("##array_count", 1, MAX_ARRAY_COUNT as i32)
+                    .flags(SliderFlags::ALWAYS_CLAMP)
+                    .build(&mut n)
+                {
+                    *count = n.clamp(1, MAX_ARRAY_COUNT as i32) as u32;
+                }
+                tooltip(ui, "How many there are, counting the original", "");
+                row(ui, "Offset");
+                Drag::new("##array_offset")
+                    .range(-100.0, 100.0)
+                    .speed(0.01)
+                    .display_format("%.2f")
+                    .flags(SliderFlags::ALWAYS_CLAMP)
+                    .build_array(ui, offset);
+                tooltip(
+                    ui,
+                    "How far each copy moves along X, Y and Z, in shape sizes. 1 puts them side by side.",
+                    "",
+                );
+                merge_row(
+                    ui,
+                    merge,
+                    "Weld touching",
+                    "Join copies where they touch, so they become one shape",
+                );
+            }
+        }
+        if edited != modifier {
+            state.modifier_edit = Some((id, edited));
+            *action = Some(Action::ChangeModifier);
+        }
+    }
+    if !info.modifiers.is_empty() {
+        ui.dummy([0.0, 2.0]);
+        button_row(
+            ui,
+            action,
+            &[(
+                "Apply##modifiers",
+                Action::ApplyModifiers,
+                "Turn the copies into real shape that you can edit point by point. The modifiers go away.",
+            )],
+            true,
+        );
+    }
+}
+
+/// A "Merge" checkbox row for a modifier's weld distance.
+fn merge_row(ui: &Ui, merge: &mut Option<f32>, label: &str, help: &str) {
+    ui.align_text_to_frame_padding();
+    ui.text_colored(color::MUTED, "Merge");
+    ui.same_line_with_pos(LABEL_COLUMN);
+    let mut on = merge.is_some();
+    if ui.checkbox(format!("{label}##modifier_merge"), &mut on) {
+        *merge = on.then_some(DEFAULT_MERGE_DISTANCE);
+    }
+    tooltip(ui, help, "");
 }
 
 /// The size, detail and location fields of the shape settings.
@@ -2325,6 +2484,7 @@ mod tests {
             bisect: false,
             view_only: false,
             parts_selected: 2,
+            modifiers: Vec::new(),
         }
     }
 
@@ -2345,7 +2505,23 @@ mod tests {
         let warnings = vec!["A warning".to_string()];
 
         let mut actions = std::collections::HashSet::new();
-        // The last two cases show the save-changes question and the path box, which
+        let modifier_list = {
+            let mut mesh = mixer_mesh::Mesh::new();
+            let faces = mesh
+                .add_primitive(Primitive::Cube { size: 1.0 }, [0.0; 3])
+                .unwrap();
+            let faces: Vec<_> = faces.into_iter().map(mixer_mesh::Element::Face).collect();
+            mesh.select_elements(
+                mixer_mesh::SelectMode::Face,
+                &faces,
+                mixer_mesh::SelectOp::Replace,
+            )
+            .unwrap();
+            mesh.add_modifier_to_selected(Modifier::mirror()).unwrap();
+            mesh.add_modifier_to_selected(Modifier::array()).unwrap();
+            mesh.modifiers_of_selected()
+        };
+        // Cases 4 and 5 show the save-changes question and the path box, which
         // block everything else while open.
         for (case, (target, transform)) in [
             (Target::Nothing, false),
@@ -2354,11 +2530,20 @@ mod tests {
             (Target::Several, false),
             (Target::Nothing, false),
             (Target::Nothing, false),
+            (Target::Nothing, false),
         ]
         .into_iter()
         .enumerate()
         {
+            // The last case has one shape with modifiers, on a tall screen so that their
+            // settings fit without scrolling.
+            let height: f32 = if case == 6 { 1400.0 } else { 800.0 };
+            context.io_mut().display_size = [1280.0, height];
             let mut info = info(target, &warnings, transform);
+            if case == 6 {
+                info.parts_selected = 1;
+                info.modifiers = modifier_list.clone();
+            }
             if case == 4 {
                 info.confirm = Some("Save changes to sword.mix first?");
             }
@@ -2408,7 +2593,7 @@ mod tests {
             };
             frame(&mut context, &mut state);
             frame(&mut context, &mut state);
-            for y in (0..800).step_by(9) {
+            for y in (0..height as i32).step_by(9) {
                 for x in (0..1280).step_by(23) {
                     let (x, y) = (x as f32, y as f32);
                     context.io_mut().add_mouse_pos_event([x, y]);
@@ -2446,7 +2631,7 @@ mod tests {
             // is still open when the sweep reaches it, so click it on its own.
             click(&mut context, &mut state, 389.0, 25.0);
             // The mirror tool: the seventh button, below one gap between groups.
-            let size = tool_button_size(800.0);
+            let size = tool_button_size(height);
             let mirror_button = [
                 MARGIN + 8.0 + size / 2.0,
                 TOP_BAR + MARGIN + 8.0 + 6.0 * (size + 4.0) + 14.0 + size / 2.0,
@@ -2465,7 +2650,7 @@ mod tests {
                     }
                 }
                 // Close whatever is still open.
-                click(&mut context, &mut state, 640.0, 790.0);
+                click(&mut context, &mut state, 640.0, height - 10.0);
             }
             assert!(state.size.is_finite() && state.size > 0.0);
             assert!((3..=64).contains(&state.segments));
@@ -2513,6 +2698,10 @@ mod tests {
             "ConfirmCancel",
             "PathChosen",
             "PathCancelled",
+            "AddModifier(Mirror)",
+            "AddModifier(Array)",
+            "ChangeModifier",
+            "ApplyModifiers",
         ] {
             assert!(
                 actions.contains(expected),
@@ -2524,6 +2713,7 @@ mod tests {
             "the gizmo was never clicked"
         );
         assert!(actions.iter().any(|a| a.starts_with("SetMode(")));
+        assert!(actions.iter().any(|a| a.starts_with("RemoveModifier(")));
     }
 
     #[test]

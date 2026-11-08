@@ -29,6 +29,10 @@ impl Mesh {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(MeshError::InvalidScale);
         }
+        // What modifiers make is what gets exported.
+        if self.has_modifiers() {
+            return self.evaluated().to_obj(name, scale);
+        }
         let mut out = String::with_capacity(self.corner_count() * 32 + 128);
         // Writing to a String cannot fail.
         let _ = writeln!(out, "# Mixer\n# {} triangles", self.triangle_count());

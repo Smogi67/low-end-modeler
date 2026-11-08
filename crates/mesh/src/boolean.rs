@@ -666,6 +666,9 @@ impl Mesh {
         if parts.len() < 2 {
             return Err(MeshError::NeedsTwoParts);
         }
+        if parts.iter().any(|part| self.part_has_modifiers(part)) {
+            return Err(MeshError::HasModifiers);
+        }
         let mut solids = Vec::with_capacity(parts.len());
         for part in &parts {
             solids.push(self.solid(part)?);

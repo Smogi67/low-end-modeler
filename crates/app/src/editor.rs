@@ -239,7 +239,12 @@ impl Editor {
         mode: SelectMode,
     ) -> Result<Record, MeshError> {
         let (vertices, faces) = document.edit(label, |mesh| {
+            // The new shape keeps the old one's group, so its modifiers stay, and shading.
+            let mut kept = (0, 0);
             if let Some(old) = replacing {
+                if let Some(face) = old.faces.iter().find_map(|&f| mesh.face(f)) {
+                    kept = (face.group(), face.smooth());
+                }
                 for &vertex in &old.vertices {
                     mesh.remove_vertex(vertex)?;
                 }
@@ -248,6 +253,13 @@ impl Editor {
             let picked: Vec<Element> = faces.iter().map(|&f| Element::Face(f)).collect();
             mesh.deselect_all();
             mesh.select_elements(SelectMode::Face, &picked, SelectOp::Add)?;
+            let (group, smooth) = kept;
+            for &face in &faces {
+                mesh.set_face_group(face, group)?;
+            }
+            if smooth > 0 {
+                mesh.set_shading_selected(smooth)?;
+            }
             mesh.flush_selection(mode);
             Ok((vertices, faces))
         })?;
@@ -431,6 +443,29 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn a_resized_shape_keeps_its_modifiers_and_shading() {
+        let mut editor = Editor::new();
+        let mut state = PanelState {
+            location: [2.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        editor.add(Shape::Cube, &state).unwrap();
+        editor
+            .run("Mirror", |mesh, _| {
+                mesh.set_shading_selected(180)?;
+                mesh.add_modifier_to_selected(mixer_mesh::Modifier::mirror())
+                    .map(|_| ())
+            })
+            .unwrap();
+        state.size = 1.0;
+        assert!(frame(&mut editor, &mut state).unwrap());
+        let mesh = editor.document().mesh();
+        assert_eq!(mesh.modifiers_of_selected().len(), 1);
+        assert!(mesh.faces().all(|(_, f)| f.smooth() == 180));
+        assert_eq!(mesh.evaluated().face_count(), 12);
     }
 
     #[test]

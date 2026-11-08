@@ -158,6 +158,7 @@ impl Document {
         // A tool that rebuilt every face of a joined part gave the new faces no group.
         let marks = std::mem::take(&mut self.group_marks);
         self.mesh.restore_groups(&marks);
+        self.mesh.tidy_modifier_groups();
         if let Some(before) = self.faces_before.take() {
             self.mesh.inherit_shading(&before);
         }

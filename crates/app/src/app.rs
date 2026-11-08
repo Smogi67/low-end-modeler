@@ -10,7 +10,7 @@ use std::time::Instant;
 use imgui::{Key, MouseButton as ImguiButton};
 use mixer_mesh::{
     BevelSettings, BooleanOp, EdgeId, Element, FaceId, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS,
-    Mesh, MeshError, ProjectSettings, SelectMode, SelectOp,
+    Mesh, MeshError, Modifier, ModifierId, ProjectSettings, SelectMode, SelectOp,
 };
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
@@ -34,8 +34,8 @@ use crate::start::{StartAction, StartState, build_start};
 use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, Shape, ViewState,
-    build as build_ui, draw_gizmo, draw_knife, draw_lines, draw_region,
+    Action, DragTool, ModeChoice, ModifierKind, PanelInfo, PanelState, PathPurpose, Shape,
+    ViewState, build as build_ui, draw_gizmo, draw_knife, draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -194,6 +194,9 @@ pub struct App {
     /// The history version right after the last bevel, while its panel may still
     /// change it.
     last_bevel: Option<u64>,
+    /// The version after the last modifier change, and which modifier, so that a
+    /// slider drag makes one undo step instead of one per frame.
+    last_modifier_edit: Option<(u64, ModifierId)>,
     /// Whether Ctrl is held, for showing snapped values.
     snapping: bool,
     /// The project file being edited, if it has been saved or opened.
@@ -256,6 +259,7 @@ impl App {
             view_only: false,
             gizmo_hover: None,
             last_bevel: None,
+            last_modifier_edit: None,
             snapping: false,
             project_path: None,
             document_name: "Untitled".to_string(),
@@ -305,8 +309,17 @@ impl App {
             Mouse::Transforming { transform, .. } => Some((transform.kind, transform.axis)),
             _ => None,
         };
+        let parts_selected = mesh
+            .parts()
+            .iter()
+            .filter(|part| {
+                part.iter()
+                    .any(|&f| mesh.face(f).is_some_and(|f| f.is_selected()))
+            })
+            .count();
         let info = PanelInfo {
-            triangles: mesh.triangle_count(),
+            // What gets exported, modifiers' copies included.
+            triangles: self.scene.triangle_count(),
             vertices: mesh.vertex_count(),
             faces: mesh.face_count(),
             warnings: &self.warnings,
@@ -349,14 +362,12 @@ impl App {
             },
             bisect: matches!(self.mouse_state, Mouse::Bisect(_)),
             view_only: self.view_only,
-            parts_selected: mesh
-                .parts()
-                .iter()
-                .filter(|part| {
-                    part.iter()
-                        .any(|&f| mesh.face(f).is_some_and(|f| f.is_selected()))
-                })
-                .count(),
+            parts_selected,
+            modifiers: if parts_selected == 1 {
+                mesh.modifiers_of_selected()
+            } else {
+                Vec::new()
+            },
             bevel_panel: self.last_bevel == Some(document.version())
                 && matches!(self.mouse_state, Mouse::Idle),
             view: {
@@ -421,11 +432,14 @@ impl App {
             Err(error) => self.state.message = format!("Could not change the shape: {error}"),
         }
 
-        if self.stale == Stale::Everything {
+        let modified = Scene::needs_rebuild_to_move(self.editor.document().mesh());
+        if self.stale == Stale::Everything || (self.stale == Stale::Moved && modified) {
             let mesh = self.editor.document().mesh();
             self.scene.rebuild(mesh, self.editor.drawing_mode());
             self.renderer.upload_scene(&self.scene);
-            self.warnings = warnings(mesh.triangle_count(), mesh.open_edge_count());
+            // Warnings are about what gets exported.
+            let shown = mesh.evaluated();
+            self.warnings = warnings(shown.triangle_count(), shown.open_edge_count());
         } else if self.stale == Stale::Moved
             && let Mouse::Transforming { parts, .. } = &self.mouse_state
         {
@@ -763,6 +777,38 @@ impl App {
                 self.finish_edit(result);
             }
             Action::Boolean(op) => self.boolean(op),
+            Action::AddModifier(kind) => {
+                let (modifier, name) = match kind {
+                    ModifierKind::Mirror => (Modifier::mirror(), "Mirror"),
+                    ModifierKind::Array => (Modifier::array(), "Array"),
+                };
+                let result = self.editor.run("Add modifier", |mesh, _| {
+                    mesh.add_modifier_to_selected(modifier).map(|_| ())
+                });
+                if result.is_ok() {
+                    self.state.message =
+                        format!("{name} added. Edit the shape and the copy follows.");
+                }
+                self.finish_edit(result);
+            }
+            Action::ChangeModifier => self.change_modifier(),
+            Action::RemoveModifier(id) => {
+                let result = self
+                    .editor
+                    .run("Remove modifier", |mesh, _| mesh.remove_modifier(id));
+                self.finish_edit(result);
+            }
+            Action::ApplyModifiers => {
+                let mut faces = 0;
+                let result = self.editor.run("Apply modifiers", |mesh, mode| {
+                    faces = mesh.apply_modifiers_of_selected(mode)?;
+                    Ok(())
+                });
+                if result.is_ok() {
+                    self.state.message = format!("Applied: the shape now has {faces} real faces.");
+                }
+                self.finish_edit(result);
+            }
             Action::Shade(angle) => {
                 let mut changed = 0;
                 let result = self.editor.run("Shading", |mesh, _| {
@@ -1296,6 +1342,37 @@ impl App {
                 self.editor.redo();
                 self.last_bevel = Some(self.editor.document().version());
                 self.state.message = format!("Could not bevel: {error}");
+            }
+        }
+        self.stale = Stale::Everything;
+        self.request_frames();
+    }
+
+    /// Sets a modifier to the settings in the panel. Changes to the same modifier one
+    /// after another, as while dragging a slider, replace each other in the undo list.
+    fn change_modifier(&mut self) {
+        let Some((id, modifier)) = self.state.modifier_edit.take() else {
+            return;
+        };
+        if !matches!(self.mouse_state, Mouse::Idle) {
+            return;
+        }
+        let version = self.editor.document().version();
+        let undone = self.last_modifier_edit == Some((version, id)) && self.editor.undo();
+        let result = self.editor.run("Modifier settings", |mesh, _| {
+            mesh.set_modifier(id, modifier)
+        });
+        match result {
+            Ok(()) => {
+                self.last_modifier_edit = Some((self.editor.document().version(), id));
+            }
+            Err(error) => {
+                // Puts the previous change back.
+                if undone {
+                    self.editor.redo();
+                }
+                self.last_modifier_edit = undone.then(|| (self.editor.document().version(), id));
+                self.state.message = format!("Could not change the modifier: {error}");
             }
         }
         self.stale = Stale::Everything;

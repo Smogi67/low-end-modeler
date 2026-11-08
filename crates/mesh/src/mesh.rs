@@ -1,7 +1,8 @@
 //! The mesh elements and read-only queries. Edits are in `ops.rs`.
 
 use crate::error::MeshError;
-use crate::id::{CornerId, EdgeId, FaceId, VertexId};
+use crate::id::{CornerId, EdgeId, FaceId, ModifierId, VertexId};
+use crate::modifiers::ModifierEntry;
 use crate::pool::{Pool, PoolDelta};
 
 /// A point in space.
@@ -183,6 +184,8 @@ pub struct Mesh {
     pub(crate) edges: Pool<Edge, EdgeId>,
     pub(crate) corners: Pool<Corner, CornerId>,
     pub(crate) faces: Pool<Face, FaceId>,
+    /// Live modifiers on parts, kept here so that undo covers them.
+    pub(crate) modifiers: Pool<ModifierEntry, ModifierId>,
 }
 
 impl Default for Mesh {
@@ -198,6 +201,7 @@ pub(crate) struct MeshDelta {
     edges: PoolDelta<Edge>,
     corners: PoolDelta<Corner>,
     faces: PoolDelta<Face>,
+    modifiers: PoolDelta<ModifierEntry>,
 }
 
 impl MeshDelta {
@@ -206,6 +210,7 @@ impl MeshDelta {
             && self.edges.is_empty()
             && self.corners.is_empty()
             && self.faces.is_empty()
+            && self.modifiers.is_empty()
     }
 
     pub(crate) fn memory_bytes(&self) -> usize {
@@ -213,6 +218,7 @@ impl MeshDelta {
             + self.edges.memory_bytes()
             + self.corners.memory_bytes()
             + self.faces.memory_bytes()
+            + self.modifiers.memory_bytes()
     }
 }
 
@@ -242,6 +248,7 @@ impl Mesh {
             edges: Pool::new(),
             corners: Pool::new(),
             faces: Pool::new(),
+            modifiers: Pool::new(),
         }
     }
 
@@ -389,6 +396,7 @@ impl Mesh {
             + self.edges.memory_bytes()
             + self.corners.memory_bytes()
             + self.faces.memory_bytes()
+            + self.modifiers.memory_bytes()
     }
 
     pub(crate) fn require_vertex(&self, id: VertexId) -> Result<(), MeshError> {
@@ -469,6 +477,7 @@ impl Mesh {
         self.edges.begin_journal();
         self.corners.begin_journal();
         self.faces.begin_journal();
+        self.modifiers.begin_journal();
     }
 
     /// Stops saving and returns what changed.
@@ -478,6 +487,7 @@ impl Mesh {
             edges: self.edges.finish_journal(),
             corners: self.corners.finish_journal(),
             faces: self.faces.finish_journal(),
+            modifiers: self.modifiers.finish_journal(),
         }
     }
 
@@ -487,6 +497,7 @@ impl Mesh {
         self.edges.rollback_journal();
         self.corners.rollback_journal();
         self.faces.rollback_journal();
+        self.modifiers.rollback_journal();
     }
 
     /// Swaps the mesh with the other state stored in the delta.
@@ -495,6 +506,7 @@ impl Mesh {
         self.edges.swap_delta(&mut delta.edges);
         self.corners.swap_delta(&mut delta.corners);
         self.faces.swap_delta(&mut delta.faces);
+        self.modifiers.swap_delta(&mut delta.modifiers);
     }
 }
 
@@ -502,9 +514,9 @@ impl Mesh {
 mod tests {
     use super::*;
 
-    /// A change touching all four arrays, so each one's cost must be counted.
+    /// A change touching every array, so each one's cost must be counted.
     #[test]
-    fn memory_totals_add_up_all_four_arrays() {
+    fn memory_totals_add_up_all_arrays() {
         let mut mesh = Mesh::new();
         let v: Vec<VertexId> = (0..3)
             .map(|i| mesh.add_vertex([i as f32; 3]).unwrap())
@@ -516,6 +528,7 @@ mod tests {
                 + mesh.edges.memory_bytes()
                 + mesh.corners.memory_bytes()
                 + mesh.faces.memory_bytes()
+                + mesh.modifiers.memory_bytes()
         );
 
         mesh.begin_journal();
@@ -523,6 +536,8 @@ mod tests {
             .map(|i| mesh.add_vertex([9.0 + i as f32; 3]).unwrap())
             .collect();
         mesh.add_face(&w).unwrap();
+        mesh.add_modifier_unchecked(1, crate::Modifier::mirror())
+            .unwrap();
         let delta = mesh.finish_journal();
         assert_eq!(
             delta.memory_bytes(),
@@ -530,6 +545,7 @@ mod tests {
                 + delta.edges.memory_bytes()
                 + delta.corners.memory_bytes()
                 + delta.faces.memory_bytes()
+                + delta.modifiers.memory_bytes()
         );
     }
 }

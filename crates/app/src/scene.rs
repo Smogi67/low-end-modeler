@@ -100,7 +100,19 @@ fn merged(mut ranges: Vec<Range>) -> Vec<Range> {
 }
 
 impl Scene {
-    /// Rebuilds everything. Used after any change other than vertices moving.
+    /// How many triangles are drawn, which with modifiers is more than the mesh has.
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len() / (3 * FLOATS_PER_TRIANGLE_VERTEX)
+    }
+
+    /// True when moving vertices can change more than their own faces, because
+    /// modifiers make copies, so [`update_moved`](Self::update_moved) is not enough.
+    pub fn needs_rebuild_to_move(mesh: &Mesh) -> bool {
+        mesh.has_modifiers()
+    }
+
+    /// Rebuilds everything. Used after any change other than vertices moving. The
+    /// surfaces show what modifiers make; the edges and points are the editable mesh.
     pub fn rebuild(&mut self, mesh: &Mesh, mode: SelectMode) {
         *self = Self {
             triangles: std::mem::take(&mut self.triangles),
@@ -113,13 +125,15 @@ impl Scene {
         self.edges.clear();
         self.points.clear();
 
+        let shown = mesh.evaluated();
+        let shown: &Mesh = &shown;
         self.triangles
-            .resize(mesh.triangle_count() * 3 * FLOATS_PER_TRIANGLE_VERTEX, 0.0);
-        let normals = mesh.shading_normals();
+            .resize(shown.triangle_count() * 3 * FLOATS_PER_TRIANGLE_VERTEX, 0.0);
+        let normals = shown.shading_normals();
         let mut start = 0;
-        for (face, data) in mesh.faces() {
+        for (face, data) in shown.faces() {
             let end = start + (data.corner_count() - 2) * 3 * FLOATS_PER_TRIANGLE_VERTEX;
-            write_face(mesh, &normals, face, &mut self.triangles[start..end]);
+            write_face(shown, &normals, face, &mut self.triangles[start..end]);
             self.face_spans.insert(face, start..end);
             start = end;
         }

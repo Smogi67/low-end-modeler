@@ -119,6 +119,16 @@ impl Mesh {
             .collect()
     }
 
+    /// Puts a face in a group, as when a tool rebuilds a part and its new faces should
+    /// stay in the old part's group. 0 means none.
+    pub fn set_face_group(&mut self, face: FaceId, group: u16) -> Result<(), MeshError> {
+        self.require_face(face)?;
+        if self.faces[face].group != group {
+            self.faces[face].group = group;
+        }
+        Ok(())
+    }
+
     /// Joins the parts with a selected face into one group, so they act as one part.
     /// Returns how many parts were joined. Needs at least two.
     pub fn join_selected_parts(&mut self) -> Result<usize, MeshError> {
@@ -126,7 +136,16 @@ impl Mesh {
         if parts.len() < 2 {
             return Err(MeshError::NeedsTwoParts);
         }
-        let group = self.next_group()?;
+        // One part's modifiers then work on all of them.
+        let modified: Vec<u16> = parts
+            .iter()
+            .filter_map(|part| self.modified_group(part))
+            .collect();
+        let group = match modified[..] {
+            [] => self.next_group()?,
+            [group] => group,
+            _ => return Err(MeshError::HasModifiers),
+        };
         for &face in parts.iter().flatten() {
             self.faces[face].group = group;
         }
@@ -135,22 +154,80 @@ impl Mesh {
 
     /// Undoes joining for the parts with a selected face: each connected piece is its
     /// own part again. Returns how many pieces there are now.
+    ///
+    /// A part with modifiers keeps them: each piece gets its own copy of the list.
     pub fn separate_selected_parts(&mut self) -> Result<usize, MeshError> {
         let parts = self.selected_parts();
-        let grouped: Vec<FaceId> = parts
-            .iter()
-            .flatten()
-            .copied()
-            .filter(|&f| self.faces[f].group != 0)
-            .collect();
-        if grouped.is_empty() {
-            return Err(MeshError::NotJoined);
+        let mut changed = false;
+        for part in parts {
+            let groups: HashSet<u16> = part.iter().map(|&f| self.faces[f].group).collect();
+            let list = groups
+                .iter()
+                .map(|&g| self.modifiers_of_group(g))
+                .find(|list| !list.is_empty())
+                .unwrap_or_default();
+            if list.is_empty() {
+                for &face in &part {
+                    if self.faces[face].group != 0 {
+                        self.faces[face].group = 0;
+                        changed = true;
+                    }
+                }
+                continue;
+            }
+            // Keep the first piece in the group; the others get new groups.
+            let pieces = self.connected_pieces(&part);
+            if pieces.len() < 2 {
+                continue;
+            }
+            for piece in &pieces[1..] {
+                let group = self.next_group()?;
+                for &face in piece {
+                    self.faces[face].group = group;
+                }
+                for &(_, modifier) in &list {
+                    self.add_modifier_unchecked(group, modifier)?;
+                }
+            }
+            changed = true;
         }
-        for &face in &grouped {
-            self.faces[face].group = 0;
+        if !changed {
+            return Err(MeshError::NotJoined);
         }
         let pieces = self.selected_parts().len();
         Ok(pieces)
+    }
+
+    /// These faces split into pieces connected by edges, ignoring groups.
+    fn connected_pieces(&self, faces: &[FaceId]) -> Vec<Vec<FaceId>> {
+        let slots = self
+            .vertices()
+            .map(|(id, _)| id.index() as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut finder = PartFinder {
+            parent: (0..slots).collect(),
+        };
+        for (_, edge) in self.edges() {
+            let [a, b] = edge.vertices.map(|v| v.index() as usize);
+            finder.join(a, b);
+        }
+        let mut order: Vec<usize> = Vec::new();
+        let mut pieces: HashMap<usize, Vec<FaceId>> = HashMap::new();
+        for &face in faces {
+            let root = self.face_root(&mut finder, face);
+            pieces
+                .entry(root)
+                .or_insert_with(|| {
+                    order.push(root);
+                    Vec::new()
+                })
+                .push(face);
+        }
+        order
+            .into_iter()
+            .map(|root| pieces.remove(&root).unwrap_or_default())
+            .collect()
     }
 }
 

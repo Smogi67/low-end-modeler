@@ -27,6 +27,7 @@ use std::fmt::{self, Write};
 use crate::error::MeshError;
 use crate::id::VertexId;
 use crate::mesh::Mesh;
+use crate::modifiers::Modifier;
 
 /// The project format's version. A newer file is refused rather than misread.
 pub const PROJECT_VERSION: u32 = 1;
@@ -146,6 +147,37 @@ impl Mesh {
             if self.edges[id].first_corner.is_none() {
                 let [a, b] = edge.vertices;
                 let _ = writeln!(out, "l {} {}", number(a), number(b));
+            }
+        }
+        // Modifiers, by part and in the order each part runs them.
+        let mut groups: Vec<u16> = self.modifiers().map(|(_, m)| m.group).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for group in groups {
+            for (_, modifier) in self.modifiers_of_group(group) {
+                let merge = |m: Option<f32>| m.map_or("off".to_string(), |d| d.to_string());
+                let _ = match modifier {
+                    Modifier::Mirror { axes, merge: m } => writeln!(
+                        out,
+                        "m {group} mirror {} {} {} {}",
+                        u8::from(axes[0]),
+                        u8::from(axes[1]),
+                        u8::from(axes[2]),
+                        merge(m)
+                    ),
+                    Modifier::Array {
+                        count,
+                        offset,
+                        merge: m,
+                    } => writeln!(
+                        out,
+                        "m {group} array {count} {} {} {} {}",
+                        offset[0],
+                        offset[1],
+                        offset[2],
+                        merge(m)
+                    ),
+                };
             }
         }
         out
@@ -288,6 +320,12 @@ impl Mesh {
                         (FileKind::Obj, _) => 180,
                     };
                 }
+                "m" if kind == FileKind::Project => {
+                    let modifier = parse_modifier(&rest)
+                        .ok_or_else(|| bad(line, "a modifier this version cannot read"))?;
+                    mesh.add_modifier_unchecked(modifier.0, modifier.1)
+                        .map_err(|e| bad(line, e.to_string()))?;
+                }
                 "g" if kind == FileKind::Project => {
                     group = rest
                         .first()
@@ -312,5 +350,37 @@ impl Mesh {
             return Err(bad(0, "this is not a Mixer project file"));
         }
         Ok((mesh, report))
+    }
+}
+
+/// Reads `<group> mirror <x> <y> <z> <merge>` or
+/// `<group> array <count> <x> <y> <z> <merge>`, where merge is a distance or "off".
+fn parse_modifier(words: &[&str]) -> Option<(u16, Modifier)> {
+    let group: u16 = words.first()?.parse().ok()?;
+    let merge = |w: &str| -> Option<Option<f32>> {
+        if w == "off" {
+            Some(None)
+        } else {
+            w.parse::<f32>().ok().map(Some)
+        }
+    };
+    let number = |w: &str| w.parse::<f32>().ok();
+    match (words.get(1).copied()?, &words[2..]) {
+        ("mirror", [x, y, z, m]) => Some((
+            group,
+            Modifier::Mirror {
+                axes: [*x == "1", *y == "1", *z == "1"],
+                merge: merge(m)?,
+            },
+        )),
+        ("array", [count, x, y, z, m]) => Some((
+            group,
+            Modifier::Array {
+                count: count.parse().ok()?,
+                offset: [number(x)?, number(y)?, number(z)?],
+                merge: merge(m)?,
+            },
+        )),
+        _ => None,
     }
 }
