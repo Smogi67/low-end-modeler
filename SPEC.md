@@ -88,7 +88,7 @@ The code is in `crates/mesh`. The top of `crates/mesh/src/lib.rs` explains the d
 
 ### Decisions made in Stage 2
 
-The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/mixer (renamed from low-end-modeler; the old address forwards). Each push to `main` builds the .exe with GitHub Actions.
+The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/low-end-modeler. Each push to `main` builds the .exe with GitHub Actions.
 
 - **Rendering:** GLSL 1.20 shaders and vertex buffers only, which are both part of OpenGL 2.1. All OpenGL calls are in `renderer.rs`.
 - **Idle use:** the main loop sleeps until an event arrives, and draws only if that event changed something.
@@ -175,7 +175,7 @@ The owner asked for a free cut, for joining shapes ("merging"), and for a mode t
 
 ### Decisions made in Stage 9, part 2 (owner's choices)
 
-- **Name:** the owner renamed the project **Mixer**: the programs are `mixer.exe` and `mixer-setup.exe`, the download is `mixer`, the crates are `mixer`, `mixer-setup` and `mixer-mesh`, and the GitHub repository is `Smogi67/mixer`.
+- **Name:** the owner renamed the project **Mixer**: the programs are `mixer.exe` and `mixer-setup.exe`, the download is `mixer`, the crates are `mixer`, `mixer-setup` and `mixer-mesh`. The GitHub repository is still `Smogi67/low-end-modeler`: renaming it is a setting only the owner can change on GitHub.
 - **Project files:** now `.mix`, starting `mixer 1`. Older `.lem` files still open. Projects also remember their export format, scale and file name (`export`, `scale` and `exportname` lines).
 - **Start window:** shows every time Mixer starts, unless it was started with a file. Quick Project starts at once with a cube, saved as "Quick" plus the date and time in Documents > Mixer > Quick Projects. New Project asks for a name, a starting shape, and the export format and scale, and saves to Documents > Mixer > Projects > name > name.mix. A taken name is refused, not overwritten. Recent lists the last 8 projects opened or saved, with how long ago. Open other file, and Mixer folder (opens it in Explorer), are there too. File > Start window goes back to it.
 - **Exports:** go to an Exports folder beside the project. Before a project is saved, to Documents > Mixer > Exports.
