@@ -366,6 +366,7 @@ mod tests {
             first_corner: CornerId::dangling(),
             corner_count: corners.len() as u32,
             selected: false,
+            group: 0,
         });
         let ids: Vec<CornerId> = corners
             .iter()

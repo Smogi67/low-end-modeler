@@ -14,6 +14,9 @@
 //! l 3 1
 //! ```
 //!
+//! `g 2` puts the faces after it in group 2, which joins them into one part, and
+//! `g 0` ends the group. Older versions of the modeler skip these lines.
+//!
 //! OBJ files from other programs read with the same parser. They are Y up, so they are
 //! turned to Z up, the reverse of export. Texture coordinates, normals, groups and
 //! materials are skipped, since the modeler has no use for them yet.
@@ -91,7 +94,12 @@ impl Mesh {
             let _ = writeln!(out, "v {x} {y} {z}");
         }
         let number = |v: VertexId| numbers[v.index() as usize];
-        for (face, _) in self.faces() {
+        let mut group = 0;
+        for (face, f) in self.faces() {
+            if f.group != group {
+                group = f.group;
+                let _ = writeln!(out, "g {group}");
+            }
             out.push('f');
             for corner in self.face_walk(face) {
                 let _ = write!(out, " {}", number(self.corners[corner].vertex));
@@ -114,6 +122,7 @@ impl Mesh {
         let mut vertices: Vec<VertexId> = Vec::new();
         let mut seen_header = false;
         let mut seen_faces: HashSet<Vec<VertexId>> = HashSet::new();
+        let mut group: u16 = 0;
 
         // OBJ numbers from 1, and negative numbers count back from the latest vertex.
         let index = |token: &str, line: usize, count: usize| -> Result<usize, ParseError> {
@@ -191,7 +200,7 @@ impl Mesh {
                         continue;
                     }
                     match mesh.add_face(&corners) {
-                        Ok(_) => {}
+                        Ok(face) => mesh.faces[face].group = group,
                         Err(MeshError::FaceExists(_) | MeshError::RepeatedVertex(_)) => {
                             report.skipped_faces += 1;
                         }
@@ -210,6 +219,12 @@ impl Mesh {
                         }
                         previous = Some(v);
                     }
+                }
+                "g" if kind == FileKind::Project => {
+                    group = rest
+                        .first()
+                        .and_then(|g| g.parse().ok())
+                        .ok_or_else(|| bad(line, "a group needs a number from 0 to 65535"))?;
                 }
                 // Parts of OBJ files the modeler does not use.
                 "vt" | "vn" | "vp" | "o" | "g" | "s" | "usemtl" | "mtllib" => {}

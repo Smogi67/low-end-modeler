@@ -11,7 +11,7 @@
 use std::fmt::Write;
 
 use crate::error::MeshError;
-use crate::id::{FaceId, VertexId};
+use crate::id::VertexId;
 use crate::mesh::Mesh;
 
 const ARRAY_BUFFER: u32 = 34962;
@@ -34,45 +34,6 @@ fn json_number(value: f32) -> String {
 }
 
 impl Mesh {
-    /// The faces of each connected part, in a fixed order.
-    pub fn parts(&self) -> Vec<Vec<FaceId>> {
-        let slots = self
-            .vertices()
-            .map(|(id, _)| id.index() as usize + 1)
-            .max()
-            .unwrap_or(0);
-        let mut parent: Vec<usize> = (0..slots).collect();
-        fn root(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-        for (_, edge) in self.edges() {
-            let [a, b] = edge.vertices.map(|v| v.index() as usize);
-            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
-            parent[ra] = rb;
-        }
-        let mut order: Vec<usize> = Vec::new();
-        let mut groups: std::collections::HashMap<usize, Vec<FaceId>> = Default::default();
-        for (face, _) in self.faces() {
-            let first: VertexId = self.corners[self.faces[face].first_corner].vertex;
-            let r = root(&mut parent, first.index() as usize);
-            groups
-                .entry(r)
-                .or_insert_with(|| {
-                    order.push(r);
-                    Vec::new()
-                })
-                .push(face);
-        }
-        order
-            .into_iter()
-            .map(|r| groups.remove(&r).unwrap_or_default())
-            .collect()
-    }
-
     /// The mesh as a binary glTF file, with every position multiplied by `scale`.
     /// Loose vertices and edges are left out.
     pub fn to_glb(&self, scale: f32) -> Result<Vec<u8>, MeshError> {

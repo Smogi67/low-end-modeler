@@ -10,7 +10,7 @@ use imgui::{
     WindowFlags,
 };
 use modeler_mesh::{
-    BevelSettings, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES,
+    BevelSettings, BooleanOp, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES,
 };
 
 use crate::editor::Target;
@@ -24,6 +24,19 @@ pub const STATUS_BAR: f32 = 30.0;
 pub const MARGIN: f32 = 10.0;
 pub const RIGHT_PANEL: f32 = 300.0;
 const TOOL_BUTTON: f32 = 40.0;
+/// Buttons in the tool strip, counting Mirror, and the gaps between their groups.
+const TOOL_COUNT: f32 = 18.0;
+const TOOL_GROUPS: f32 = 5.0;
+
+/// The tool strip's button size: full size when the window is tall enough, smaller on
+/// a short screen so that every tool still fits.
+pub fn tool_button_size(display_height: f32) -> f32 {
+    let room = display_height - TOP_BAR - STATUS_BAR - MARGIN * 2.0 - 16.0;
+    let gaps = (TOOL_GROUPS - 1.0) * 14.0;
+    ((room - gaps) / TOOL_COUNT - 4.0)
+        .clamp(24.0, TOOL_BUTTON)
+        .floor()
+}
 const GIZMO: f32 = 104.0;
 const LABEL_COLUMN: f32 = 96.0;
 const BEVEL_PANEL: f32 = 300.0;
@@ -310,6 +323,14 @@ pub struct PanelInfo<'a> {
     pub gizmo_tool: Option<Kind>,
     /// Whether the last bevel can still be changed with the bevel panel.
     pub bevel_panel: bool,
+    /// While drawing a knife path: whether it cuts through to hidden faces.
+    pub knife: Option<bool>,
+    /// While dragging a bisect line.
+    pub bisect: bool,
+    /// View mode: lines and points hidden.
+    pub view_only: bool,
+    /// How many parts have something selected.
+    pub parts_selected: usize,
 }
 
 /// Standard views, as in Blender's numpad 1, 3 and 7 and their opposites.
@@ -383,6 +404,18 @@ pub enum Action {
     AdjustBevel,
     /// Turns the handles for moving, rotating or scaling on or off.
     GizmoTool(Kind),
+    /// Starts drawing a knife path.
+    Knife,
+    /// Starts dragging a line to cut the selected faces along.
+    Bisect,
+    /// Joins the selected parts so they act as one.
+    Join,
+    /// Undoes joining.
+    Separate,
+    /// Union, subtract or intersect of the selected parts.
+    Boolean(BooleanOp),
+    /// Switches between Edit mode and View mode, which hides lines and points.
+    ToggleView,
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -415,7 +448,7 @@ pub struct UiOutput {
 
 /// The part of the window the 3D view shows through, between the panels.
 pub fn viewport_area(display: [f32; 2]) -> [f32; 4] {
-    let left = MARGIN * 2.0 + TOOL_BUTTON + 16.0;
+    let left = MARGIN * 2.0 + tool_button_size(display[1]) + 16.0;
     let right = display[0] - RIGHT_PANEL - MARGIN * 2.0;
     let top = TOP_BAR;
     let bottom = display[1] - STATUS_BAR;
@@ -817,6 +850,27 @@ fn top_bar(
     ui.same_line_with_spacing(0.0, 24.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1]]);
 
+    let looks = [
+        (
+            icon::EDIT,
+            "",
+            !info.view_only,
+            "Edit mode: lines, points and selection (Tab)",
+        ),
+        (
+            icon::VIEW,
+            "",
+            info.view_only,
+            "View mode: just the shape (Tab)",
+        ),
+    ];
+    if let Some(i) = segmented(ui, "look", &looks, height)
+        && (i == 1) != info.view_only
+    {
+        *action = Some(Action::ToggleView);
+    }
+    ui.same_line_with_spacing(0.0, 12.0);
+
     let modes = [
         (
             icon::PART,
@@ -1080,6 +1134,9 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                     ("Slide edges", "G G"),
                     ("Extrude, inset", "E, I"),
                     ("Loop cut", "Ctrl+R"),
+                    ("Knife", "K, then click, Enter"),
+                    ("Join, separate shapes", "Ctrl+J, P"),
+                    ("Edit or View mode", "Tab"),
                     ("Bevel edges", "Ctrl+B"),
                     ("Bevel vertices", "Ctrl+Shift+B"),
                     ("Duplicate", "Shift+D"),
@@ -1232,6 +1289,7 @@ fn triangle_budget(ui: &Ui, triangles: usize) {
 type Tool = (&'static str, char, Action, &'static str, &'static str);
 
 fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Action>) {
+    let size = tool_button_size(ui.io().display_size[1]);
     let any = info.selected_vertices > 0;
     let active = info.transform_help.map(|(kind, _)| kind);
     let font = ui.push_font(fonts.tool);
@@ -1316,6 +1374,20 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
                 "",
             ),
             (
+                "knife",
+                icon::KNIFE,
+                Action::Knife,
+                "Knife: click points across faces, then Enter",
+                "K",
+            ),
+            (
+                "bisect",
+                icon::BISECT,
+                Action::Bisect,
+                "Bisect: drag a line to cut the selected faces straight through",
+                "",
+            ),
+            (
                 "bevel",
                 icon::BEVEL,
                 Action::Bevel,
@@ -1330,11 +1402,7 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
             ui.dummy([0.0, 2.0]);
             let p = ui.cursor_screen_pos();
             ui.get_window_draw_list()
-                .add_line(
-                    [p[0] + 8.0, p[1]],
-                    [p[0] + TOOL_BUTTON - 8.0, p[1]],
-                    color::BORDER,
-                )
+                .add_line([p[0] + 8.0, p[1]], [p[0] + size - 8.0, p[1]], color::BORDER)
                 .build();
             ui.dummy([0.0, 4.0]);
         }
@@ -1344,23 +1412,25 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
                     if Some(*kind) == active || Some(*kind) == info.gizmo_tool)
                 || (*choice == Action::Inset && active == Some(Kind::Inset))
                 || (*choice == Action::LoopCut && info.loop_cut.is_some())
+                || (*choice == Action::Knife && info.knife.is_some())
+                || (*choice == Action::Bisect && info.bisect)
                 || (*choice == Action::Bevel && active == Some(Kind::Bevel));
             // A loop cut picks its own edge, so it needs only something to cut. The
             // handle tools can be turned on before anything is selected.
-            let enabled = if *choice == Action::LoopCut {
+            let enabled = if matches!(choice, Action::LoopCut | Action::Knife) {
                 info.vertices > 0
             } else if matches!(choice, Action::GizmoTool(_)) {
                 true
             } else {
                 any
             };
-            if icon_button(ui, id, *glyph, lit, enabled, TOOL_BUTTON) {
+            if icon_button(ui, id, *glyph, lit, enabled, size) {
                 *action = Some(*choice);
             }
             tooltip(ui, name, key);
         }
         if g == 1 {
-            if icon_button(ui, "mirror", icon::MIRROR, false, any, TOOL_BUTTON) {
+            if icon_button(ui, "mirror", icon::MIRROR, false, any, size) {
                 ui.open_popup("##mirror_popup");
             }
             tooltip(ui, "Mirror", "");
@@ -1522,23 +1592,27 @@ fn panel(
         true,
     );
     let edge_modes = matches!(info.mode, ModeChoice::Vertex | ModeChoice::Edge);
-    button_row(
-        ui,
-        action,
-        &[
-            (
-                "Loop##sel",
-                Action::SelectLoops,
-                "Grow selected edges along their loops. Double-click an edge for the same.",
-            ),
-            (
-                "Ring##sel",
-                Action::SelectRings,
-                "Grow selected edges across their faces, side by side",
-            ),
-        ],
-        edge_modes && info.selected_vertices > 0,
-    );
+    // Part mode works on whole shapes, so it shows ways to combine them instead of
+    // edge loops. That keeps the panel short enough for a small screen.
+    if info.mode != ModeChoice::Part {
+        button_row(
+            ui,
+            action,
+            &[
+                (
+                    "Loop##sel",
+                    Action::SelectLoops,
+                    "Grow selected edges along their loops. Double-click an edge for the same.",
+                ),
+                (
+                    "Ring##sel",
+                    Action::SelectRings,
+                    "Grow selected edges across their faces, side by side",
+                ),
+            ],
+            edge_modes && info.selected_vertices > 0,
+        );
+    }
     let disabled = ui.begin_disabled(info.selected_vertices == 0);
     if ui.button_with_size(
         format!("{}  Merge close vertices##clean", icon::MERGE_CLOSE),
@@ -1547,6 +1621,62 @@ fn panel(
         *action = Some(Action::MergeByDistance);
     }
     disabled.end();
+    if info.mode != ModeChoice::Part {
+        return;
+    }
+
+    ui.dummy([0.0, 6.0]);
+    heading(ui, fonts, "COMBINE SHAPES");
+    let two = info.parts_selected >= 2;
+    let label = |glyph: char, name: &str| format!("{glyph}  {name}##combine");
+    let (join, separate) = (label(icon::JOIN, "Join"), label(icon::SEPARATE, "Separate"));
+    button_row(
+        ui,
+        action,
+        &[
+            (
+                join.as_str(),
+                Action::Join,
+                "Keep the shapes as they are, but select, move and export them as one (Ctrl+J)",
+            ),
+            (
+                separate.as_str(),
+                Action::Separate,
+                "Undo Join: each connected piece is its own part again (P)",
+            ),
+        ],
+        info.parts_selected >= 1,
+    );
+    let (union, subtract, intersect) = (
+        label(icon::UNION, "Union"),
+        label(icon::SUBTRACT, "Subtract"),
+        label(icon::INTERSECT, "Intersect"),
+    );
+    button_row(
+        ui,
+        action,
+        &[
+            (
+                union.as_str(),
+                Action::Boolean(BooleanOp::Union),
+                "Melt the shapes into one solid",
+            ),
+            (
+                subtract.as_str(),
+                Action::Boolean(BooleanOp::Subtract),
+                "Cut the shape you clicked last out of the others",
+            ),
+            (
+                intersect.as_str(),
+                Action::Boolean(BooleanOp::Intersect),
+                "Keep only where the shapes overlap",
+            ),
+        ],
+        two,
+    );
+    if !two {
+        ui.text_colored(color::FAINT, "Shift+click two or more shapes.");
+    }
 }
 
 /// The size, detail and location fields of the shape settings.
@@ -1757,6 +1887,28 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
         parts.push(("Scroll or +/- for more".to_string(), color::FAINT));
         parts.push(("Click an edge to cut".to_string(), color::FAINT));
         parts.push(("Esc cancel".to_string(), color::FAINT));
+    }
+    if let Some(through) = info.knife {
+        parts.push(("Knife".to_string(), color::ACCENT));
+        parts.push(("Click to add points".to_string(), color::FAINT));
+        parts.push(("Enter cut".to_string(), color::FAINT));
+        parts.push(("Backspace undo point".to_string(), color::FAINT));
+        let z = if through {
+            "Z: cuts hidden faces too"
+        } else {
+            "Z: front faces only"
+        };
+        parts.push((z.to_string(), color::TEXT));
+        parts.push(("Esc cancel".to_string(), color::FAINT));
+    }
+    if info.bisect {
+        parts.push(("Bisect".to_string(), color::ACCENT));
+        parts.push(("Drag a line across the selection".to_string(), color::FAINT));
+        parts.push(("Esc cancel".to_string(), color::FAINT));
+    }
+    if info.view_only && parts.is_empty() {
+        parts.push(("View mode".to_string(), color::ACCENT));
+        parts.push(("Tab to edit".to_string(), color::FAINT));
     }
     if let Some((kind, axis)) = info.transform_help {
         parts.push((kind.name().to_string(), color::ACCENT));
@@ -1980,6 +2132,24 @@ pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gi
     }
 }
 
+/// A knife path being drawn, and where it will cut.
+pub fn draw_knife(ui: &Ui, path: &[[f32; 2]], cuts: &[[f32; 2]]) {
+    let list = ui.get_foreground_draw_list();
+    let line = [1.0, 0.85, 0.25, 1.0];
+    for pair in path.windows(2) {
+        list.add_line(pair[0], pair[1], line).thickness(2.0).build();
+    }
+    for &p in &path[..path.len().saturating_sub(1)] {
+        list.add_circle(p, 3.5, line).filled(true).build();
+    }
+    for &p in cuts {
+        list.add_circle(p, 4.5, [0.35, 0.95, 0.45, 1.0])
+            .filled(true)
+            .build();
+        list.add_circle(p, 4.5, [0.05, 0.08, 0.05, 1.0]).build();
+    }
+}
+
 /// Draws a selection shape being dragged.
 /// Lines on top of the 3D view, such as where a loop cut will go.
 pub fn draw_lines(ui: &Ui, lines: &[[[f32; 2]; 2]]) {
@@ -2120,6 +2290,10 @@ mod tests {
             confirm: None,
             gizmo_tool: None,
             bevel_panel: false,
+            knife: None,
+            bisect: false,
+            view_only: false,
+            parts_selected: 2,
         }
     }
 
@@ -2170,6 +2344,11 @@ mod tests {
             if target == Target::Nothing && case == 0 {
                 info.bevel_panel = true;
                 info.gizmo_tool = Some(Kind::Rotate);
+                info.knife = Some(true);
+            }
+            if case == 2 {
+                info.bisect = true;
+                info.view_only = true;
             }
             let mut state = PanelState {
                 message: "Saved model.obj".to_string(),
@@ -2232,10 +2411,19 @@ mod tests {
                 frame(context, state);
                 frame(context, state);
             };
+            // The View mode button. The File menu, opened earlier in each row of the sweep,
+            // is still open when the sweep reaches it, so click it on its own.
+            click(&mut context, &mut state, 459.0, 25.0);
+            // The mirror tool: the seventh button, below one gap between groups.
+            let size = tool_button_size(800.0);
+            let mirror_button = [
+                MARGIN + 8.0 + size / 2.0,
+                TOP_BAR + MARGIN + 8.0 + 6.0 * (size + 4.0) + 14.0 + size / 2.0,
+            ];
             // The export button (top right) and the mirror tool (in the tool strip).
             for (opener, xs, ys) in [
                 ([1215.0, 25.0], 900..1280, 52..480),
-                ([38.0, 365.0], 60..320, 300..520),
+                (mirror_button, 60..320, 300..520),
                 // The File menu, beside the name at the top left.
                 ([200.0, 25.0], 150..460, 40..260),
             ] {
@@ -2273,6 +2461,14 @@ mod tests {
             "Bevel",
             "AdjustBevel",
             "GizmoTool(Move)",
+            "Knife",
+            "Bisect",
+            "Join",
+            "Separate",
+            "Boolean(Union)",
+            "Boolean(Subtract)",
+            "Boolean(Intersect)",
+            "ToggleView",
             "New",
             "Open",
             "Save",
@@ -2389,7 +2585,7 @@ mod tests {
     #[test]
     fn the_viewport_area_sits_between_the_panels() {
         let [x, y, w, h] = viewport_area([1280.0, 800.0]);
-        assert!(x > TOOL_BUTTON && y == TOP_BAR);
+        assert!(x > tool_button_size(800.0) && y == TOP_BAR);
         assert!(x + w < 1280.0 - RIGHT_PANEL && y + h == 800.0 - STATUS_BAR);
         let tiny = viewport_area([100.0, 50.0]);
         assert!(tiny[2] >= 1.0 && tiny[3] >= 1.0);

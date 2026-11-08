@@ -116,6 +116,8 @@ pub struct View {
     pub fade_radius: f32,
     /// How far points are pulled toward the camera, in depth-buffer units.
     pub point_depth_bias: f32,
+    /// Edges, points and selection colors. Off in View mode.
+    pub overlays: bool,
 }
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
@@ -402,15 +404,20 @@ impl Renderer {
                     stride,
                     3 * size,
                 );
-                gl.enable_vertex_attrib_array(SELECTED_ATTRIBUTE);
-                gl.vertex_attrib_pointer_f32(
-                    SELECTED_ATTRIBUTE,
-                    1,
-                    glow::FLOAT,
-                    false,
-                    stride,
-                    6 * size,
-                );
+                if view.overlays {
+                    gl.enable_vertex_attrib_array(SELECTED_ATTRIBUTE);
+                    gl.vertex_attrib_pointer_f32(
+                        SELECTED_ATTRIBUTE,
+                        1,
+                        glow::FLOAT,
+                        false,
+                        stride,
+                        6 * size,
+                    );
+                } else {
+                    // Every face unselected.
+                    gl.vertex_attrib_1_f32(SELECTED_ATTRIBUTE, 0.0);
+                }
                 gl.enable(glow::POLYGON_OFFSET_FILL);
                 gl.polygon_offset(1.0, 1.0);
                 gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
@@ -419,7 +426,7 @@ impl Renderer {
             }
 
             // Edges and points, using the grid's shader.
-            if self.edge_vertex_count > 0 || self.point_vertex_count > 0 {
+            if view.overlays && (self.edge_vertex_count > 0 || self.point_vertex_count > 0) {
                 gl.use_program(Some(self.program));
                 gl.uniform_1_f32(self.depth_bias.as_ref(), 0.0);
                 let stride = FLOATS_PER_LINE_VERTEX as i32 * size;

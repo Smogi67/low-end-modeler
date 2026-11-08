@@ -2,8 +2,8 @@
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 8 code written. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner's laptop tests of Stages 3 to 8 and the interface redesign are still needed. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
-Next step: **The owner's laptop test of the release zip. Then Stage 9, later features one at a time; ask the owner which first.**
+Status: **Stage 9, part 1 code written: knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Next step: **The owner's feedback on Stage 9, part 1. Then the next later feature; ask the owner which.**
 
 ## 1. Goal
 
@@ -152,12 +152,24 @@ The mesh code is in `crates/mesh/src/loops.rs`.
 
 The mesh code is in `crates/mesh/src/bevel.rs`, whose top comment explains the method.
 
-- **Edge bevel only.** Selected edges are beveled; in face mode that means every edge of the selected faces, as in Blender. Vertex-only bevel and Blender's profile shape slider are not built.
+- **Edge bevel only.** Selected edges are beveled; in face mode that means every edge of the selected faces, as in Blender. Vertex-only bevel and Blender's profile shape slider were added later at the owner's request, with a Bevel panel; see the progress log.
 - **Using it (Ctrl + B or the tool button):** move the mouse away from where the bevel started to widen it, scroll or press + and - for 1 to 16 segments, Ctrl snaps the width to tenths, click to confirm, and Esc or right-click to cancel. The number of segments is remembered.
 - **Shape:** more than one segment gives a round profile: an exact quarter circle on a right-angled edge. Where three beveled edges meet, as at a cube corner, the corner becomes a triangle of a sphere divided into small triangles, so a fully rounded cube stays convex. Other corners with three or more points get a flat face (one segment) or a fan of triangles around a raised center.
 - **Width limit:** the width stops before any new point passes the middle of an edge it moves along, so the shape cannot fold over itself. This replaces Blender's "clamp overlap" option.
 - **Refused:** edges without a face on each side (borders and loose edges), and vertices whose faces do not form one simple fan facing the same way. The message says why.
 - **Drag speed:** every new point is its original vertex plus the width times a fixed direction, so dragging only moves points. Changing segments rebuilds the bevel.
+
+### Decisions made in Stage 9, part 1 (owner's choices)
+
+The owner asked for a free cut, for joining shapes ("merging"), and for a mode that hides the lines. Booleans were moved up from last on the later list at the owner's request.
+
+- **Knife (K or the tool button):** click points across the model, Enter or a double click to cut, Backspace removes the last point, Z cuts hidden faces too, Esc or right-click cancels. The cut goes where the path crosses edges; clicks near a corner go through the corner, and other clicks only steer the path. Code: `crates/app/src/knife.rs` finds the crossings on screen, `crates/mesh/src/cut.rs` cuts.
+- **Bisect (tool button):** drag a line across the selection; the selected faces are cut where the flat plane through that line and the view passes. Bisect's options to delete one side or fill the cut are not built.
+- **Join and Separate (Ctrl+J, P, or the Combine buttons in Part mode):** joined shapes keep their geometry but count as one part: clicking one selects all, and glTF export makes them one MeshPart. Each face stores a group number (0 for none), saved in project files as `g` lines, which older versions skip. Tools that rebuild a joined shape's faces keep it in its group. Code: `crates/mesh/src/groups.rs`.
+- **Union, Subtract, Intersect (Combine buttons in Part mode):** need closed shapes. Subtract cuts the shape clicked last out of each other selected shape. The method is csg.js's BSP trees, kept in flat arrays with no recursion so Windows' 1 MB stack cannot overflow; afterwards points are welded, edges get the points other faces split them at, so the result is closed, and faces in one plane are joined again. Code: `crates/mesh/src/boolean.rs`. In tests, 2,600 random combinations of cubes, spheres, cylinders and cones gave closed surfaces; while developing, 2 in 3,000 left a speck smaller than a thousandth of a unit where shapes only just touched.
+- **M in Part mode** no longer squashes whole shapes: it explains how to merge points or join shapes instead.
+- **View mode (Tab or the eye button at the top):** hides edges, points, selection color and handles; clicking does not select. Any editing action switches back to Edit mode.
+- **Tool strip:** buttons shrink on short screens so all tools fit, down to 24 pixels.
 
 ### Decisions made in Stage 8
 
@@ -201,9 +213,8 @@ The owner decided this on 2026-11-05.
 
 ### Later
 
-- Knife and bisect
 - Spin, screw, solidify, shrink/fatten, grid fill, convex hull
-- Modifiers: mirror and array first, then solidify, bevel, decimate, weld, triangulate, and boolean last
+- Modifiers: mirror and array first, then solidify, bevel, decimate, weld, triangulate, and boolean (the one-time boolean tools are done)
 - UV seams, unwrapping, and UV editing
 - Simple materials
 - Mesh checks for bad geometry before export
@@ -289,6 +300,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-07 | 7 | Edge bevel with width and 1 to 16 segments, round profiles, spherical cube corners, and a width limit. 13 new tests, including exact volumes for a flat cube-edge cut and a mitred loop, points lying on the true quarter circle and corner sphere, convexity of a rounded cube, and a random test of 310 bevels on six shapes that checked validity, holes, face direction and exact undo. Run on Linux with OpenGL limited to 2.1 using simulated input: drag, segment change, confirm, undo and cancel all worked | Not yet |
 | 2026-11-07 | 8 | Project files, OBJ import, glTF export, File menu, shortcuts sheet, unsaved-changes prompts, and the setup program. 18 new tests, including exact project round trips and glTF read back for volume and winding; sample files passed the Khronos glTF validator. On GitHub's Windows machine, setup downloaded SDL2 in 0.3 seconds, matched both fingerprints, installed it, and Windows loaded it; a second run found it in place. Save, prompts and menus run on Linux with simulated input | Not yet |
 | 2026-11-08 | 7 | At the owner's request: Blender-style handles (move arrows, rotate rings, scale handles), turned on and off with the Move, Rotate and Scale buttons, while G, R and S still work with the mouse alone. A Bevel panel after each bevel, like Blender's, with Affect (vertices or edges), Width, Segments, Shape and Clamp overlap; any change redoes the bevel. Vertex bevel added (Ctrl+Shift+B). Left out on purpose: material index, seams, sharp edges, normals options, width type, miter, intersection, custom profile and loop slide, which do not matter for a Roblox mesh. 7 new mesh tests, including an exact cube-corner volume. Run on Linux with OpenGL limited to 2.1 using simulated input: all three handles, axis drags, the view ring, every panel control, and undo worked, and idle CPU with handles showing measured 0.00%. Also fixed: after Ctrl+B, the interface thought Ctrl was still held, so clicking a slider started typing in it | Not yet |
+| 2026-11-08 | 9 | Owner's choices: knife, bisect, join and separate, union, subtract and intersect, View mode, and M no longer squashing shapes in Part mode. 24 new mesh tests and 3 app tests, including exact volumes of combined cubes, a hole through a cube, and 150 random combinations that must stay closed (2,000 more ran while writing it). Run on Linux with OpenGL limited to 2.1 using simulated input: knife preview and cut, bisect, union, subtract, join, the M message, and View mode all worked | Not yet |
 
 ## 12. Open questions
 

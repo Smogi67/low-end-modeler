@@ -80,6 +80,7 @@ impl Mesh {
             first_corner: CornerId::dangling(),
             corner_count: count as u32,
             selected: false,
+            group: 0,
         });
         let mut corners = Vec::with_capacity(count);
         for (i, &vertex) in vertices.iter().enumerate() {
@@ -239,6 +240,7 @@ impl Mesh {
             None => self.link_new_edge(a, b),
         };
         let selected = self.faces[face].selected;
+        let group = self.faces[face].group;
         if selected {
             self.edges[edge].selected = true;
         }
@@ -246,6 +248,7 @@ impl Mesh {
             first_corner: corner_b,
             corner_count: moved_part.len() as u32 + 1,
             selected,
+            group,
         });
 
         let before_a = self.corners[corner_a].prev;

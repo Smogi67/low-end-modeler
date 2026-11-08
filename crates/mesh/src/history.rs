@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::mem::size_of;
 
 use crate::error::MeshError;
+use crate::id::{FaceId, VertexId};
 use crate::mesh::{Mesh, MeshDelta};
 
 /// Default history memory cap: 64 MiB. The target laptop has 4 GB of RAM shared
@@ -62,6 +63,9 @@ pub struct Document {
     /// The ID of the newest step dropped from history, which the mesh still includes
     /// once everything kept has been undone.
     dropped_id: u64,
+    /// Where joined groups were when the open edit began. See
+    /// [`Mesh::restore_groups`].
+    group_marks: Vec<(FaceId, VertexId, u16)>,
 }
 
 impl Document {
@@ -81,6 +85,7 @@ impl Document {
             active_edit: None,
             next_id: 1,
             dropped_id: 0,
+            group_marks: Vec::new(),
         }
     }
 
@@ -120,6 +125,7 @@ impl Document {
         }
         self.mesh.begin_journal();
         self.active_edit = Some(label);
+        self.group_marks = self.mesh.group_marks();
         Ok(())
     }
 
@@ -140,6 +146,9 @@ impl Document {
     /// mesh fails straight away in tests.
     pub fn commit_edit(&mut self) -> Result<bool, MeshError> {
         let label = self.active_edit.take().ok_or(MeshError::NoEditInProgress)?;
+        // A tool that rebuilt every face of a joined part gave the new faces no group.
+        let marks = std::mem::take(&mut self.group_marks);
+        self.mesh.restore_groups(&marks);
         let delta = self.mesh.finish_journal();
         debug_assert_eq!(
             self.mesh.validate(),

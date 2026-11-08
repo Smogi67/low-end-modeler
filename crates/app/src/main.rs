@@ -11,6 +11,7 @@ mod export;
 mod gizmo;
 mod grid;
 mod imgui_gl;
+mod knife;
 mod picking;
 mod platform;
 mod renderer;

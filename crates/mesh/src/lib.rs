@@ -73,8 +73,11 @@
 #![warn(missing_docs)]
 
 mod bevel;
+mod boolean;
+mod cut;
 mod error;
 mod gltf;
+mod groups;
 mod history;
 mod id;
 mod loops;
@@ -90,6 +93,8 @@ mod triangulate;
 pub mod validate;
 
 pub use bevel::{Bevel, BevelSettings, MAX_BEVEL_SEGMENTS};
+pub use boolean::BooleanOp;
+pub use cut::CutPoint;
 pub use error::MeshError;
 pub use history::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits};
 pub use id::{CornerId, EdgeId, FaceId, VertexId};

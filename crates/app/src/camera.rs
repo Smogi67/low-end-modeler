@@ -238,6 +238,30 @@ impl Camera {
         }
     }
 
+    /// The line of sight through a pixel: where it starts and which way it goes.
+    /// In perspective every line starts at the eye; in orthographic view they run
+    /// side by side, starting on the plane through the target.
+    pub fn ray(&self, x: f32, y: f32, width: f32, height: f32) -> ([f32; 3], [f32; 3]) {
+        let [right, up, toward] = self.rotation_rows();
+        let (width, height) = (width.max(1.0), height.max(1.0));
+        let nx = 2.0 * x / width - 1.0;
+        let ny = 1.0 - 2.0 * y / height;
+        let half_height = self.world_height_at_target() / 2.0;
+        let half_width = half_height * width / height;
+        let along = |a: [f32; 3], b: [f32; 3], s: f32, t: f32| -> [f32; 3] {
+            std::array::from_fn(|i| a[i] * s + b[i] * t)
+        };
+        let side = along(right, up, nx * half_width, ny * half_height);
+        if self.orthographic {
+            let origin = std::array::from_fn(|i| self.target[i] + side[i]);
+            (origin, toward.map(|c| -c))
+        } else {
+            let eye = std::array::from_fn(|i| self.target[i] + toward[i] * self.distance);
+            let direction = std::array::from_fn(|i| side[i] - toward[i] * self.distance);
+            (eye, direction)
+        }
+    }
+
     pub fn view_projection(&self, aspect: f32) -> Mat4 {
         multiply(&self.projection_matrix(aspect), &self.view_matrix())
     }

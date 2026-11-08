@@ -93,6 +93,20 @@ pub enum MeshError {
     /// An edge to bevel needs a face on each side, and its ends need simple fans of
     /// faces that wind the same way.
     CannotBevel,
+    /// A cut must cross a face from one edge or corner to another.
+    NothingToCut,
+    /// Union, subtract and intersect need closed parts.
+    NotClosed,
+    /// Subtract needs to know which part to cut out.
+    NoCutter,
+    /// The shapes do not overlap, so nothing would be left.
+    EmptyResult,
+    /// The result would have too many pieces to handle.
+    TooComplex,
+    /// Joining needs at least two parts selected.
+    NeedsTwoParts,
+    /// None of the selected parts are joined to others.
+    NotJoined,
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -158,6 +172,19 @@ impl fmt::Display for MeshError {
                 f,
                 "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"
             ),
+            Self::NothingToCut => write!(
+                f,
+                "nothing was cut: a cut must cross a face from one edge to another"
+            ),
+            Self::NotClosed => write!(
+                f,
+                "union, subtract and intersect need closed shapes with no holes"
+            ),
+            Self::NoCutter => write!(f, "click the part to cut out last"),
+            Self::EmptyResult => write!(f, "the shapes do not overlap, so nothing would be left"),
+            Self::TooComplex => write!(f, "the result would be too detailed to make"),
+            Self::NeedsTwoParts => write!(f, "select at least two parts first"),
+            Self::NotJoined => write!(f, "the selected parts are not joined to anything"),
             Self::IdsExhausted => write!(f, "this session has used all available element IDs"),
         }
     }

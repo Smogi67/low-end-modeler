@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
 use modeler_mesh::{
-    BevelSettings, EdgeId, Element, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError,
-    SelectMode, SelectOp,
+    BevelSettings, BooleanOp, EdgeId, Element, FaceId, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS,
+    Mesh, MeshError, SelectMode, SelectOp,
 };
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
@@ -23,6 +23,7 @@ use crate::editor::Editor;
 use crate::export::{PROJECT_EXTENSION, open_file, save_project, warnings, write_export};
 use crate::gizmo::{self, Handle};
 use crate::imgui_gl::ImguiGl;
+use crate::knife::{KnifeCut, knife_cut, snapped_vertex};
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
 use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
@@ -30,7 +31,7 @@ use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
     Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, ViewState, build as build_ui,
-    draw_gizmo, draw_lines, draw_region,
+    draw_gizmo, draw_knife, draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -109,6 +110,23 @@ struct LoopCutChoice {
     sight: Sight,
 }
 
+/// Drawing a knife path: clicks so far, and where they cross the mesh.
+struct KnifeChoice {
+    clicks: Vec<[f32; 2]>,
+    /// Cut hidden faces too, not just the ones that can be seen.
+    through: bool,
+    /// The cut the clicks make, and with the pointer as one more click.
+    cut: KnifeCut,
+    preview: KnifeCut,
+    sight: Sight,
+}
+
+/// Dragging a bisect line.
+struct BisectChoice {
+    start: Option<[f32; 2]>,
+    end: [f32; 2],
+}
+
 /// What the mouse is in the middle of doing.
 enum Mouse {
     Idle,
@@ -125,6 +143,8 @@ enum Mouse {
         parts: MovedParts,
     },
     LoopCut(Box<LoopCutChoice>),
+    Knife(Box<KnifeChoice>),
+    Bisect(Box<BisectChoice>),
 }
 
 /// Which scene data must go to the graphics card before the next draw.
@@ -159,6 +179,10 @@ pub struct App {
     loop_cuts: usize,
     /// The handles shown on the selection, if a handle tool is on.
     gizmo_tool: Option<Kind>,
+    /// The face last clicked in Part mode: its part is the one subtract cuts out.
+    last_clicked: Option<FaceId>,
+    /// View mode: the shape alone, without edges, points or selection colors.
+    view_only: bool,
     /// The handle under the mouse.
     gizmo_hover: Option<Handle>,
     /// The history version right after the last bevel, while its panel may still
@@ -214,6 +238,8 @@ impl App {
             warnings: Vec::new(),
             loop_cuts: 1,
             gizmo_tool: None,
+            last_clicked: None,
+            view_only: false,
             gizmo_hover: None,
             last_bevel: None,
             snapping: false,
@@ -299,6 +325,20 @@ impl App {
                 .as_ref()
                 .map(|(_, question)| question.as_str()),
             gizmo_tool: self.gizmo_tool,
+            knife: match &self.mouse_state {
+                Mouse::Knife(choice) => Some(choice.through),
+                _ => None,
+            },
+            bisect: matches!(self.mouse_state, Mouse::Bisect(_)),
+            view_only: self.view_only,
+            parts_selected: mesh
+                .parts()
+                .iter()
+                .filter(|part| {
+                    part.iter()
+                        .any(|&f| mesh.face(f).is_some_and(|f| f.is_selected()))
+                })
+                .count(),
             bevel_panel: self.last_bevel == Some(document.version())
                 && matches!(self.mouse_state, Mouse::Idle),
             view: {
@@ -327,6 +367,19 @@ impl App {
             draw_lines(ui, &choice.lines);
         }
         draw_gizmo(ui, &gizmo_parts, self.gizmo_hover);
+        match &self.mouse_state {
+            Mouse::Knife(choice) => {
+                let mut path: Vec<[f32; 2]> = choice.clicks.clone();
+                path.push(self.pointer);
+                draw_knife(ui, &path, &choice.preview.screen);
+            }
+            Mouse::Bisect(choice) => {
+                if let Some(start) = choice.start {
+                    draw_lines(ui, &[[start, choice.end]]);
+                }
+            }
+            _ => {}
+        }
         self.ui_rects = output.rects;
         let draw_data = self.imgui.render();
 
@@ -363,6 +416,7 @@ impl App {
             fade_center: self.camera.target,
             fade_radius: self.camera.grid_fade_radius(),
             point_depth_bias: self.camera.point_depth_bias(),
+            overlays: !self.view_only,
         };
         self.renderer.render(width, height, &view);
         self.imgui_gl.render(self.renderer.gl(), draw_data, height);
@@ -403,6 +457,10 @@ impl App {
     }
 
     fn apply_action(&mut self, action: Action) {
+        // Changing the shape needs to see it, so it ends View mode.
+        if self.view_only && changes_the_shape(action) {
+            self.view_only = false;
+        }
         match action {
             Action::Add(shape) => match self.editor.add(shape, &self.state) {
                 Ok(()) => self.stale = Stale::Everything,
@@ -530,6 +588,37 @@ impl App {
                     .editor
                     .run("Delete", |mesh, mode| mesh.delete_selected(mode));
                 self.finish_edit(result);
+            }
+            Action::Merge if self.editor.whole_parts() => {
+                self.state.message =
+                    "M pulls points together. Pick Vertex mode, select the points, then press M. To join shapes, use Join or Union.".to_string();
+            }
+            Action::Join => {
+                let mut joined = 0;
+                let result = self.editor.run("Join", |mesh, _| {
+                    joined = mesh.join_selected_parts()?;
+                    Ok(())
+                });
+                if result.is_ok() {
+                    self.state.message = format!("Joined {joined} parts into one.");
+                }
+                self.finish_edit(result);
+            }
+            Action::Separate => {
+                let result = self.editor.run("Separate", |mesh, _| {
+                    mesh.separate_selected_parts().map(|_| ())
+                });
+                if result.is_ok() {
+                    self.state.message = "Separated.".to_string();
+                }
+                self.finish_edit(result);
+            }
+            Action::Boolean(op) => self.boolean(op),
+            Action::Knife => self.start_knife(),
+            Action::Bisect => self.start_bisect(),
+            Action::ToggleView => {
+                self.view_only = !self.view_only;
+                self.gizmo_hover = None;
             }
             Action::Merge => {
                 let result = self
@@ -1024,6 +1113,9 @@ impl App {
         let (Some(kind), Mouse::Idle) = (self.gizmo_tool, &self.mouse_state) else {
             return Vec::new();
         };
+        if self.view_only {
+            return Vec::new();
+        }
         let Some(pivot) = self.editor.document().mesh().selection_center() else {
             return Vec::new();
         };
@@ -1181,6 +1273,230 @@ impl App {
         }
     }
 
+    /// Union, subtract or intersect of the selected parts.
+    fn boolean(&mut self, op: BooleanOp) {
+        let cutter = self.last_clicked;
+        let mut faces = 0;
+        let result = self.editor.run("Combine", |mesh, mode| {
+            faces = mesh.boolean_selected(op, cutter, mode)?;
+            Ok(())
+        });
+        if result.is_ok() {
+            let name = match op {
+                BooleanOp::Union => "Union",
+                BooleanOp::Subtract => "Subtract",
+                BooleanOp::Intersect => "Intersect",
+            };
+            self.state.message = format!("{name} done: {faces} faces.");
+        }
+        self.finish_edit(result);
+    }
+
+    /// Starts drawing a knife path.
+    fn start_knife(&mut self) {
+        if !matches!(self.mouse_state, Mouse::Idle) {
+            return;
+        }
+        if self.editor.document().mesh().face_count() == 0 {
+            self.state.message = "Add a shape first.".to_string();
+            return;
+        }
+        self.mouse_state = Mouse::Knife(Box::new(KnifeChoice {
+            clicks: Vec::new(),
+            through: false,
+            cut: KnifeCut::default(),
+            preview: KnifeCut::default(),
+            sight: self.sight(),
+        }));
+        self.update_knife();
+        self.request_frames();
+    }
+
+    /// Works out the cut again after the clicks or the pointer moved.
+    fn update_knife(&mut self) {
+        let pointer = self.pointer;
+        let mesh = self.editor.document().mesh();
+        let Mouse::Knife(choice) = &mut self.mouse_state else {
+            return;
+        };
+        let sight = &choice.sight;
+        let through = choice.through;
+        let visible = |p: [f32; 3]| through || sight.visible(p);
+        choice.cut = knife_cut(mesh, &sight.view, &choice.clicks, &visible);
+        let mut with_pointer = choice.clicks.clone();
+        with_pointer.push(pointer);
+        choice.preview = knife_cut(mesh, &sight.view, &with_pointer, &visible);
+        self.frames_wanted = self.frames_wanted.max(1);
+    }
+
+    fn finish_knife(&mut self) {
+        let Mouse::Knife(choice) = std::mem::replace(&mut self.mouse_state, Mouse::Idle) else {
+            return;
+        };
+        if choice.cut.points.len() < 2 {
+            self.state.message =
+                "Click across a face, from one edge to another, then press Enter.".to_string();
+            return;
+        }
+        let mut edges = 0;
+        let result = self.editor.run("Knife", |mesh, mode| {
+            edges = mesh.knife(&choice.cut.points, mode)?;
+            Ok(())
+        });
+        if result.is_ok() {
+            self.state.message = format!("Cut {edges} faces.");
+        }
+        self.finish_edit(result);
+    }
+
+    fn handle_knife_event(&mut self, event: &Event) {
+        self.request_frames();
+        match *event {
+            Event::MouseMotion { .. } => self.update_knife(),
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                clicks,
+                ..
+            } => {
+                let pointer = self.pointer;
+                if let Mouse::Knife(choice) = &mut self.mouse_state {
+                    // A click on a corner goes exactly through it.
+                    let mesh = self.editor.document().mesh();
+                    let sight = &choice.sight;
+                    let through = choice.through;
+                    let at = snapped_vertex(mesh, &sight.view, pointer, &|p| {
+                        through || sight.visible(p)
+                    })
+                    .map_or(pointer, |(_, at)| at);
+                    if clicks < 2 || choice.clicks.is_empty() {
+                        choice.clicks.push(at);
+                    }
+                }
+                self.update_knife();
+                // A double click ends the path.
+                if clicks >= 2 {
+                    self.finish_knife();
+                }
+            }
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Right,
+                ..
+            }
+            | Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } => self.mouse_state = Mouse::Idle,
+            Event::KeyDown {
+                keycode: Some(key), ..
+            } => match key {
+                Keycode::Return | Keycode::KpEnter | Keycode::Space => self.finish_knife(),
+                Keycode::Backspace => {
+                    if let Mouse::Knife(choice) = &mut self.mouse_state {
+                        choice.clicks.pop();
+                    }
+                    self.update_knife();
+                }
+                Keycode::Z => {
+                    if let Mouse::Knife(choice) = &mut self.mouse_state {
+                        choice.through = !choice.through;
+                    }
+                    self.update_knife();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Starts dragging a line to bisect the selected faces along.
+    fn start_bisect(&mut self) {
+        if !matches!(self.mouse_state, Mouse::Idle) {
+            return;
+        }
+        let mesh = self.editor.document().mesh();
+        if !mesh.faces().any(|(_, f)| f.is_selected()) {
+            self.state.message = "Select the faces to cut first.".to_string();
+            return;
+        }
+        self.mouse_state = Mouse::Bisect(Box::new(BisectChoice {
+            start: None,
+            end: self.pointer,
+        }));
+        self.request_frames();
+    }
+
+    fn handle_bisect_event(&mut self, event: &Event) {
+        self.request_frames();
+        let pointer = self.pointer;
+        match *event {
+            Event::MouseMotion { .. } => {
+                if let Mouse::Bisect(choice) = &mut self.mouse_state {
+                    choice.end = pointer;
+                }
+            }
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                ..
+            } => {
+                if let Mouse::Bisect(choice) = &mut self.mouse_state {
+                    choice.start = Some(pointer);
+                    choice.end = pointer;
+                }
+            }
+            Event::MouseButtonUp {
+                mouse_btn: MouseButton::Left,
+                ..
+            } => {
+                let Mouse::Bisect(choice) = std::mem::replace(&mut self.mouse_state, Mouse::Idle)
+                else {
+                    return;
+                };
+                let Some(start) = choice.start else {
+                    return;
+                };
+                let end = pointer;
+                if (end[0] - start[0]).hypot(end[1] - start[1]) < 6.0 {
+                    self.state.message =
+                        "Drag a line across the shape to cut along it.".to_string();
+                    return;
+                }
+                self.bisect_along(start, end);
+            }
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Right,
+                ..
+            }
+            | Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } => self.mouse_state = Mouse::Idle,
+            _ => {}
+        }
+    }
+
+    /// Cuts the selected faces with the plane that looks like this line on screen.
+    fn bisect_along(&mut self, start: [f32; 2], end: [f32; 2]) {
+        let (width, height) = self.viewport();
+        let (o0, d0) = self.camera.ray(start[0], start[1], width, height);
+        let (o1, d1) = self.camera.ray(end[0], end[1], width, height);
+        let b: [f32; 3] = std::array::from_fn(|i| d0[i]);
+        let c: [f32; 3] = std::array::from_fn(|i| o1[i] + d1[i] - o0[i]);
+        let normal = [
+            b[1] * c[2] - b[2] * c[1],
+            b[2] * c[0] - b[0] * c[2],
+            b[0] * c[1] - b[1] * c[0],
+        ];
+        let mut edges = 0;
+        let result = self.editor.run("Bisect", |mesh, mode| {
+            edges = mesh.bisect_selected(o0, normal, mode)?;
+            Ok(())
+        });
+        if result.is_ok() {
+            self.state.message = format!("Cut {edges} faces.");
+        }
+        self.finish_edit(result);
+    }
+
     fn dragging_handle(&self) -> bool {
         matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.release_confirms)
     }
@@ -1249,6 +1565,11 @@ impl App {
             let hit = self.with_visibility(|mesh, mode, view, visible| {
                 pick_point(mesh, mode, view, start[0], start[1], visible)
             });
+            if let Some(Element::Face(face)) = hit
+                && op != SelectOp::Subtract
+            {
+                self.last_clicked = Some(face);
+            }
             hit.into_iter().collect()
         };
         if self.editor.whole_parts() {
@@ -1314,6 +1635,16 @@ impl App {
             self.handle_loop_cut_event(event);
             return;
         }
+        if matches!(self.mouse_state, Mouse::Knife(_)) {
+            self.imgui_pointer_only(event);
+            self.handle_knife_event(event);
+            return;
+        }
+        if matches!(self.mouse_state, Mouse::Bisect(_)) {
+            self.imgui_pointer_only(event);
+            self.handle_bisect_event(event);
+            return;
+        }
 
         self.feed_imgui(event);
         let io = self.imgui.io();
@@ -1357,7 +1688,7 @@ impl App {
                 } else if button == Button::Left && clicks >= 2 && !self.editor.whole_parts() {
                     // The first click already selected; the second widens it to a loop.
                     self.select_loop_under_pointer(mods.shift);
-                } else if button == Button::Left {
+                } else if button == Button::Left && !self.view_only {
                     self.start_selecting(mods);
                     mouse.capture(true);
                 }
@@ -1669,6 +2000,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals => Some(Action::SelectMore),
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
             Keycode::R => Some(Action::LoopCut),
+            Keycode::J => Some(Action::Join),
             Keycode::B if mods.shift => Some(Action::BevelVertices),
             Keycode::B => Some(Action::Bevel),
             Keycode::S if mods.shift => Some(Action::SaveAs),
@@ -1696,8 +2028,44 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
         Keycode::X | Keycode::Delete => Some(Action::Delete),
         Keycode::M => Some(Action::Merge),
         Keycode::F => Some(Action::Fill),
+        Keycode::K => Some(Action::Knife),
+        Keycode::P => Some(Action::Separate),
+        Keycode::Tab => Some(Action::ToggleView),
         _ => None,
     }
+}
+
+/// True for actions that change the shape or what is selected, which View mode hides.
+fn changes_the_shape(action: Action) -> bool {
+    !matches!(
+        action,
+        Action::Undo
+            | Action::Redo
+            | Action::Export
+            | Action::View(_)
+            | Action::ToggleOrtho
+            | Action::ResetView
+            | Action::ToggleView
+            | Action::New
+            | Action::Open
+            | Action::Save
+            | Action::SaveAs
+            | Action::PathChosen
+            | Action::PathCancelled
+            | Action::ConfirmSave
+            | Action::ConfirmDiscard
+            | Action::ConfirmCancel
+    ) && !is_export_folder(action)
+}
+
+#[cfg(windows)]
+fn is_export_folder(action: Action) -> bool {
+    action == Action::OpenExportFolder
+}
+
+#[cfg(not(windows))]
+fn is_export_folder(_: Action) -> bool {
+    false
 }
 
 fn modifiers(state: Mod) -> Modifiers {

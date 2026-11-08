@@ -314,12 +314,18 @@ impl Mesh {
             .filter(|(_, e)| e.selected)
             .map(|(_, e)| e.vertices)
             .collect();
-        let faces: Vec<Vec<VertexId>> = self
+        let faces: Vec<(Vec<VertexId>, u16)> = self
             .faces
             .iter()
             .filter(|(_, f)| f.selected)
-            .map(|(id, _)| self.face_walk(id).map(|c| self.corners[c].vertex).collect())
+            .map(|(id, f)| {
+                let cycle = self.face_walk(id).map(|c| self.corners[c].vertex).collect();
+                (cycle, f.group)
+            })
             .collect();
+        // Copies of joined parts are joined to each other, not to the originals.
+        let mut next_group = self.next_group()?;
+        let mut groups: HashMap<u16, u16> = HashMap::new();
 
         self.deselect_all();
         for vertex in map.values().copied().collect::<Vec<_>>() {
@@ -332,10 +338,22 @@ impl Mesh {
         for edge in new_edges {
             self.set_edge_flag(edge, true);
         }
-        for face in faces {
+        for (face, group) in faces {
             let cycle: Vec<VertexId> = face.iter().map(|v| map[v]).collect();
             let new_face = self.add_face(&cycle)?;
             self.set_face_flag(new_face, true);
+            if group != 0 {
+                let copy = match groups.get(&group) {
+                    Some(&copy) => copy,
+                    None => {
+                        let copy = next_group;
+                        next_group = next_group.checked_add(1).ok_or(MeshError::IdsExhausted)?;
+                        groups.insert(group, copy);
+                        copy
+                    }
+                };
+                self.faces[new_face].group = copy;
+            }
         }
         self.flush_selection(mode);
         Ok(())

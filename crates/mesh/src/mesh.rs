@@ -141,6 +141,8 @@ pub struct Face {
     pub(crate) first_corner: CornerId,
     pub(crate) corner_count: u32,
     pub(crate) selected: bool,
+    /// The group of joined parts this face belongs to, or 0 for none.
+    pub(crate) group: u16,
 }
 
 impl Face {
@@ -151,6 +153,11 @@ impl Face {
     /// True if the face is selected.
     pub fn is_selected(&self) -> bool {
         self.selected
+    }
+    /// The group of joined parts this face belongs to, or 0 for none. See
+    /// [`Mesh::join_selected_parts`].
+    pub fn group(&self) -> u16 {
+        self.group
     }
     /// How many corners, and therefore vertices and edges, the face has.
     pub fn corner_count(&self) -> usize {

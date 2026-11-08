@@ -51,38 +51,6 @@ impl Mesh {
         Ok(())
     }
 
-    /// The faces of every connected part that contains one of these elements.
-    pub fn linked_faces(&self, elements: &[Element]) -> Vec<FaceId> {
-        let mut stack: Vec<VertexId> = Vec::new();
-        for element in elements {
-            match *element {
-                Element::Vertex(v) if self.vertices.contains(v) => stack.push(v),
-                Element::Edge(e) if self.edges.contains(e) => {
-                    stack.extend(self.edges[e].vertices);
-                }
-                Element::Face(f) if self.faces.contains(f) => stack.extend(self.cycle(f)),
-                _ => {}
-            }
-        }
-        let mut seen: HashSet<VertexId> = stack.iter().copied().collect();
-        while let Some(vertex) = stack.pop() {
-            for edge in self.disk_walk(vertex) {
-                if let Some(other) = self.edges[edge].other_vertex(vertex)
-                    && seen.insert(other)
-                {
-                    stack.push(other);
-                }
-            }
-        }
-        self.faces()
-            .filter(|&(id, _)| {
-                self.face_walk(id)
-                    .any(|c| seen.contains(&self.corners[c].vertex))
-            })
-            .map(|(id, _)| id)
-            .collect()
-    }
-
     /// The average normal of the selected faces, if they have a clear direction.
     pub fn selected_faces_normal(&self) -> Option<V3> {
         let mut sum = [0.0f32; 3];
