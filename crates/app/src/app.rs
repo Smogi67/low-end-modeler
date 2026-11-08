@@ -502,13 +502,50 @@ impl App {
         start.message.clear();
         match action {
             StartAction::Quick => {
-                let folder = places::quick_folder();
-                let path = places::unused_path(
-                    &folder,
+                // Each quick project in a folder of its own, with its exports inside.
+                let path = places::unused_project_path(
+                    &places::quick_folder(),
                     &format!("Quick {}", places::timestamp()),
                     PROJECT_EXTENSION,
                 );
                 self.begin_project(path, Some(Shape::Cube));
+            }
+            StartAction::ShowRecent(i) => {
+                if let Some(recent) = start.recent.get(i)
+                    && let Err(error) = places::show_in_folder(&recent.path)
+                {
+                    start.message = error;
+                }
+            }
+            StartAction::DeleteRecent(i) => start.confirm_delete = Some(i),
+            StartAction::CancelDelete => start.confirm_delete = None,
+            StartAction::ConfirmDelete => {
+                let Some(recent) = start
+                    .confirm_delete
+                    .take()
+                    .and_then(|i| start.recent.get(i))
+                else {
+                    return;
+                };
+                let path = recent.path.clone();
+                let name = file_stem(&path);
+                match places::recycle(&places::deletion_target(&path)) {
+                    Ok(()) => {
+                        places::forget(&path);
+                        // The open project is gone: nothing is left to save it to.
+                        if self.project_path.as_deref() == Some(path.as_path()) {
+                            self.project_path = None;
+                            self.saved_version = self.editor.document().version();
+                        }
+                        start.recent = places::recent_projects();
+                        start.message = if cfg!(windows) {
+                            format!("{name} is in the Recycle Bin.")
+                        } else {
+                            format!("{name} was moved to the Deleted folder.")
+                        };
+                    }
+                    Err(error) => start.message = format!("Could not delete {name}: {error}"),
+                }
             }
             StartAction::Create => {
                 let Some(name) = places::clean_project_name(&start.name) else {

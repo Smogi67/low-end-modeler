@@ -26,6 +26,8 @@ pub struct StartState {
     pub antialiasing_now: bool,
     /// Asked for when Mixer started, but the graphics driver refused.
     pub antialiasing_refused: bool,
+    /// The recent project whose Delete was clicked, waiting for a yes or no.
+    pub confirm_delete: Option<usize>,
 }
 
 impl StartState {
@@ -46,6 +48,7 @@ impl StartState {
             antialiasing,
             antialiasing_now: now,
             antialiasing_refused: false,
+            confirm_delete: None,
         }
     }
 }
@@ -56,6 +59,13 @@ pub enum StartAction {
     Quick,
     Create,
     OpenRecent(usize),
+    /// Shows a recent project in its folder.
+    ShowRecent(usize),
+    /// Asks whether to delete a recent project.
+    DeleteRecent(usize),
+    /// Yes or no to that question.
+    ConfirmDelete,
+    CancelDelete,
     OpenOther,
     OpenFolder,
     SetAntialiasing(bool),
@@ -280,30 +290,67 @@ fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opt
     if state.recent.is_empty() {
         ui.text_colored(color::MUTED, "Projects you open or save show up here.");
     }
+    let row = 44.0;
+    let icon_button = 34.0;
     for (i, recent) in state.recent.iter().enumerate() {
+        let _id = ui.push_id_usize(i);
         let start = ui.cursor_screen_pos();
         let width = ui.content_region_avail()[0];
-        if ui.invisible_button(format!("##recent{i}"), [width, 44.0]) {
-            *action = Some(StartAction::OpenRecent(i));
-        }
-        let hovered = ui.is_item_hovered();
-        let list = ui.get_window_draw_list();
-        if hovered {
-            list.add_rect(
-                start,
-                [start[0] + width, start[1] + 44.0],
-                color::FRAME_HOVER,
-            )
-            .filled(true)
-            .rounding(8.0)
-            .build();
-        }
         let name = recent
             .path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+        if state.confirm_delete == Some(i) {
+            confirm_row(ui, &name, start, width, row, action);
+            continue;
+        }
+        let open_width = width - 2.0 * (icon_button + 4.0);
+        if ui.invisible_button("##recent", [open_width, row]) {
+            *action = Some(StartAction::OpenRecent(i));
+        }
+        let hovered = ui.is_item_hovered();
+        if hovered {
+            ui.tooltip_text(recent.path.display().to_string());
+        }
+        // Each icon button is as tall as the row, centered.
+        let mut icon = |glyph: char, id: &str, help: &str, choice: StartAction| {
+            ui.same_line_with_spacing(0.0, 4.0);
+            let at = ui.cursor_screen_pos();
+            ui.set_cursor_screen_pos([at[0], start[1] + (row - icon_button) / 2.0]);
+            if ui.button_with_size(format!("{glyph}##{id}"), [icon_button, icon_button]) {
+                *action = Some(choice);
+            }
+            if ui.is_item_hovered() {
+                ui.tooltip_text(help);
+            }
+        };
+        icon(
+            icon::FOLDER,
+            "show",
+            "Show in folder",
+            StartAction::ShowRecent(i),
+        );
+        icon(
+            icon::DELETE,
+            "delete",
+            "Delete (moves it to the Recycle Bin)",
+            StartAction::DeleteRecent(i),
+        );
+        ui.set_cursor_screen_pos([start[0], start[1] + row]);
+        ui.dummy([0.0, 0.0]);
+        let list = ui.get_window_draw_list();
+        if hovered {
+            list.add_rect(
+                start,
+                [start[0] + open_width, start[1] + row],
+                color::FRAME_HOVER,
+            )
+            .filled(true)
+            .rounding(8.0)
+            .build();
+        }
         let folder = recent
             .path
             .parent()
@@ -311,16 +358,15 @@ fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opt
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        list.add_text([start[0] + 10.0, start[1] + 6.0], color::TEXT, &name);
-        list.add_text(
-            [start[0] + 10.0, start[1] + 24.0],
-            color::FAINT,
-            format!("{folder}  \u{2022}  {}", recent.age),
-        );
-        drop(list);
-        if hovered {
-            ui.tooltip_text(recent.path.display().to_string());
-        }
+        let clip_end = [start[0] + open_width - 6.0, start[1] + row];
+        list.with_clip_rect_intersect(start, clip_end, || {
+            list.add_text([start[0] + 10.0, start[1] + 6.0], color::TEXT, &name);
+            list.add_text(
+                [start[0] + 10.0, start[1] + 24.0],
+                color::FAINT,
+                format!("{folder}  \u{2022}  {}", recent.age),
+            );
+        });
     }
     ui.dummy([0.0, 6.0]);
     let half = (ui.content_region_avail()[0] - 8.0) / 2.0;
@@ -334,6 +380,43 @@ fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opt
     if ui.button_with_size(format!("{}  Mixer folder", icon::FOLDER), [half, 32.0]) {
         *action = Some(StartAction::OpenFolder);
     }
+}
+
+/// In place of a recent project: are you sure, with Delete and Cancel.
+fn confirm_row(
+    ui: &Ui,
+    name: &str,
+    start: [f32; 2],
+    width: f32,
+    row: f32,
+    action: &mut Option<StartAction>,
+) {
+    ui.get_window_draw_list()
+        .add_rect(start, [start[0] + width, start[1] + row], color::FRAME)
+        .filled(true)
+        .rounding(8.0)
+        .build();
+    let buttons = 150.0;
+    ui.set_cursor_screen_pos([start[0] + 10.0, start[1] + 4.0]);
+    let wrap = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + width - buttons - 20.0);
+    ui.text(format!("Delete {name}?"));
+    ui.set_cursor_screen_pos([start[0] + 10.0, start[1] + 24.0]);
+    ui.text_colored(color::FAINT, "It goes to the Recycle Bin.");
+    drop(wrap);
+    ui.set_cursor_screen_pos([start[0] + width - buttons, start[1] + 7.0]);
+    let red = ui.push_style_color(StyleColor::Button, [0.62, 0.20, 0.18, 1.0]);
+    let red_hover = ui.push_style_color(StyleColor::ButtonHovered, [0.74, 0.26, 0.22, 1.0]);
+    if ui.button_with_size("Delete##confirm", [72.0, 30.0]) {
+        *action = Some(StartAction::ConfirmDelete);
+    }
+    drop(red_hover);
+    drop(red);
+    ui.same_line_with_spacing(0.0, 6.0);
+    if ui.button_with_size("Cancel##confirm", [72.0, 30.0]) {
+        *action = Some(StartAction::CancelDelete);
+    }
+    ui.set_cursor_screen_pos([start[0], start[1] + row]);
+    ui.dummy([0.0, 0.0]);
 }
 
 fn settings_row(ui: &Ui, state: &mut StartState, action: &mut Option<StartAction>) {
@@ -388,6 +471,14 @@ mod tests {
             let ui = context.new_frame();
             if let Some(a) = build_start(ui, state, &fonts) {
                 seen.insert(format!("{a:?}"));
+                // As the app does: Delete asks, and the answer closes the question.
+                match a {
+                    StartAction::DeleteRecent(i) => state.confirm_delete = Some(i),
+                    StartAction::ConfirmDelete | StartAction::CancelDelete => {
+                        state.confirm_delete = None;
+                    }
+                    _ => {}
+                }
             }
             context.render();
         };
@@ -412,6 +503,12 @@ mod tests {
             "Create",
             "OpenRecent(0)",
             "OpenRecent(1)",
+            "ShowRecent(0)",
+            "ShowRecent(1)",
+            "DeleteRecent(0)",
+            "DeleteRecent(1)",
+            "ConfirmDelete",
+            "CancelDelete",
             "OpenOther",
             "OpenFolder",
             "SetAntialiasing(false)",

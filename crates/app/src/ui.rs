@@ -827,7 +827,7 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
     }
 
     dialogs(ui, state, info, &mut action);
-    viewport_overlays(ui, info, fonts, display);
+    viewport_overlays(ui, info, display);
     UiOutput { action, rects }
 }
 
@@ -2064,7 +2064,7 @@ fn gizmo(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>) {
     );
 }
 
-fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]) {
+fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
     let area = viewport_area(display);
     let list = ui.get_background_draw_list();
     let center_x = area[0] + area[2] / 2.0;
@@ -2144,29 +2144,6 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
             list.add_text([x, top + 8.0], *tint, text);
             x += ui.calc_text_size(text)[0] + gap;
         }
-    }
-
-    if info.vertices == 0 && parts.is_empty() {
-        let middle = area[1] + area[3] / 2.0 - 40.0;
-        let font = ui.push_font(fonts.title);
-        let glyph = icon::CUBE.to_string();
-        let size = ui.calc_text_size(&glyph);
-        list.add_text(
-            [center_x - size[0] / 2.0, middle - 44.0],
-            color::ACCENT,
-            &glyph,
-        );
-        let title = "Start with a shape";
-        let size = ui.calc_text_size(title);
-        list.add_text([center_x - size[0] / 2.0, middle], color::TEXT, title);
-        drop(font);
-        let line = "Pick one under Add shape on the right.";
-        let size = ui.calc_text_size(line);
-        list.add_text(
-            [center_x - size[0] / 2.0, middle + 36.0],
-            color::MUTED,
-            line,
-        );
     }
 }
 
