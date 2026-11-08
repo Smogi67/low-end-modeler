@@ -107,6 +107,8 @@ pub struct Transform {
     pub keep_on_cancel: bool,
     /// Started without extruding, duplicating or cutting first.
     pub plain: bool,
+    /// Started by dragging a handle: releasing the mouse confirms.
+    pub release_confirms: bool,
 }
 
 impl Transform {
@@ -130,6 +132,7 @@ impl Transform {
             max_width: f32::MAX,
             keep_on_cancel: false,
             plain: true,
+            release_confirms: false,
         }
     }
 

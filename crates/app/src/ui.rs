@@ -9,7 +9,9 @@ use imgui::{
     Condition, Drag, ItemHoveredFlags, ProgressBar, SliderFlags, StyleColor, StyleVar, Ui,
     WindowFlags,
 };
-use modeler_mesh::{MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES};
+use modeler_mesh::{
+    BevelSettings, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES,
+};
 
 use crate::editor::Target;
 use crate::export::ExportFormat;
@@ -24,6 +26,7 @@ pub const RIGHT_PANEL: f32 = 300.0;
 const TOOL_BUTTON: f32 = 40.0;
 const GIZMO: f32 = 104.0;
 const LABEL_COLUMN: f32 = 96.0;
+const BEVEL_PANEL: f32 = 300.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -146,6 +149,10 @@ pub struct PanelState {
     pub export_format: ExportFormat,
     /// Where there are no system file dialogs, the path being typed.
     pub path_prompt: Option<PathPrompt>,
+    /// The settings of the next bevel, and of the last one while its panel shows.
+    pub bevel: BevelSettings,
+    /// Whether the bevel panel is folded down to its title.
+    pub bevel_folded: bool,
 }
 
 /// What a typed path is for.
@@ -179,6 +186,11 @@ impl Default for PanelState {
             panel_content: f32::MAX,
             export_format: ExportFormat::Obj,
             path_prompt: None,
+            bevel: BevelSettings {
+                segments: 1,
+                ..BevelSettings::default()
+            },
+            bevel_folded: false,
         }
     }
 }
@@ -294,6 +306,10 @@ pub struct PanelInfo<'a> {
     pub unsaved: bool,
     /// A question about unsaved changes, while one is waiting for an answer.
     pub confirm: Option<&'a str>,
+    /// The handle tool that is on, if any.
+    pub gizmo_tool: Option<Kind>,
+    /// Whether the last bevel can still be changed with the bevel panel.
+    pub bevel_panel: bool,
 }
 
 /// Standard views, as in Blender's numpad 1, 3 and 7 and their opposites.
@@ -361,6 +377,12 @@ pub enum Action {
     LoopCut,
     Bridge,
     Bevel,
+    /// Bevels the selected vertices instead of edges.
+    BevelVertices,
+    /// Redoes the last bevel with the settings in `PanelState::bevel`.
+    AdjustBevel,
+    /// Turns the handles for moving, rotating or scaling on or off.
+    GizmoTool(Kind),
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -720,6 +742,33 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
         drop(padding);
     }
 
+    // Changes the last bevel, as Blender's "Adjust Last Operation" panel does.
+    if info.bevel_panel {
+        let padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 10.0]));
+        let area = viewport_area(display);
+        if let Some(rect) = ui
+            .window("##bevel")
+            .position([area[0], area[1] + area[3] - MARGIN], Condition::Always)
+            .position_pivot([0.0, 1.0])
+            .size_constraints([BEVEL_PANEL, 0.0], [BEVEL_PANEL, 1000.0])
+            .flags(
+                WindowFlags::NO_TITLE_BAR
+                    | WindowFlags::NO_RESIZE
+                    | WindowFlags::NO_MOVE
+                    | WindowFlags::NO_SCROLLBAR
+                    | WindowFlags::NO_SAVED_SETTINGS
+                    | WindowFlags::ALWAYS_AUTO_RESIZE,
+            )
+            .build(|| {
+                bevel_panel(ui, state, fonts, &mut action);
+                record(ui)
+            })
+        {
+            rects.push(rect);
+        }
+        drop(padding);
+    }
+
     dialogs(ui, state, info, &mut action);
     viewport_overlays(ui, info, fonts, display);
     UiOutput { action, rects }
@@ -1027,10 +1076,12 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                 "CHANGE",
                 &[
                     ("Move, rotate, scale", "G, R, S (then X, Y, Z)"),
+                    ("Handles to drag", "Move, Rotate, Scale buttons"),
                     ("Slide edges", "G G"),
                     ("Extrude, inset", "E, I"),
                     ("Loop cut", "Ctrl+R"),
-                    ("Bevel", "Ctrl+B"),
+                    ("Bevel edges", "Ctrl+B"),
+                    ("Bevel vertices", "Ctrl+Shift+B"),
                     ("Duplicate", "Shift+D"),
                     ("Merge, fill, delete", "M, F, X"),
                 ],
@@ -1189,23 +1240,23 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
             (
                 "move",
                 icon::MOVE,
-                Action::Transform(Kind::Move),
-                "Move",
-                "G",
+                Action::GizmoTool(Kind::Move),
+                "Move tool: drag the arrows",
+                "G moves with the mouse",
             ),
             (
                 "rotate",
                 icon::ROTATE,
-                Action::Transform(Kind::Rotate),
-                "Rotate",
-                "R",
+                Action::GizmoTool(Kind::Rotate),
+                "Rotate tool: drag the rings",
+                "R rotates with the mouse",
             ),
             (
                 "scale",
                 icon::SCALE,
-                Action::Transform(Kind::Scale),
-                "Scale",
-                "S",
+                Action::GizmoTool(Kind::Scale),
+                "Scale tool: drag the handles",
+                "S scales with the mouse",
             ),
         ],
         &[
@@ -1268,8 +1319,8 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
                 "bevel",
                 icon::BEVEL,
                 Action::Bevel,
-                "Bevel edges: drag for width, scroll for segments",
-                "Ctrl+B",
+                "Bevel: drag for width, scroll for segments",
+                "Ctrl+B, vertices Ctrl+Shift+B",
             ),
         ],
         &[("delete", icon::DELETE, Action::Delete, "Delete", "X")],
@@ -1289,12 +1340,17 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
         }
         for (id, glyph, choice, name, key) in group.iter() {
             let lit = matches!(choice, Action::Transform(kind) if Some(*kind) == active)
+                || matches!(choice, Action::GizmoTool(kind)
+                    if Some(*kind) == active || Some(*kind) == info.gizmo_tool)
                 || (*choice == Action::Inset && active == Some(Kind::Inset))
                 || (*choice == Action::LoopCut && info.loop_cut.is_some())
                 || (*choice == Action::Bevel && active == Some(Kind::Bevel));
-            // A loop cut picks its own edge, so it needs only something to cut.
+            // A loop cut picks its own edge, so it needs only something to cut. The
+            // handle tools can be turned on before anything is selected.
             let enabled = if *choice == Action::LoopCut {
                 info.vertices > 0
+            } else if matches!(choice, Action::GizmoTool(_)) {
+                true
             } else {
                 any
             };
@@ -1772,6 +1828,158 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, fonts: &Fonts, display: [f32; 2]
     }
 }
 
+/// The bevel panel: a title that folds it, then the settings. Any change redoes the bevel.
+fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Option<Action>) {
+    let start = ui.cursor_screen_pos();
+    let width = ui.content_region_avail()[0];
+    if ui.invisible_button("##bevel_fold", [width, 24.0]) {
+        state.bevel_folded = !state.bevel_folded;
+    }
+    let hovered = ui.is_item_hovered();
+    let list = ui.get_window_draw_list();
+    // A small arrow pointing down when open and right when folded.
+    let tint = if hovered { color::TEXT } else { color::MUTED };
+    let (x, y) = (start[0] + 6.0, start[1] + 12.0);
+    let arrow = if state.bevel_folded {
+        [[x - 3.0, y - 5.0], [x + 4.0, y], [x - 3.0, y + 5.0]]
+    } else {
+        [[x - 5.0, y - 3.0], [x + 5.0, y - 3.0], [x, y + 4.0]]
+    };
+    list.add_triangle(arrow[0], arrow[1], arrow[2], tint)
+        .filled(true)
+        .build();
+    let font = ui.push_font(fonts.heading);
+    let size = ui.calc_text_size("Bevel");
+    list.add_text(
+        [start[0] + 20.0, start[1] + 12.0 - size[1] / 2.0],
+        color::TEXT,
+        "Bevel",
+    );
+    drop(font);
+    // Only one window draw list may be held at a time, and the controls below take it.
+    drop(list);
+    if state.bevel_folded {
+        return;
+    }
+    ui.dummy([0.0, 2.0]);
+    let before = state.bevel;
+    let settings = &mut state.bevel;
+
+    row(ui, "Affect");
+    let items = [
+        (
+            icon::VERTEX,
+            "Vertices",
+            settings.vertices,
+            "Round off the selected corners",
+        ),
+        (
+            icon::EDGE,
+            "Edges",
+            !settings.vertices,
+            "Round off the selected edges",
+        ),
+    ];
+    if let Some(i) = segmented(ui, "affect", &items, 26.0) {
+        settings.vertices = i == 0;
+    }
+    row(ui, "Width");
+    Drag::new("##bevel_width")
+        .range(0.0, 1000.0)
+        .speed(0.005)
+        .display_format("%.3f")
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(ui, &mut settings.width);
+    tooltip(ui, "Drag sideways, or double-click to type", "");
+    row(ui, "Segments");
+    let mut segments = settings.segments as i32;
+    if ui
+        .slider_config("##bevel_segments", 1, MAX_BEVEL_SEGMENTS as i32)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut segments)
+    {
+        settings.segments = segments.clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
+    }
+    row(ui, "Shape");
+    ui.slider_config("##bevel_shape", 0.0, 1.0)
+        .display_format("%.2f")
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut settings.shape);
+    tooltip(ui, "0.5 is round, lower is flatter, higher is sharper", "");
+    ui.align_text_to_frame_padding();
+    ui.text_colored(color::MUTED, "Clamp");
+    ui.same_line_with_pos(LABEL_COLUMN);
+    ui.checkbox("Clamp overlap##bevel_clamp", &mut settings.clamp);
+    tooltip(
+        ui,
+        "Stop the width where bevels would run into each other",
+        "",
+    );
+
+    settings.width = settings.width.max(0.0);
+    settings.shape = settings.shape.clamp(0.0, 1.0);
+    if *settings != before {
+        *action = Some(Action::AdjustBevel);
+    }
+}
+
+/// Draws the move, rotate or scale handles over the 3D view.
+pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gizmo::Handle>) {
+    use crate::gizmo::{Handle, Shape};
+    if parts.is_empty() {
+        return;
+    }
+    let list = ui.get_background_draw_list();
+    for part in parts {
+        let lit = hover == Some(part.handle);
+        let base = match part.handle {
+            Handle::Axis(axis) => color::AXIS[axis],
+            Handle::View => [0.92, 0.92, 0.92, 0.85],
+        };
+        let tint = if lit {
+            let mut c = base;
+            for v in c.iter_mut().take(3) {
+                *v = (*v * 0.6 + 0.4).min(1.0);
+            }
+            c[3] = 1.0;
+            c
+        } else {
+            base
+        };
+        let thickness = if lit { 4.0 } else { 2.5 };
+        for shape in &part.shapes {
+            match shape {
+                Shape::Line(points) => {
+                    for pair in points.windows(2) {
+                        list.add_line(pair[0], pair[1], tint)
+                            .thickness(thickness)
+                            .build();
+                    }
+                }
+                Shape::Triangle([a, b, c]) => {
+                    list.add_triangle(*a, *b, *c, tint).filled(true).build();
+                }
+                Shape::Square(center, half) => {
+                    let h = if lit { half + 1.5 } else { *half };
+                    list.add_rect(
+                        [center[0] - h, center[1] - h],
+                        [center[0] + h, center[1] + h],
+                        tint,
+                    )
+                    .filled(true)
+                    .build();
+                }
+                Shape::Circle(center, radius) => {
+                    list.add_circle(*center, *radius, tint)
+                        .num_segments(64)
+                        .thickness(thickness)
+                        .build();
+                }
+            }
+        }
+    }
+}
+
 /// Draws a selection shape being dragged.
 /// Lines on top of the 3D view, such as where a loop cut will go.
 pub fn draw_lines(ui: &Ui, lines: &[[[f32; 2]; 2]]) {
@@ -1910,6 +2118,8 @@ mod tests {
             document: "a rather long project name that needs shortening.lem",
             unsaved: true,
             confirm: None,
+            gizmo_tool: None,
+            bevel_panel: false,
         }
     }
 
@@ -1955,6 +2165,11 @@ mod tests {
             if target == Target::Edited(Shape::Icosphere) {
                 info.transform_help = Some((Kind::Bevel, None));
                 info.bevel = Some((0.25, 3));
+            }
+            // The bevel panel and a lit handle tool.
+            if target == Target::Nothing && case == 0 {
+                info.bevel_panel = true;
+                info.gizmo_tool = Some(Kind::Rotate);
             }
             let mut state = PanelState {
                 message: "Saved model.obj".to_string(),
@@ -2056,6 +2271,8 @@ mod tests {
             "SelectRings",
             "Transform(Slide)",
             "Bevel",
+            "AdjustBevel",
+            "GizmoTool(Move)",
             "New",
             "Open",
             "Save",

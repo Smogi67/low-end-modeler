@@ -88,6 +88,8 @@ pub enum MeshError {
     BridgeNeedsTwoLoops,
     /// A bevel has from 1 to `MAX_BEVEL_SEGMENTS` segments.
     InvalidSegments,
+    /// A bevel's shape runs from 0 to 1.
+    InvalidShape,
     /// An edge to bevel needs a face on each side, and its ends need simple fans of
     /// faces that wind the same way.
     CannotBevel,
@@ -151,6 +153,7 @@ impl fmt::Display for MeshError {
                 "select two separate edge loops with the same number of edges"
             ),
             Self::InvalidSegments => write!(f, "a bevel has from 1 to 16 segments"),
+            Self::InvalidShape => write!(f, "a bevel's shape runs from 0 to 1"),
             Self::CannotBevel => write!(
                 f,
                 "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"

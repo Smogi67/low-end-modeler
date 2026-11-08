@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
 use modeler_mesh::{
-    EdgeId, Element, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError, SelectMode,
-    SelectOp,
+    BevelSettings, EdgeId, Element, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS, Mesh, MeshError,
+    SelectMode, SelectOp,
 };
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
@@ -21,6 +21,7 @@ use crate::camera::Camera;
 use crate::controls::{Button, Drag, Modifiers, drag_for};
 use crate::editor::Editor;
 use crate::export::{PROJECT_EXTENSION, open_file, save_project, warnings, write_export};
+use crate::gizmo::{self, Handle};
 use crate::imgui_gl::ImguiGl;
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
 use crate::renderer::{Renderer, View};
@@ -29,7 +30,7 @@ use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
     Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, ViewState, build as build_ui,
-    draw_lines, draw_region,
+    draw_gizmo, draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -68,7 +69,7 @@ enum Picked {
 }
 
 /// What must happen to the selection before a drag starts.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Prepare {
     Nothing,
     Duplicate,
@@ -76,8 +77,8 @@ enum Prepare {
     Inset,
     /// Cut this many loops across the ring through this edge.
     LoopCut(EdgeId, usize),
-    /// Bevel the selected edges with this many segments, starting at no width.
-    Bevel(usize),
+    /// Bevel with these settings, starting at no width.
+    Bevel(BevelSettings),
 }
 
 /// The view and a depth image of it, for telling whether a point is hidden.
@@ -156,8 +157,13 @@ pub struct App {
     warnings: Vec<String>,
     /// The number of cuts last used, offered again next time.
     loop_cuts: usize,
-    /// The number of bevel segments last used.
-    bevel_segments: usize,
+    /// The handles shown on the selection, if a handle tool is on.
+    gizmo_tool: Option<Kind>,
+    /// The handle under the mouse.
+    gizmo_hover: Option<Handle>,
+    /// The history version right after the last bevel, while its panel may still
+    /// change it.
+    last_bevel: Option<u64>,
     /// Whether Ctrl is held, for showing snapped values.
     snapping: bool,
     /// The project file being edited, if it has been saved or opened.
@@ -207,7 +213,9 @@ impl App {
             export_folder_text,
             warnings: Vec::new(),
             loop_cuts: 1,
-            bevel_segments: 1,
+            gizmo_tool: None,
+            gizmo_hover: None,
+            last_bevel: None,
             snapping: false,
             project_path: None,
             document_name: "Untitled".to_string(),
@@ -276,7 +284,7 @@ impl App {
                         width: size[0].max(1.0),
                         height: size[1].max(1.0),
                     };
-                    Some((transform.bevel_width(&input), self.bevel_segments))
+                    Some((transform.bevel_width(&input), self.state.bevel.segments))
                 }
                 _ => None,
             },
@@ -290,6 +298,9 @@ impl App {
                 .confirming
                 .as_ref()
                 .map(|(_, question)| question.as_str()),
+            gizmo_tool: self.gizmo_tool,
+            bevel_panel: self.last_bevel == Some(document.version())
+                && matches!(self.mouse_state, Mouse::Idle),
             view: {
                 let (right, up) = self.camera.right_and_up();
                 ViewState {
@@ -300,6 +311,7 @@ impl App {
                 }
             },
         };
+        let gizmo_parts = self.gizmo_parts();
         let ui = self.imgui.new_frame();
         let output = build_ui(ui, &mut self.state, &info, &self.fonts);
         let action = output.action;
@@ -314,6 +326,7 @@ impl App {
         if let Mouse::LoopCut(choice) = &self.mouse_state {
             draw_lines(ui, &choice.lines);
         }
+        draw_gizmo(ui, &gizmo_parts, self.gizmo_hover);
         self.ui_rects = output.rects;
         let draw_data = self.imgui.render();
 
@@ -483,8 +496,18 @@ impl App {
                 self.finish_edit(result);
             }
             Action::LoopCut => self.start_loop_cut(),
-            Action::Bevel => {
-                self.start_transform(Kind::Bevel, Prepare::Bevel(self.bevel_segments));
+            Action::Bevel | Action::BevelVertices => {
+                self.state.bevel.vertices = action == Action::BevelVertices;
+                self.start_transform(Kind::Bevel, Prepare::Bevel(self.state.bevel));
+            }
+            Action::AdjustBevel => self.adjust_bevel(),
+            Action::GizmoTool(kind) => {
+                self.gizmo_tool = if self.gizmo_tool == Some(kind) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                self.gizmo_hover = None;
             }
             Action::Bridge => {
                 let result = self
@@ -802,8 +825,14 @@ impl App {
                 Prepare::LoopCut(edge, cuts) => mesh
                     .loop_cut(edge, cuts, mode)
                     .map(|made| cut_edges = Some(made)),
-                Prepare::Bevel(segments) => mesh
-                    .bevel_selected_edges(0.0, segments, mode)
+                Prepare::Bevel(settings) => mesh
+                    .bevel_selected(
+                        &BevelSettings {
+                            width: 0.0,
+                            ..settings
+                        },
+                        mode,
+                    )
                     .map(|made| bevel = Some(made)),
             },
         };
@@ -925,6 +954,16 @@ impl App {
             return;
         };
         let keep = !confirm && transform.keep_on_cancel;
+        let bevel_width = (confirm && transform.kind == Kind::Bevel).then(|| {
+            let (width, height) = self.viewport();
+            transform.bevel_width(&Input {
+                mouse: self.pointer,
+                snap: self.snapping,
+                camera: self.camera,
+                width,
+                height,
+            })
+        });
         if keep && let Some(mesh) = self.editor.active_mesh() {
             for &(id, position) in &transform.originals {
                 let _ = mesh.set_vertex_position(id, position);
@@ -935,8 +974,69 @@ impl App {
         } else {
             self.editor.cancel()
         };
+        let worked = result.is_ok();
         self.finish_edit(result);
+        // The bevel panel can change this bevel, until something else changes.
+        if let (Some(width), true) = (bevel_width, worked) {
+            self.state.bevel.width = width;
+            self.last_bevel = Some(self.editor.document().version());
+        }
         self.request_frames();
+    }
+
+    /// Redoes the last bevel with the panel's settings, as Blender's panel does.
+    fn adjust_bevel(&mut self) {
+        if self.last_bevel != Some(self.editor.document().version())
+            || !matches!(self.mouse_state, Mouse::Idle)
+        {
+            return;
+        }
+        let settings = self.state.bevel;
+        if !self.editor.undo() {
+            return;
+        }
+        let mut made_width = None;
+        let result = self.editor.run("Bevel", |mesh, mode| {
+            mesh.bevel_selected(&settings, mode)
+                .map(|made| made_width = Some(made.width))
+        });
+        match result {
+            Ok(()) => {
+                // Shows the width actually used, if the clamp held it back.
+                if let Some(width) = made_width {
+                    self.state.bevel.width = width;
+                }
+                self.last_bevel = Some(self.editor.document().version());
+            }
+            Err(error) => {
+                // Puts the previous bevel back.
+                self.editor.redo();
+                self.last_bevel = Some(self.editor.document().version());
+                self.state.message = format!("Could not bevel: {error}");
+            }
+        }
+        self.stale = Stale::Everything;
+        self.request_frames();
+    }
+
+    /// The handles on the selection, if a handle tool is on and nothing else is going on.
+    fn gizmo_parts(&self) -> Vec<gizmo::Part> {
+        let (Some(kind), Mouse::Idle) = (self.gizmo_tool, &self.mouse_state) else {
+            return Vec::new();
+        };
+        let Some(pivot) = self.editor.document().mesh().selection_center() else {
+            return Vec::new();
+        };
+        let (width, height) = self.viewport();
+        gizmo::parts(
+            kind,
+            pivot,
+            &gizmo::Screen {
+                camera: self.camera,
+                width,
+                height,
+            },
+        )
     }
 
     /// The current view, with its depth read back from the graphics card.
@@ -1081,6 +1181,10 @@ impl App {
         }
     }
 
+    fn dragging_handle(&self) -> bool {
+        matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.release_confirms)
+    }
+
     fn bevelling(&self) -> bool {
         matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.kind == Kind::Bevel)
     }
@@ -1092,13 +1196,13 @@ impl App {
         };
         let start = transform.start_mouse;
         let segments =
-            (self.bevel_segments as i32 + by).clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
-        if segments == self.bevel_segments {
+            (self.state.bevel.segments as i32 + by).clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
+        if segments == self.state.bevel.segments {
             return;
         }
-        self.bevel_segments = segments;
+        self.state.bevel.segments = segments;
         self.finish_transform(false);
-        self.start_transform(Kind::Bevel, Prepare::Bevel(segments));
+        self.start_transform(Kind::Bevel, Prepare::Bevel(self.state.bevel));
         if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
             transform.start_mouse = start;
         }
@@ -1230,6 +1334,22 @@ impl App {
                     _ => Button::Other,
                 };
                 let mods = modifiers(mods);
+                // A handle under the mouse takes the click.
+                let handle = if button == Button::Left {
+                    gizmo::hit(&self.gizmo_parts(), self.pointer)
+                } else {
+                    None
+                };
+                if let (Some(handle), Some(kind)) = (handle, self.gizmo_tool) {
+                    self.start_transform(kind, Prepare::Nothing);
+                    if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
+                        transform.axis = handle.axis();
+                        transform.release_confirms = true;
+                    }
+                    self.gizmo_hover = None;
+                    self.update_transform(mods.ctrl);
+                    return;
+                }
                 if let Some(drag) = drag_for(button, mods) {
                     self.mouse_state = Mouse::Camera(drag);
                     // Keeps the drag going if the mouse leaves the window.
@@ -1287,6 +1407,12 @@ impl App {
                 }
                 if !matches!(self.mouse_state, Mouse::Idle) {
                     self.frames_wanted = self.frames_wanted.max(1);
+                }
+                // Lights up the handle under the mouse.
+                let hover = gizmo::hit(&self.gizmo_parts(), self.pointer);
+                if hover != self.gizmo_hover {
+                    self.gizmo_hover = hover;
+                    self.request_frames();
                 }
                 // Moving over empty viewport needs no drawing. The panel highlights
                 // its buttons, so it does, as does leaving it or using a slider.
@@ -1354,6 +1480,11 @@ impl App {
     fn handle_transform_event(&mut self, event: &Event, snap: bool) {
         match *event {
             Event::MouseMotion { .. } => self.update_transform(snap),
+            // A handle drag ends when the button comes up.
+            Event::MouseButtonUp {
+                mouse_btn: MouseButton::Left,
+                ..
+            } if self.dragging_handle() => self.finish_transform(true),
             Event::MouseButtonDown {
                 mouse_btn: MouseButton::Left,
                 ..
@@ -1425,7 +1556,11 @@ impl App {
     /// pointer, and hears of button releases so that no button stays held down.
     fn imgui_pointer_only(&mut self, event: &Event) {
         match event {
-            Event::MouseMotion { .. } | Event::MouseButtonUp { .. } => self.feed_imgui(event),
+            // Releases always go through, or Dear ImGui would think Ctrl was still held
+            // after Ctrl+B, and the next click on a slider would start typing in it.
+            Event::MouseMotion { .. } | Event::MouseButtonUp { .. } | Event::KeyUp { .. } => {
+                self.feed_imgui(event)
+            }
             _ => {}
         }
     }
@@ -1534,6 +1669,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::Plus | Keycode::KP_PLUS | Keycode::Equals => Some(Action::SelectMore),
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
             Keycode::R => Some(Action::LoopCut),
+            Keycode::B if mods.shift => Some(Action::BevelVertices),
             Keycode::B => Some(Action::Bevel),
             Keycode::S if mods.shift => Some(Action::SaveAs),
             Keycode::S => Some(Action::Save),
@@ -1719,6 +1855,14 @@ mod tests {
         assert_eq!(shortcut(Keycode::Minus, CTRL), Some(Action::SelectLess));
         assert_eq!(shortcut(Keycode::R, CTRL), Some(Action::LoopCut));
         assert_eq!(shortcut(Keycode::B, CTRL), Some(Action::Bevel));
+        let ctrl_shift = Modifiers {
+            shift: true,
+            ..CTRL
+        };
+        assert_eq!(
+            shortcut(Keycode::B, ctrl_shift),
+            Some(Action::BevelVertices)
+        );
         let ctrl_shift = Modifiers {
             shift: true,
             ..CTRL

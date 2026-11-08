@@ -577,3 +577,219 @@ fn random_bevels_stay_valid_keep_holes_and_undo_exactly() {
     println!("worked {worked}, refused {refused}");
     assert!(worked >= 150, "only {worked} bevels worked");
 }
+
+fn settings(width: f32, segments: usize, shape: f32) -> modeler_mesh::BevelSettings {
+    modeler_mesh::BevelSettings {
+        width,
+        segments,
+        shape,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn shape_runs_from_inward_through_straight_and_round_to_sharp() {
+    let removed = |shape: f32| {
+        let (mut mesh, v, _) = cube();
+        let picked = edge(&mesh, v[5], v[6]);
+        select_edges(&mut mesh, &[picked]);
+        mesh.bevel_selected(&settings(0.4, 6, shape), SelectMode::Edge)
+            .unwrap();
+        mesh.validate().unwrap();
+        assert!(is_closed_and_consistent(&mesh));
+        1.0 - volume(&mesh)
+    };
+    let flat = 0.4f64 * 0.4 / 2.0;
+    // Straight: the same as one segment.
+    assert!((removed(0.25) - flat).abs() < 1e-5, "{}", removed(0.25));
+    // Round removes less, sharp almost nothing, inward more than straight.
+    let (inward, round, sharp) = (removed(0.1), removed(0.5), removed(1.0));
+    assert!(round < flat && round > 0.2 * flat);
+    assert!(sharp < 0.1 * flat, "{sharp}");
+    assert!(inward > flat, "{inward}");
+    let (mut mesh, _, _) = cube();
+    mesh.select_all();
+    for bad in [-0.1, 1.1, f32::NAN] {
+        assert_eq!(
+            mesh.bevel_selected(&settings(0.1, 2, bad), SelectMode::Edge),
+            Err(MeshError::InvalidShape)
+        );
+    }
+}
+
+#[test]
+fn every_shape_keeps_a_fully_bevelled_cube_closed() {
+    for shape in [0.0, 0.15, 0.25, 0.4, 0.5, 0.7, 1.0] {
+        let (mut mesh, _, _) = cube();
+        mesh.select_all();
+        mesh.bevel_selected(&settings(0.2, 3, shape), SelectMode::Edge)
+            .unwrap();
+        mesh.validate().unwrap();
+        assert!(is_closed_and_consistent(&mesh), "shape {shape}");
+        assert!(volume(&mesh) > 0.5 && volume(&mesh) < 1.0, "shape {shape}");
+    }
+}
+
+#[test]
+fn without_clamping_the_width_is_not_limited() {
+    let (mut mesh, _, _) = cube();
+    mesh.select_all();
+    let made = mesh
+        .bevel_selected(
+            &modeler_mesh::BevelSettings {
+                width: 0.8,
+                clamp: false,
+                ..settings(0.0, 1, 0.5)
+            },
+            SelectMode::Edge,
+        )
+        .unwrap();
+    mesh.validate().unwrap();
+    assert_eq!(made.width, 0.8);
+    assert!(made.max_width > 1000.0);
+}
+
+fn vertex_settings(width: f32, segments: usize) -> modeler_mesh::BevelSettings {
+    modeler_mesh::BevelSettings {
+        vertices: true,
+        ..settings(width, segments, 0.5)
+    }
+}
+
+#[test]
+fn bevelling_a_cube_corner_cuts_off_an_exact_tetrahedron() {
+    let (mut mesh, v, _) = cube();
+    mesh.select_elements(
+        SelectMode::Vertex,
+        &[Element::Vertex(v[6])],
+        SelectOp::Replace,
+    )
+    .unwrap();
+    let w = 0.3;
+    let made = mesh
+        .bevel_selected(&vertex_settings(w, 1), SelectMode::Vertex)
+        .unwrap();
+    mesh.validate().unwrap();
+    assert_eq!(made.width, w);
+    assert_eq!(counts(&mesh), (10, 15, 7));
+    assert!(is_closed_and_consistent(&mesh));
+    assert!(is_convex(&mesh));
+    let expected = 1.0 - f64::from(w).powi(3) / 6.0;
+    assert!((volume(&mesh) - expected).abs() < 1e-6, "{}", volume(&mesh));
+    // The new triangle is selected.
+    assert_eq!(mesh.faces().filter(|(_, f)| f.is_selected()).count(), 1);
+}
+
+#[test]
+fn vertex_bevel_rounds_with_segments_and_stops_half_way_between_neighbours() {
+    let (mut mesh, v, _) = cube();
+    mesh.select_elements(
+        SelectMode::Vertex,
+        &[Element::Vertex(v[6]), Element::Vertex(v[7])],
+        SelectOp::Replace,
+    )
+    .unwrap();
+    let made = mesh
+        .bevel_selected(&vertex_settings(0.9, 4), SelectMode::Vertex)
+        .unwrap();
+    mesh.validate().unwrap();
+    assert!(made.width < 0.5 && made.width > 0.49, "{}", made.width);
+    assert!(is_closed_and_consistent(&mesh));
+    assert!(volume(&mesh) < 1.0 && volume(&mesh) > 0.9);
+}
+
+#[test]
+fn vertex_bevel_at_a_border_cuts_the_corner_off() {
+    let (mut mesh, v) = grid(2, 2);
+    mesh.select_elements(
+        SelectMode::Vertex,
+        &[Element::Vertex(v[0]), Element::Vertex(v[4])],
+        SelectOp::Replace,
+    )
+    .unwrap();
+    let faces = mesh.face_count();
+    let holes = hole_count(&mesh);
+    for segments in [1, 3] {
+        let mut copy = mesh.clone();
+        copy.bevel_selected(&vertex_settings(0.3, segments), SelectMode::Vertex)
+            .unwrap();
+        copy.validate().unwrap();
+        assert!(winding_agrees(&copy));
+        assert_eq!(hole_count(&copy), holes);
+        // The middle vertex gets a corner face; the border corner does not.
+        assert_eq!(
+            copy.face_count(),
+            faces + if segments == 1 { 1 } else { 4 * 3 }
+        );
+    }
+}
+
+#[test]
+fn random_vertex_bevels_stay_valid_and_undo_exactly() {
+    let mut worked = 0;
+    for seed in 0..40u64 {
+        let mut doc = Document::new(Mesh::new());
+        doc.edit("start", |m| {
+            m.add_primitive(Primitive::Cube { size: 2.0 }, [0.0; 3])?;
+            m.add_primitive(
+                Primitive::UvSphere {
+                    radius: 1.0,
+                    segments: 7,
+                    rings: 4,
+                },
+                [4.0, 0.0, 0.0],
+            )?;
+            m.add_primitive(
+                Primitive::Grid {
+                    size: 2.0,
+                    columns: 2,
+                    rows: 3,
+                },
+                [0.0, 4.0, 0.0],
+            )?;
+            m.add_primitive(
+                Primitive::Cone {
+                    radius: 1.0,
+                    height: 2.0,
+                    segments: 5,
+                },
+                [0.0, 0.0, 4.0],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let start = doc.mesh().clone();
+        let ids: Vec<VertexId> = start.vertices().map(|(id, _)| id).collect();
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = |limit: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % limit as u64) as usize
+        };
+        let picks: Vec<Element> = (0..1 + next(5))
+            .map(|_| Element::Vertex(ids[next(ids.len())]))
+            .collect();
+        let s = modeler_mesh::BevelSettings {
+            vertices: true,
+            width: [0.0, 0.1, 0.4, 3.0][next(4)],
+            segments: 1 + next(4),
+            shape: [0.2, 0.5, 0.9][next(3)],
+            clamp: true,
+        };
+        let holes = hole_count(&start);
+        let result = doc.edit("bevel", |m| {
+            m.select_elements(SelectMode::Vertex, &picks, SelectOp::Replace)?;
+            m.bevel_selected(&s, SelectMode::Vertex).map(|_| ())
+        });
+        doc.mesh().validate().unwrap();
+        if result.is_ok() {
+            worked += 1;
+            assert_eq!(hole_count(doc.mesh()), holes, "seed {seed}");
+            assert!(winding_agrees(doc.mesh()), "seed {seed}");
+            doc.undo();
+        }
+        assert_eq!(*doc.mesh(), start, "seed {seed}");
+    }
+    assert!(worked >= 30, "only {worked} worked");
+}

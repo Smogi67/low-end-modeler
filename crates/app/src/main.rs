@@ -8,6 +8,7 @@ mod camera;
 mod controls;
 mod editor;
 mod export;
+mod gizmo;
 mod grid;
 mod imgui_gl;
 mod picking;

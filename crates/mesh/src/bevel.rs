@@ -45,6 +45,72 @@ pub const MAX_BEVEL_SEGMENTS: usize = 16;
 /// of the corner's points. This puts it on the sphere of a rounded cube corner.
 const CAP_CENTER_SHARE: f32 = 0.634;
 
+/// The width limit when overlap is not clamped: in effect none.
+const UNCLAMPED: f32 = 1.0e6;
+
+/// The choices for a bevel, as in Blender's bevel panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BevelSettings {
+    /// Bevel the selected vertices on their own, instead of the selected edges.
+    pub vertices: bool,
+    /// How far the new points move from the original vertices or edges.
+    pub width: f32,
+    /// From 1 to `MAX_BEVEL_SEGMENTS`.
+    pub segments: usize,
+    /// The profile's shape, from 0 to 1: 0.5 is round, 0.25 straight, 1 a sharp
+    /// corner, and below 0.25 it curves inward. Matters only with more than one segment.
+    pub shape: f32,
+    /// Stop the width before new points pass each other.
+    pub clamp: bool,
+}
+
+impl Default for BevelSettings {
+    fn default() -> Self {
+        Self {
+            vertices: false,
+            width: 0.0,
+            segments: 1,
+            shape: 0.5,
+            clamp: true,
+        }
+    }
+}
+
+/// The superellipse exponent for a shape: 2 (a circle) at 0.5, 1 (a straight line)
+/// at 0.25, growing toward a sharp corner at 1.
+fn exponent(shape: f32) -> f32 {
+    2f32.powf(4.0 * shape - 1.0).clamp(0.25, 64.0)
+}
+
+/// The inner points of a profile from `a` to `c` around the corner point `k`, all as
+/// steps per unit of width. A superellipse in the frame running from `o = a + c - k`
+/// to `a` and to `c`: with the round shape, an exact quarter circle when `k` is a
+/// right angle, and evenly spaced by angle.
+fn profile_steps(a: V3, c: V3, k: V3, segments: usize, shape: f32) -> Vec<V3> {
+    let o = sub(add(a, c), k);
+    let (oa, oc) = (sub(a, o), sub(c, o));
+    let r = exponent(shape);
+    (1..segments)
+        .map(|j| {
+            let angle = j as f32 / segments as f32 * std::f32::consts::FRAC_PI_2;
+            let x = angle.cos().max(0.0).powf(2.0 / r);
+            let y = angle.sin().max(0.0).powf(2.0 / r);
+            add(o, add(scale(oa, x), scale(oc, y)))
+        })
+        .collect()
+}
+
+/// How far a corner's center sits toward the middle of its points, for this shape:
+/// on the sphere when round, flat when straight, at the vertex when sharp.
+fn center_share(shape: f32) -> f32 {
+    let diagonal = 0.5f32.powf(1.0 / exponent(shape));
+    (1.0 - diagonal) / (1.0 - 0.5f32.sqrt()) * CAP_CENTER_SHARE
+}
+
+fn is_round(shape: f32) -> bool {
+    (shape - 0.5).abs() < 1e-4
+}
+
 /// What a bevel made, for adjusting its width afterwards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bevel {
@@ -290,11 +356,38 @@ impl Mesh {
         segments: usize,
         mode: SelectMode,
     ) -> Result<Bevel, MeshError> {
+        let settings = BevelSettings {
+            width,
+            segments,
+            ..BevelSettings::default()
+        };
+        self.bevel_selected(&settings, mode)
+    }
+
+    /// Bevels the selected edges, or with `settings.vertices` the selected vertices.
+    pub fn bevel_selected(
+        &mut self,
+        settings: &BevelSettings,
+        mode: SelectMode,
+    ) -> Result<Bevel, MeshError> {
+        let BevelSettings {
+            width,
+            segments,
+            shape,
+            clamp,
+            vertices,
+        } = *settings;
         if !width.is_finite() || width < 0.0 {
             return Err(MeshError::InvalidDistance);
         }
         if !(1..=MAX_BEVEL_SEGMENTS).contains(&segments) {
             return Err(MeshError::InvalidSegments);
+        }
+        if !shape.is_finite() || !(0.0..=1.0).contains(&shape) {
+            return Err(MeshError::InvalidShape);
+        }
+        if vertices {
+            return self.bevel_vertices(settings, mode);
         }
         let beveled: HashSet<EdgeId> = self
             .edges()
@@ -419,7 +512,7 @@ impl Mesh {
                 }
             }
         }
-        let max_width = max_width * 0.999;
+        let max_width = if clamp { max_width * 0.999 } else { UNCLAMPED };
         let width = width.min(max_width);
 
         // New vertices for every point.
@@ -464,20 +557,8 @@ impl Mesh {
                 // face is made, that is on the beveled edge, level with the ends.
                 // Otherwise it is the vertex itself, as where two bands meet in a mitre.
                 let k = along.map_or([0.0; 3], |u| scale(u, (dot(a, u) + dot(c, u)) / 2.0));
-                // A rational quadratic curve from a to c, pulled toward k: a circular arc
-                // when both ends are the same distance from k. The weight is the sine of
-                // half the angle at k: 0.707 for a right angle, an exact quarter circle.
-                let (ka, kc) = (sub(a, k), sub(c, k));
-                let cosine = dot(ka, kc) / (length(ka) * length(kc)).max(1e-12);
-                let pull = ((1.0 - cosine.clamp(-1.0, 1.0)) / 2.0)
-                    .sqrt()
-                    .clamp(0.01, 1.0);
                 let mut inner = Vec::with_capacity(segments.saturating_sub(1));
-                for j in 1..segments {
-                    let t = j as f32 / segments as f32;
-                    let (wa, wc, wk) = ((1.0 - t) * (1.0 - t), t * t, 2.0 * t * (1.0 - t) * pull);
-                    let sum = add(add(scale(a, wa), scale(c, wc)), scale(k, wk));
-                    let step = scale(sum, 1.0 / (wa + wc + wk));
+                for step in profile_steps(a, c, k, segments, shape) {
                     let id = mesh.add_vertex(add(here, scale(step, width)))?;
                     moving.push((id, here, step));
                     inner_steps.insert(id, step);
@@ -668,7 +749,12 @@ impl Mesh {
                         Around::Beveled(_) => None,
                     })
                     .collect();
-                let sphere = self.corner_sphere(v, &fans[&v], ring, &steps, &made, &step_of);
+                // Only a round profile lies on a sphere.
+                let sphere = if is_round(shape) {
+                    self.corner_sphere(v, &fans[&v], ring, &steps, &made, &step_of)
+                } else {
+                    None
+                };
                 // The three sides of a three-cornered patch, each from corner to corner.
                 let mut sides3 = Vec::new();
                 if sphere.is_some() && corner_points.len() == 3 {
@@ -775,8 +861,7 @@ impl Mesh {
                                 middle,
                                 scale(unit(sub(average, middle)).unwrap_or([0.0; 3]), radius),
                             ),
-                            // On a rounded cube corner, this share puts it on the sphere.
-                            None => scale(average, CAP_CENTER_SHARE),
+                            None => scale(average, center_share(shape)),
                         };
                         let center = new_point(self, step)?;
                         let n = outline.len();
@@ -832,6 +917,183 @@ impl Mesh {
         }
         let mut selected = Vec::with_capacity(bevel_faces.len());
         for outline in bevel_faces {
+            selected.push(Element::Face(self.add_face(&outline).map_err(refused)?));
+        }
+        self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
+        self.flush_selection(mode);
+        Ok(Bevel {
+            moving,
+            width,
+            max_width,
+        })
+    }
+}
+
+impl Mesh {
+    /// Bevels each selected vertex on its own, as Blender's vertex bevel: a point on
+    /// every edge at the width from the vertex, joined across each face by a straight
+    /// cut or, with more segments, a curve. Where faces surround the vertex, a corner
+    /// face fills the gap. At a border, the faces' corners are simply cut off.
+    fn bevel_vertices(
+        &mut self,
+        settings: &BevelSettings,
+        mode: SelectMode,
+    ) -> Result<Bevel, MeshError> {
+        let BevelSettings {
+            width,
+            segments,
+            shape,
+            clamp,
+            ..
+        } = *settings;
+        let hubs = self.selected_vertices();
+        if hubs.is_empty() {
+            return Err(MeshError::NothingSelected);
+        }
+        let hub_set: HashSet<VertexId> = hubs.iter().copied().collect();
+        let mut fans: HashMap<VertexId, Fan> = HashMap::with_capacity(hubs.len());
+        for &v in &hubs {
+            fans.insert(v, self.fan(v).ok_or(MeshError::CannotBevel)?);
+        }
+
+        // A point may go half way along an edge shared with another beveled vertex,
+        // and nearly all the way otherwise.
+        let mut max_width = f32::MAX;
+        let mut directions: HashMap<(VertexId, EdgeId), V3> = HashMap::new();
+        for &v in &hubs {
+            let here = self.vertices[v].position;
+            for &e in &fans[&v].edges {
+                let other = self.edges[e]
+                    .other_vertex(v)
+                    .ok_or(MeshError::CannotBevel)?;
+                let along = sub(self.vertices[other].position, here);
+                let dir = unit(along).ok_or(MeshError::CannotBevel)?;
+                let share = if hub_set.contains(&other) { 0.5 } else { 1.0 };
+                max_width = max_width.min(length(along) * share);
+                directions.insert((v, e), dir);
+            }
+        }
+        let max_width = if clamp { max_width * 0.999 } else { UNCLAMPED };
+        let width = width.min(max_width);
+
+        let mut moving: Vec<(VertexId, V3, V3)> = Vec::new();
+        let mut made: HashMap<(VertexId, EdgeId), VertexId> = HashMap::new();
+        let mut step_of: HashMap<VertexId, V3> = HashMap::new();
+        for &v in &hubs {
+            let here = self.vertices[v].position;
+            for &e in &fans[&v].edges {
+                let step = directions[&(v, e)];
+                let id = self.add_vertex(add(here, scale(step, width)))?;
+                made.insert((v, e), id);
+                step_of.insert(id, step);
+                moving.push((id, here, step));
+            }
+        }
+
+        // Curves across each face's corner, bending toward the vertex.
+        let mut profiles: HashMap<(VertexId, VertexId, VertexId), Vec<VertexId>> = HashMap::new();
+        let mut curve = |mesh: &mut Mesh,
+                         moving: &mut Vec<(VertexId, V3, V3)>,
+                         v: VertexId,
+                         from: VertexId,
+                         to: VertexId|
+         -> Result<Vec<VertexId>, MeshError> {
+            let key = (v, from.min(to), from.max(to));
+            if let Entry::Vacant(slot) = profiles.entry(key) {
+                let here = mesh.vertices[v].position;
+                let mut inner = Vec::new();
+                for step in
+                    profile_steps(step_of[&key.1], step_of[&key.2], [0.0; 3], segments, shape)
+                {
+                    let id = mesh.add_vertex(add(here, scale(step, width)))?;
+                    moving.push((id, here, step));
+                    inner.push(id);
+                }
+                slot.insert(inner);
+            }
+            let mut inner = profiles[&key].clone();
+            if from > to {
+                inner.reverse();
+            }
+            Ok(inner)
+        };
+
+        let mut affected: Vec<FaceId> = hubs
+            .iter()
+            .flat_map(|v| fans[v].corners.iter().map(|&c| self.corners[c].face))
+            .collect();
+        affected.sort_unstable();
+        affected.dedup();
+        let mut new_faces: Vec<Vec<VertexId>> = Vec::with_capacity(affected.len());
+        for &face in &affected {
+            let corners: Vec<CornerId> = self.face_walk(face).collect();
+            let mut outline = Vec::with_capacity(corners.len() * 2);
+            for c in corners {
+                let data = self.corners[c];
+                let v = data.vertex;
+                if !hub_set.contains(&v) {
+                    outline.push(v);
+                    continue;
+                }
+                let a = made[&(v, self.corners[data.prev].edge)];
+                let b = made[&(v, data.edge)];
+                outline.push(a);
+                outline.extend(curve(self, &mut moving, v, a, b)?);
+                outline.push(b);
+            }
+            new_faces.push(outline);
+        }
+
+        // Corner faces, where faces go all the way round.
+        let mut cap_faces: Vec<Vec<VertexId>> = Vec::new();
+        for &v in &hubs {
+            let fan = &fans[&v];
+            if !fan.closed {
+                continue;
+            }
+            let here = self.vertices[v].position;
+            let n = fan.edges.len();
+            let mut outline = Vec::new();
+            let mut sum = [0.0; 3];
+            for i in 0..n {
+                let a = made[&(v, fan.edges[i])];
+                let b = made[&(v, fan.edges[(i + 1) % n])];
+                outline.push(a);
+                outline.extend(curve(self, &mut moving, v, a, b)?);
+                sum = add(sum, step_of[&a]);
+            }
+            // Faces run the other way round the vertex from the fan's order.
+            outline.reverse();
+            if segments > 1 {
+                let step = scale(sum, center_share(shape) / n as f32);
+                let center = self.add_vertex(add(here, scale(step, width)))?;
+                moving.push((center, here, step));
+                let count = outline.len();
+                for k in 0..count {
+                    cap_faces.push(vec![center, outline[k], outline[(k + 1) % count]]);
+                }
+            } else {
+                cap_faces.push(outline);
+            }
+        }
+
+        for &face in &affected {
+            self.remove_face(face)?;
+        }
+        for &v in &hubs {
+            self.remove_vertex(v)?;
+        }
+        let refused = |error: MeshError| match error {
+            MeshError::FaceExists(_)
+            | MeshError::RepeatedVertex(_)
+            | MeshError::FaceTooSmall { .. } => MeshError::CannotBevel,
+            other => other,
+        };
+        for outline in new_faces {
+            self.add_face(&outline).map_err(refused)?;
+        }
+        let mut selected = Vec::with_capacity(cap_faces.len());
+        for outline in cap_faces {
             selected.push(Element::Face(self.add_face(&outline).map_err(refused)?));
         }
         self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
