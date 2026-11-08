@@ -202,7 +202,8 @@ The owner sent the Blender 5.2 manual page for Bevel and asked for what is on it
 - **Sharp edges:** edges can be marked sharp (Mark sharp and Clear sharp in Edge mode, or the bevel's Mark sharp option, which marks the bevel's borders). Smooth shading stops at them; they are saved in project files (`sharp a b` lines) and carried into exports through the normals. Sharp edges are drawn blue.
 - The less common options are behind "More options" in the Bevel panel, so it stays short on the laptop's screen; the panel scrolls when it is taller than the 3D view.
 - **Left for later**, because Mixer has nothing for them yet: Material Index (needs materials), Mark Seams (needs UVs), Harden Normals and Face Strength (need custom normals).
-- **Shadows setting** (Settings > Display > Shadows on shapes, on by default): off lights every side the same. In View mode a shape then shows only its outline, because there are no edge lines there; this is what was asked for, and the note under the checkbox says so.
+- **Shadows setting** (Settings > Display > Shadows on shapes, on by default): off lights every side the same. Asked whether that looks too flat in View mode, the owner chose to offer both: with shadows off, "Edge lines in View mode" (off by default, `flatedges` in settings.txt) draws thin plain edge lines in View mode, so the shape still shows.
+- **Leftover launcher:** after an update, Mixer deletes `mixer-launcher.old.exe` when it starts (trying for up to 10 seconds while the old launcher closes), so it no longer waits for the launcher's next start. Owner's request.
 
 ### Decisions made in Stage 10, step 3: the settings page (owner chose all four groups)
 
@@ -342,6 +343,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - **Assumed experience:** Give exact, step-by-step instructions for anything done outside the app, such as GitHub setup. Do not assume programming experience.
 - **Recommendations:** The owner wants recommendations based on technical merit, not on their preferences, unless they say otherwise.
 - **Writing style:** Keep messages short, and lead with what they need to do or know. They often read on a phone.
+- **Choices:** Whenever there is more than one suggestion to choose from, ask with a question prompt (clickable options), not in plain text (owner's rule, 2026-11-08).
 
 ## 10. Rules for AI contributors
 
@@ -396,4 +398,4 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] List the real dependencies of the .exe for the installer: done in Stage 8, see section 6
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
 - [x] Approve the picture of the new Mixer Launcher before it is built (Stage 10 step 2): approved 2026-11-08
-- [ ] With shadows off, should View mode keep a faint shading so shapes do not look flat? (Built literally for now: every side the same)
+- [x] With shadows off, should View mode look flat? Owner: let people choose; fully flat by default, edge lines as an option

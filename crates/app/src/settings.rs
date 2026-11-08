@@ -50,6 +50,8 @@ pub struct Settings {
     pub grid: bool,
     /// Shapes get darker on the sides turned away from the light.
     pub shadows: bool,
+    /// With shadows off: edge lines in View mode too, so shapes do not look flat.
+    pub flat_edges: bool,
     // Mouse
     /// Two-finger scrolling turns the view; Shift slides it, Ctrl zooms.
     pub touchpad: bool,
@@ -84,6 +86,7 @@ impl Default for Settings {
             interface: 100,
             grid: true,
             shadows: true,
+            flat_edges: false,
             touchpad: false,
             zoom_to_pointer: false,
             invert_zoom: false,
@@ -146,6 +149,7 @@ impl Settings {
                 }
                 "grid" => s.grid = on(value),
                 "shadows" => s.shadows = on(value),
+                "flatedges" => s.flat_edges = on(value),
                 "touchpad" => s.touchpad = on(value),
                 "zoomtopointer" => s.zoom_to_pointer = on(value),
                 "invertzoom" => s.invert_zoom = on(value),
@@ -187,6 +191,7 @@ impl Settings {
             ("interface", self.interface.to_string()),
             ("grid", word(self.grid).to_string()),
             ("shadows", word(self.shadows).to_string()),
+            ("flatedges", word(self.flat_edges).to_string()),
             ("touchpad", word(self.touchpad).to_string()),
             ("zoomtopointer", word(self.zoom_to_pointer).to_string()),
             ("invertzoom", word(self.invert_zoom).to_string()),
@@ -234,6 +239,7 @@ mod tests {
             interface: 125,
             grid: false,
             shadows: false,
+            flat_edges: true,
             touchpad: true,
             zoom_to_pointer: true,
             invert_zoom: true,

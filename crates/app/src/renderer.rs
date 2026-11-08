@@ -136,7 +136,12 @@ pub struct View {
     pub grid: bool,
     /// Darker sides on shapes, which the settings can turn off.
     pub shadows: bool,
+    /// Plain dark edge lines even when `overlays` is off (View mode with shadows off).
+    pub plain_edges: bool,
 }
+
+/// The color of View mode's plain edge lines.
+const PLAIN_EDGE_COLOR: [f32; 3] = [0.30, 0.31, 0.34];
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
@@ -516,6 +521,20 @@ impl Renderer {
                 gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
                 gl.disable(glow::POLYGON_OFFSET_FILL);
                 gl.disable_vertex_attrib_array(SELECTED_ATTRIBUTE);
+            }
+
+            // In View mode, plain edge lines all in one color, when the settings ask.
+            if !view.overlays && view.plain_edges && self.edge_vertex_count > 0 {
+                gl.use_program(Some(self.program));
+                gl.uniform_1_f32(self.depth_bias.as_ref(), 0.0);
+                let stride = FLOATS_PER_LINE_VERTEX as i32 * size;
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
+                gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
+                gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);
+                let [r, g, b] = PLAIN_EDGE_COLOR;
+                gl.vertex_attrib_3_f32(COLOR_ATTRIBUTE, r, g, b);
+                gl.draw_arrays(glow::LINES, 0, self.edge_vertex_count);
+                gl.enable_vertex_attrib_array(COLOR_ATTRIBUTE);
             }
 
             // Edges and points, using the grid's shader.

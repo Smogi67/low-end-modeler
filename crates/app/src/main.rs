@@ -43,6 +43,7 @@ fn main() {
         explain_missing_sdl();
         return;
     }
+    remove_old_launcher();
     std::panic::set_hook(Box::new(|info| {
         show_error(&format!("Internal error:\n{info}"))
     }));
@@ -50,6 +51,29 @@ fn main() {
         show_error(&message);
         std::process::exit(1);
     }
+}
+
+/// After an update, the launcher leaves its old self as `mixer-launcher.old.exe`, because
+/// Windows cannot delete a running program, then starts Mixer and closes. Mixer deletes
+/// it, trying for a few seconds while the old launcher finishes closing.
+fn remove_old_launcher() {
+    let Some(old) = std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name("mixer-launcher.old.exe"))
+    else {
+        return;
+    };
+    if !old.exists() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            if std::fs::remove_file(&old).is_ok() || !old.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 }
 
 /// SDL2.dll comes from the Mixer Launcher. Offers to start it.

@@ -218,11 +218,18 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
     ui.checkbox("Show the grid", &mut values.grid);
     ui.checkbox("Shadows on shapes", &mut values.shadows);
     if !values.shadows {
+        ui.indent_by(28.0);
+        ui.checkbox("Edge lines in View mode", &mut values.flat_edges);
         note(
             ui,
             color::FAINT,
-            "Every side is lit the same, so in View mode a shape looks flat.",
+            if values.flat_edges {
+                "Every side is lit the same; thin lines show the shape."
+            } else {
+                "Every side is lit the same, so in View mode a shape looks flat."
+            },
         );
+        ui.unindent_by(28.0);
     }
     ui.dummy([0.0, 4.0]);
     label(ui, "Interface size");

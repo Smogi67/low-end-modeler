@@ -507,6 +507,7 @@ impl App {
             overlays: !self.view_only,
             grid: self.settings.grid,
             shadows: self.settings.shadows,
+            plain_edges: !self.settings.shadows && self.settings.flat_edges,
         };
         self.renderer.render(width, height, &view);
         self.imgui_gl.render(self.renderer.gl(), draw_data, height);
