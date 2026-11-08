@@ -237,6 +237,7 @@ The owner decided this on 2026-11-05.
 - UV seams, unwrapping, and UV editing
 - Simple materials
 - Mesh checks for bad geometry before export
+- Feature search (owner's request): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
 
 ### Out of scope
 
