@@ -5,7 +5,7 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
 Status: **Stage 9, part 4 code written: mirror and array modifiers. Part 3 added smooth shading; part 2 renamed the project to Mixer and added the start window and anti-aliasing; part 1 added knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
-Next step: **Feature search (promised to the owner as the next feature), then the owner's feedback on Stage 9.**
+Next step: **Stage 10 in the owner's order (section "Stage 10 plan"): small fixes first. Then the owner's feedback on Stage 9.**
 
 ## 1. Goal
 
@@ -181,6 +181,16 @@ The owner asked for a free cut, for joining shapes ("merging"), and for a mode t
 - **Exports:** OBJ writes each different normal once (`vn`) and glTF one normal per corner, so Roblox shows the same shading.
 - **Anti-aliasing check:** confirmed on Linux with an off-screen display limited to OpenGL 2.1: 4 samples, visibly smoother edges, and no OpenGL errors from Mixer's own calls.
 
+### Stage 10 plan (owner's choices, 2026-11-08)
+
+Asked to consult first, the owner chose this order:
+
+1. **Small fixes:** every Quick Project gets its own folder (Quick Projects > name > name.mix, exports inside it); old quick projects stay where they are. The start window's Recent list gets Open folder and Delete; Delete asks first, then moves the project to the Recycle Bin. The "Start with a shape" text in the empty 3D view is removed completely.
+2. **Mixer Launcher:** the setup program is renamed Mixer Launcher (`mixer-launcher.exe`) and becomes the way to start Mixer. It checks GitHub Releases for a newer version and **asks first** ("Update now? / Not now", with what is new); then downloads, verifies, replaces Mixer and starts it. Without internet it just starts Mixer. Each finished stage becomes a numbered GitHub Release, because Actions downloads need a login and Releases do not. New look, dark in Mixer's colors, one page at a time (check, advanced, progress, done). It must still need nothing that it installs. **A picture of the design goes to the owner for approval before building it.**
+3. **Settings page** in Mixer with all four groups: Display (rendering engine, anti-aliasing, interface size 100/125/150 %, grid on or off), Mouse (touchpad mode with Alt+drag to turn and Shift+Alt+drag to slide, zoom toward the pointer, invert zoom, turn speed), Saving (auto-save every few minutes, undo steps, recent list length, start window on or off), Export and updates (default format and scale, open folder after export, check for updates on start).
+4. **Rendering engine choice:** the owner wants it to work on PCs generally, not only the laptop, including Vulkan. Plan: keep today's OpenGL 2.1 renderer (the laptop supports nothing newer that wgpu can use) and add a second renderer built on wgpu offering Vulkan, DirectX 12 and OpenGL 3.3. Only engines the PC supports are offered; the launcher recommends one, and an advanced view lets people pick. The same choice is in Mixer's settings. The owner accepted that the download grows by several MB. No software (Mesa) fallback.
+5. **Feature search.**
+
 ### Decisions made in Stage 9, part 4: mirror and array modifiers (owner left the choice to Claude)
 
 - **Where:** in Part mode, with one shape clicked, the Modifiers section of the panel has Mirror and Array buttons, then each modifier's settings in the order they run, a Remove button for each, and Apply.
@@ -248,7 +258,7 @@ The owner decided this on 2026-11-05.
 - UV seams, unwrapping, and UV editing
 - Simple materials
 - Mesh checks for bad geometry before export
-- Feature search (owner's request): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
+- Feature search (owner's request, Stage 10 step 5): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
 
 ### Out of scope
 
@@ -347,3 +357,4 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] Roblox's mesh requirements checked 2026-11-06: 20,000 triangles per mesh, closed geometry with real thickness (https://create.roblox.com/docs/en-us/art/modeling/specifications)
 - [x] List the real dependencies of the .exe for the installer: done in Stage 8, see section 6
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
+- [ ] Approve the picture of the new Mixer Launcher before it is built (Stage 10 step 2)
