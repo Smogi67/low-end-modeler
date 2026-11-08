@@ -3,7 +3,7 @@
 //! The numbers are from whichever machine runs this. They are useful for spotting
 //! regressions and rough limits, not as a promise about the target laptop.
 
-use modeler_mesh::{Document, Mesh, VertexId};
+use mixer_mesh::{Document, Mesh, VertexId};
 use std::time::{Duration, Instant};
 
 fn grid(size: usize) -> (Mesh, Vec<VertexId>) {

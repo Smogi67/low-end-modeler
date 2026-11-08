@@ -1,4 +1,4 @@
-//! The setup program: installs what Low-End Modeler needs, next to it, and nothing
+//! The setup program: installs what Mixer needs, next to it, and nothing
 //! else (spec section 6). Windows only; elsewhere it explains that and stops.
 //!
 //! The development machine cannot build for Windows, so the Windows code is
@@ -26,5 +26,5 @@ fn main() {
     #[cfg(any(windows, check_windows))]
     gui::run();
     #[cfg(not(any(windows, check_windows)))]
-    println!("Low-End Modeler setup runs on Windows only.");
+    println!("Mixer setup runs on Windows only.");
 }

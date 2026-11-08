@@ -4,7 +4,7 @@ mod common;
 use std::collections::HashSet;
 
 use common::{cube, edge, grid, is_closed_and_consistent};
-use modeler_mesh::{
+use mixer_mesh::{
     Document, EdgeId, Element, MAX_LOOP_CUTS, Mesh, MeshError, Primitive, SelectMode, SelectOp,
     VertexId,
 };
@@ -470,7 +470,7 @@ fn two_cylinders(turn: f32) -> Mesh {
         mesh.set_vertex_position(vertex, [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]])
             .unwrap();
     }
-    let cap = |faces: &[modeler_mesh::FaceId], height: f32| {
+    let cap = |faces: &[mixer_mesh::FaceId], height: f32| {
         *faces
             .iter()
             .find(|&&f| {

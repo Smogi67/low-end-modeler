@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, cycle, edge, euler_characteristic, grid, is_closed_and_consistent};
-use modeler_mesh::{EdgeId, Mesh, MeshError};
+use mixer_mesh::{EdgeId, Mesh, MeshError};
 use std::collections::HashSet;
 
 #[test]
@@ -288,7 +288,7 @@ fn links_support_walking_edge_rings_and_edge_loops() {
 }
 
 /// The edge continuing straight on from `current`, leaving through its far vertex.
-fn next_in_loop(mesh: &Mesh, current: EdgeId, from: modeler_mesh::VertexId) -> Option<EdgeId> {
+fn next_in_loop(mesh: &Mesh, current: EdgeId, from: mixer_mesh::VertexId) -> Option<EdgeId> {
     let far = mesh.edge(current).unwrap().other_vertex(from)?;
     if mesh.vertex_edges(far).unwrap().count() != 4 {
         return None;
@@ -308,12 +308,12 @@ fn next_in_loop(mesh: &Mesh, current: EdgeId, from: modeler_mesh::VertexId) -> O
 fn memory_use_per_element_stays_small() {
     use std::mem::size_of;
     // These limits catch accidental growth, which matters on a 4 GB machine.
-    assert_eq!(size_of::<modeler_mesh::VertexId>(), 8);
-    assert_eq!(size_of::<Option<modeler_mesh::VertexId>>(), 8);
-    assert!(size_of::<modeler_mesh::Vertex>() <= 24);
-    assert!(size_of::<modeler_mesh::Edge>() <= 60);
-    assert!(size_of::<modeler_mesh::Corner>() <= 56);
-    assert!(size_of::<modeler_mesh::Face>() <= 16);
+    assert_eq!(size_of::<mixer_mesh::VertexId>(), 8);
+    assert_eq!(size_of::<Option<mixer_mesh::VertexId>>(), 8);
+    assert!(size_of::<mixer_mesh::Vertex>() <= 24);
+    assert!(size_of::<mixer_mesh::Edge>() <= 60);
+    assert!(size_of::<mixer_mesh::Corner>() <= 56);
+    assert!(size_of::<mixer_mesh::Face>() <= 16);
 }
 
 #[test]

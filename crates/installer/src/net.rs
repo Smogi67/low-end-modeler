@@ -52,7 +52,7 @@ fn failure(doing: &str) -> String {
 
 /// Downloads the file, calling `progress` with the bytes so far and the total.
 pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<Vec<u8>, String> {
-    let agent = wide(concat!("LowEndModelerSetup/", env!("CARGO_PKG_VERSION")));
+    let agent = wide(concat!("MixerSetup/", env!("CARGO_PKG_VERSION")));
     // SAFETY: each call gets valid zero-ended strings or null where allowed, and every
     // handle is checked before use and closed by `Handle`.
     unsafe {

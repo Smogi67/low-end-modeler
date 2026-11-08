@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, edge, grid};
-use modeler_mesh::{Document, Element, Mesh, MeshError, Primitive, SelectMode, SelectOp};
+use mixer_mesh::{Document, Element, Mesh, MeshError, Primitive, SelectMode, SelectOp};
 
 fn signed_volume(mesh: &Mesh) -> f64 {
     let mut total = 0.0;
@@ -21,7 +21,7 @@ fn counts(mesh: &Mesh) -> (usize, usize, usize) {
     (mesh.vertex_count(), mesh.edge_count(), mesh.face_count())
 }
 
-fn select_face(mesh: &mut Mesh, face: modeler_mesh::FaceId) {
+fn select_face(mesh: &mut Mesh, face: mixer_mesh::FaceId) {
     mesh.select_elements(SelectMode::Face, &[Element::Face(face)], SelectOp::Replace)
         .unwrap();
 }
@@ -75,10 +75,10 @@ fn delete_in_each_mode() {
     );
 }
 
-fn v_of(mesh: &Mesh, i: usize) -> modeler_mesh::VertexId {
+fn v_of(mesh: &Mesh, i: usize) -> mixer_mesh::VertexId {
     mesh.vertices().nth(i).unwrap().0
 }
-fn f_of(mesh: &Mesh) -> modeler_mesh::FaceId {
+fn f_of(mesh: &Mesh) -> mixer_mesh::FaceId {
     mesh.faces().next().unwrap().0
 }
 

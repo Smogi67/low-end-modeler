@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, edge, grid};
-use modeler_mesh::{Document, Element, Mesh, MeshError, Primitive, SelectMode, SelectOp};
+use mixer_mesh::{Document, Element, Mesh, MeshError, Primitive, SelectMode, SelectOp};
 use std::collections::HashSet;
 
 fn counts(mesh: &Mesh) -> (usize, usize, usize) {
@@ -26,7 +26,7 @@ fn vertex_mode_selects_edges_and_faces_only_when_complete() {
     let (mut mesh, v, f) = cube();
     let top = [v[4], v[5], v[6], v[7]];
     let pick =
-        |vs: &[modeler_mesh::VertexId]| vs.iter().map(|&x| Element::Vertex(x)).collect::<Vec<_>>();
+        |vs: &[mixer_mesh::VertexId]| vs.iter().map(|&x| Element::Vertex(x)).collect::<Vec<_>>();
     mesh.select_elements(SelectMode::Vertex, &pick(&top[..1]), SelectOp::Replace)
         .unwrap();
     assert_eq!(counts(&mesh), (1, 0, 0));

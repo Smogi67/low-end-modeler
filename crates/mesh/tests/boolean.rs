@@ -2,7 +2,7 @@
 
 mod common;
 use common::{grid, is_closed_and_consistent};
-use modeler_mesh::{
+use mixer_mesh::{
     BooleanOp, Document, Element, FaceId, Mesh, MeshError, Primitive, SelectMode, SelectOp,
     VertexId,
 };

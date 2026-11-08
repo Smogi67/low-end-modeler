@@ -29,7 +29,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Build the app and setup
-        run: cargo build --release --package low-end-modeler --package low-end-modeler-setup
+        run: cargo build --release --package mixer --package mixer-setup
 
       # The release zip: both programs, the README and the font licenses. SDL2.dll is
       # left out on purpose; setup downloads it (spec section 6).
@@ -37,8 +37,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release/licenses | Out-Null
-          Copy-Item target/release/low-end-modeler.exe release/
-          Copy-Item target/release/low-end-modeler-setup.exe release/
+          Copy-Item target/release/mixer.exe release/
+          Copy-Item target/release/mixer-setup.exe release/
           Copy-Item dist/README.txt release/
           Copy-Item crates/app/assets/fonts/Inter-LICENSE.txt release/licenses/
           Copy-Item crates/app/assets/fonts/Lucide-LICENSE.txt release/licenses/
@@ -46,7 +46,7 @@ jobs:
             $megabytes = [math]::Round($file.Length / 1MB, 2)
             Write-Output "$($file.Name): $megabytes MB"
           }
-          if ((Get-Item release/low-end-modeler.exe).Length -gt 10MB) {
+          if ((Get-Item release/mixer.exe).Length -gt 10MB) {
             Write-Output "::warning::The app is over the 10 MB goal"
           }
           if (Test-Path release/SDL2.dll) { throw "SDL2.dll must not ship in the zip" }
@@ -57,13 +57,13 @@ jobs:
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $dumpbin = & $vswhere -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
-          $report = & $dumpbin /DEPENDENTS release/low-end-modeler.exe | Out-String
+          $report = & $dumpbin /DEPENDENTS release/mixer.exe | Out-String
           Write-Output $report
           $delayed = $report.Substring($report.IndexOf("delay load"))
           if ($report.IndexOf("delay load") -lt 0 -or $delayed -notmatch "SDL2.dll") {
             throw "SDL2.dll is not delay-loaded"
           }
-          $setup = & $dumpbin /DEPENDENTS release/low-end-modeler-setup.exe | Out-String
+          $setup = & $dumpbin /DEPENDENTS release/mixer-setup.exe | Out-String
           Write-Output $setup
           if ($setup -match "SDL2") { throw "setup must not need SDL2" }
 
@@ -72,13 +72,13 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse release trial
-          $process = Start-Process -FilePath trial/low-end-modeler-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-output.txt
+          $process = Start-Process -FilePath trial/mixer-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-output.txt
           Get-Content setup-output.txt
           if ($process.ExitCode -ne 0) { throw "setup failed with code $($process.ExitCode)" }
           if (-not (Test-Path trial/SDL2.dll)) { throw "setup did not install SDL2.dll" }
           if (-not (Test-Path trial/README-SDL.txt)) { throw "setup did not install README-SDL.txt" }
           # A second run finds everything in place and downloads nothing.
-          $again = Start-Process -FilePath trial/low-end-modeler-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-again.txt
+          $again = Start-Process -FilePath trial/mixer-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-again.txt
           Get-Content setup-again.txt
           if ($again.ExitCode -ne 0) { throw "second setup run failed" }
           if (-not (Select-String -Path setup-again.txt -Pattern "already installed" -Quiet)) { throw "second run should find SDL2 installed" }
@@ -105,17 +105,17 @@ jobs:
             Write-Output "SHOT $name END"
           }
           Copy-Item -Recurse release fresh1
-          $first = Start-Process -FilePath fresh1/low-end-modeler-setup.exe -PassThru
+          $first = Start-Process -FilePath fresh1/mixer-setup.exe -PassThru
           Start-Sleep -Seconds 6
           Shot "setup-first"
           Stop-Process -Id $first.Id -Force
           Copy-Item -Recurse release fresh2
-          $second = Start-Process -FilePath fresh2/low-end-modeler-setup.exe -ArgumentList "--press-continue" -PassThru
+          $second = Start-Process -FilePath fresh2/mixer-setup.exe -ArgumentList "--press-continue" -PassThru
           Start-Sleep -Seconds 12
           Shot "setup-done"
           Stop-Process -Id $second.Id -Force
           Copy-Item -Recurse release fresh3
-          $app = Start-Process -FilePath fresh3/low-end-modeler.exe -PassThru
+          $app = Start-Process -FilePath fresh3/mixer.exe -PassThru
           Start-Sleep -Seconds 6
           Shot "app-without-sdl"
           Stop-Process -Id $app.Id -Force
@@ -123,6 +123,6 @@ jobs:
       - name: Upload the release folder
         uses: actions/upload-artifact@v4
         with:
-          name: low-end-modeler
+          name: mixer
           path: release/
           if-no-files-found: error

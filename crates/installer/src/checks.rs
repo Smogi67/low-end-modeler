@@ -31,7 +31,7 @@ pub fn opengl() -> Result<OpenGl, String> {
     // every handle is checked, and strings from OpenGL are read up to their zero.
     unsafe {
         let instance = GetModuleHandleW(null());
-        let class = wide("LowEndModelerSetupGlCheck");
+        let class = wide("MixerSetupGlCheck");
         let mut window_class: WNDCLASSW = std::mem::zeroed();
         window_class.lpfnWndProc = Some(DefWindowProcW);
         window_class.hInstance = instance;

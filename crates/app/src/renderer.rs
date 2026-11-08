@@ -103,6 +103,16 @@ pub struct Renderer {
     edge_vertex_count: i32,
     point_buffer: glow::Buffer,
     point_vertex_count: i32,
+    /// With anti-aliasing, picking reads depth from here: depth read straight from a
+    /// multisampled window is not reliable on every driver.
+    pick_target: Option<PickTarget>,
+}
+
+/// An off-screen depth buffer for picking, and the size it was last given.
+struct PickTarget {
+    framebuffer: glow::Framebuffer,
+    depth: glow::Renderbuffer,
+    size: std::cell::Cell<(i32, i32)>,
 }
 
 /// One view's camera settings, for drawing.
@@ -235,6 +245,7 @@ impl Renderer {
                 edge_vertex_count: 0,
                 point_buffer: gl.create_buffer()?,
                 point_vertex_count: 0,
+                pick_target: None,
                 mesh_program,
                 program,
                 view_projection,
@@ -292,10 +303,67 @@ impl Renderer {
 
     /// Draws only the faces' depth and reads it back, for checking what is hidden.
     /// The next normal frame replaces what this leaves in the buffers.
+    /// How many samples per pixel the window has: 0 or 1 without anti-aliasing.
+    pub fn samples(&self) -> i32 {
+        unsafe { self.gl.get_parameter_i32(glow::SAMPLES) }
+    }
+
+    /// Sets up picking for a window with anti-aliasing. Returns an error if the
+    /// graphics driver cannot, in which case picking reads the window as before.
+    pub fn prepare_for_multisampling(&mut self) -> Result<(), String> {
+        let gl = &self.gl;
+        unsafe {
+            let framebuffer = gl.create_framebuffer()?;
+            let depth = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+            gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, 1, 1);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::DEPTH_ATTACHMENT,
+                glow::RENDERBUFFER,
+                Some(depth),
+            );
+            // Depth only: no color to draw or read.
+            gl.draw_buffer(glow::NONE);
+            gl.read_buffer(glow::NONE);
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_renderbuffer(glow::RENDERBUFFER, None);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(framebuffer);
+                gl.delete_renderbuffer(depth);
+                return Err(format!(
+                    "off-screen depth buffer not available ({status:#x})"
+                ));
+            }
+            self.pick_target = Some(PickTarget {
+                framebuffer,
+                depth,
+                size: std::cell::Cell::new((1, 1)),
+            });
+        }
+        Ok(())
+    }
+
     pub fn read_depth(&self, width: i32, height: i32, view_projection: &Mat4) -> Vec<f32> {
         let gl = &self.gl;
         let mut bytes = vec![0u8; width.max(0) as usize * height.max(0) as usize * 4];
         unsafe {
+            if let Some(target) = &self.pick_target {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
+                if target.size.get() != (width, height) {
+                    gl.bind_renderbuffer(glow::RENDERBUFFER, Some(target.depth));
+                    gl.renderbuffer_storage(
+                        glow::RENDERBUFFER,
+                        glow::DEPTH_COMPONENT24,
+                        width.max(1),
+                        height.max(1),
+                    );
+                    gl.bind_renderbuffer(glow::RENDERBUFFER, None);
+                    target.size.set((width, height));
+                }
+            }
             gl.viewport(0, 0, width, height);
             gl.clear(glow::DEPTH_BUFFER_BIT);
             gl.color_mask(false, false, false, false);
@@ -324,6 +392,9 @@ impl Renderer {
                 glow::FLOAT,
                 glow::PixelPackData::Slice(Some(&mut bytes)),
             );
+            if self.pick_target.is_some() {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            }
         }
         bytes
             .chunks_exact(4)

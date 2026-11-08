@@ -1,7 +1,7 @@
 //! Primitives, and the OBJ text that comes out of them, read back with a small
 //! separate parser so a mistake in the writer cannot hide itself.
 
-use modeler_mesh::{Mesh, MeshError, Primitive};
+use mixer_mesh::{Mesh, MeshError, Primitive};
 
 const ALL: [Primitive; 7] = [
     Primitive::Cube { size: 2.0 },

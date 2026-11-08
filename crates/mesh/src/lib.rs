@@ -1,4 +1,4 @@
-//! Editable polygon mesh for the low-end modeler. Spec section 5 sets the
+//! Editable polygon mesh for Mixer. Spec section 5 sets the
 //! requirements; this file records how they are met.
 //!
 //! # Structure
@@ -102,6 +102,6 @@ pub use loops::{MAX_LOOP_CUTS, SlideRail};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
-pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError};
+pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError, ProjectSettings};
 pub use selection::{Element, SelectMode, SelectOp};
 pub use validate::ValidationError;

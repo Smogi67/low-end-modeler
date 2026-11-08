@@ -1,5 +1,5 @@
 [package]
-name = "modeler-mesh"
+name = "mixer-mesh"
 description = "Editable polygon mesh with validation and undo/redo. No graphics or UI code."
 version.workspace = true
 edition.workspace = true

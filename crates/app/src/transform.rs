@@ -1,7 +1,7 @@
 //! The math for dragging a selection: move, rotate and scale, with an optional axis
 //! lock and snapping. No window or graphics code, so it is tested directly.
 
-use modeler_mesh::VertexId;
+use mixer_mesh::VertexId;
 
 use crate::camera::Camera;
 
@@ -572,7 +572,7 @@ mod tests {
     fn inset_moves_each_vertex_toward_its_center() {
         let mut t = Transform::new(Kind::Inset, [400.0, 300.0], Vec::new(), [0.0; 3]);
         let id = {
-            let mut mesh = modeler_mesh::Mesh::new();
+            let mut mesh = mixer_mesh::Mesh::new();
             mesh.add_vertex([0.0; 3]).unwrap()
         };
         t.originals = vec![(id, [2.0, 0.0, 0.0]), (id, [0.0, 4.0, 0.0])];
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn slide_follows_the_mouse_toward_either_side_and_stops_at_the_ends() {
         let id = {
-            let mut mesh = modeler_mesh::Mesh::new();
+            let mut mesh = mixer_mesh::Mesh::new();
             mesh.add_vertex([0.0; 3]).unwrap()
         };
         let camera = front();
@@ -655,7 +655,7 @@ mod tests {
     fn bevel_width_follows_mouse_distance_and_stops_at_the_limit() {
         let camera = front();
         let id = {
-            let mut mesh = modeler_mesh::Mesh::new();
+            let mut mesh = mixer_mesh::Mesh::new();
             mesh.add_vertex([0.0; 3]).unwrap()
         };
         let mut t = Transform::new(Kind::Bevel, [400.0, 300.0], Vec::new(), [0.0; 3]);

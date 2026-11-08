@@ -1,4 +1,4 @@
-# Low-End 3D Modeler
+# Mixer
 
 A small Blender-inspired modeler for very low-end Windows laptops. Read `SPEC.md` first: it holds the decisions, scope, and current status.
 

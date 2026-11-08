@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use modeler_mesh::{FileKind, LoadReport, Mesh, ROBLOX_MAX_TRIANGLES};
+use mixer_mesh::{FileKind, LoadReport, Mesh, ProjectSettings, ROBLOX_MAX_TRIANGLES};
 
 /// The project file's extension.
-pub const PROJECT_EXTENSION: &str = "lem";
+pub const PROJECT_EXTENSION: &str = "mix";
 
 /// Which format the Export button writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,6 +17,15 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
+    /// The format a project file names, as written by `extension`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "obj" => Some(ExportFormat::Obj),
+            "glb" => Some(ExportFormat::Glb),
+            _ => None,
+        }
+    }
+
     pub fn extension(self) -> &'static str {
         match self {
             ExportFormat::Obj => "obj",
@@ -103,9 +112,9 @@ pub fn write_export(
     Ok(path)
 }
 
-/// Saves a project file.
-pub fn save_project(mesh: &Mesh, path: &Path) -> Result<(), String> {
-    write_whole(path, mesh.to_project().as_bytes())
+/// Saves a project file, with the settings it remembers.
+pub fn save_project(mesh: &Mesh, settings: &ProjectSettings, path: &Path) -> Result<(), String> {
+    write_whole(path, mesh.to_project_with(settings).as_bytes())
 }
 
 /// Opens a project, or imports an OBJ file, going by the file's extension.
@@ -127,7 +136,7 @@ pub fn open_file(path: &Path) -> Result<(Mesh, LoadReport, FileKind), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use modeler_mesh::Primitive;
+    use mixer_mesh::Primitive;
 
     #[test]
     fn file_names_are_made_safe() {
@@ -204,8 +213,8 @@ mod tests {
         assert_eq!(glb.file_name().unwrap(), "Tube.glb");
         assert_eq!(&std::fs::read(&glb).unwrap()[..4], b"glTF");
 
-        let project = folder.join("tube.lem");
-        save_project(&mesh, &project).unwrap();
+        let project = folder.join("tube.mix");
+        save_project(&mesh, &ProjectSettings::default(), &project).unwrap();
         let (back, report, kind) = open_file(&project).unwrap();
         assert_eq!(kind, FileKind::Project);
         assert_eq!(report.skipped_faces, 0);
@@ -221,7 +230,7 @@ mod tests {
 
         // Missing and broken files explain themselves.
         assert!(
-            open_file(&folder.join("nope.lem"))
+            open_file(&folder.join("nope.mix"))
                 .unwrap_err()
                 .contains("Could not open")
         );

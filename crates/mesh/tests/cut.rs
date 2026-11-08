@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, edge, grid, is_closed_and_consistent};
-use modeler_mesh::{CutPoint, Document, Element, Mesh, MeshError, SelectMode, SelectOp};
+use mixer_mesh::{CutPoint, Document, Element, Mesh, MeshError, SelectMode, SelectOp};
 
 fn volume(mesh: &Mesh) -> f64 {
     let mut total = 0.0;

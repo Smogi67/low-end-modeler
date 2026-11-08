@@ -15,7 +15,7 @@
 
 mod common;
 use common::{cube, normalize_cycle};
-use modeler_mesh::{
+use mixer_mesh::{
     Document, EdgeId, Element, FaceId, HistoryLimits, Mesh, MeshError, SelectMode, SelectOp,
     VertexId,
 };

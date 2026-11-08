@@ -13,9 +13,11 @@ mod grid;
 mod imgui_gl;
 mod knife;
 mod picking;
+mod places;
 mod platform;
 mod renderer;
 mod scene;
+mod start;
 mod theme;
 mod transform;
 mod ui;
@@ -30,7 +32,7 @@ use sdl2::event::{Event, WindowEvent};
 use sdl2::messagebox::{MessageBoxFlag, show_simple_message_box};
 use sdl2::video::{GLProfile, SwapInterval};
 
-const APP_NAME: &str = "Low-End Modeler";
+const APP_NAME: &str = "Mixer";
 
 fn main() {
     // Before anything touches SDL, which would fail without its DLL.
@@ -53,18 +55,18 @@ fn main() {
 fn explain_missing_sdl() {
     let setup = std::env::current_exe()
         .ok()
-        .map(|exe| exe.with_file_name("low-end-modeler-setup.exe"));
-    let text = "Low-End Modeler needs SDL2.dll, which is not installed in this folder yet.\n\n\
+        .map(|exe| exe.with_file_name("mixer-setup.exe"));
+    let text = "Mixer needs SDL2.dll, which is not installed in this folder yet.\n\n\
                 Start the setup program now? It downloads SDL2 from its official site and \
-                puts it next to the modeler. Then start the modeler again.";
+                puts it next to Mixer. Then start Mixer again.";
     if platform::ask(APP_NAME, text)
         && let Some(setup) = setup
         && std::process::Command::new(&setup).spawn().is_err()
     {
         platform::ask(
             APP_NAME,
-            "Could not start low-end-modeler-setup.exe. Is it in the same folder as the \
-             modeler? Unzip the whole download into one folder, then try again.\n\nClose?",
+            "Could not start mixer-setup.exe. Is it in the same folder as \
+             Mixer? Unzip the whole download into one folder, then try again.\n\nClose?",
         );
     }
 }
@@ -83,11 +85,7 @@ struct Log {
 
 impl Log {
     fn path() -> Option<PathBuf> {
-        Some(
-            std::env::current_exe()
-                .ok()?
-                .with_file_name("low-end-modeler.log"),
-        )
+        Some(std::env::current_exe().ok()?.with_file_name("mixer.log"))
     }
 
     fn open() -> Self {
@@ -129,19 +127,38 @@ fn run() -> Result<(), String> {
     gl_attr.set_context_version(2, 1);
     gl_attr.set_double_buffer(true);
     gl_attr.set_depth_size(24);
-    gl_attr.set_multisample_samples(0);
 
-    let mut window = video
-        .window(APP_NAME, 1280, 800)
-        .opengl()
-        .resizable()
-        .maximized()
-        .position_centered()
-        .build()
-        .map_err(|error| format!("Could not open a window: {error}"))?;
-    let context = window
-        .gl_create_context()
-        .map_err(|error| format!("Could not start OpenGL 2.1: {error}"))?;
+    // Anti-aliasing takes 4 samples per pixel. If the graphics driver refuses, Mixer
+    // tries again without, rather than not starting.
+    let wanted = places::Settings::load().antialiasing;
+    let open = |samples: u8| -> Result<(sdl2::video::Window, sdl2::video::GLContext), String> {
+        gl_attr.set_multisample_buffers(u8::from(samples > 0));
+        gl_attr.set_multisample_samples(samples);
+        let window = video
+            .window(APP_NAME, 1280, 800)
+            .opengl()
+            .resizable()
+            .maximized()
+            .position_centered()
+            .build()
+            .map_err(|error| format!("Could not open a window: {error}"))?;
+        let context = window
+            .gl_create_context()
+            .map_err(|error| format!("Could not start OpenGL 2.1: {error}"))?;
+        Ok((window, context))
+    };
+    let mut fallback_note = None;
+    let (mut window, context) = if wanted {
+        match open(4) {
+            Ok(opened) => opened,
+            Err(error) => {
+                fallback_note = Some(format!("Anti-aliasing not available: {error}"));
+                open(0)?
+            }
+        }
+    } else {
+        open(0)?
+    };
     window.gl_make_current(&context)?;
     // Limits drawing to the screen's refresh rate during drags. Not all drivers
     // allow this, and the app still works without it.
@@ -151,9 +168,29 @@ fn run() -> Result<(), String> {
     let gl = unsafe {
         glow::Context::from_loader_function(|name| video.gl_get_proc_address(name) as *const _)
     };
-    let (renderer, info) = Renderer::new(gl)?;
+    let (mut renderer, info) = Renderer::new(gl)?;
 
     let mut log = Log::open();
+    if let Some(note) = fallback_note {
+        log.line(&note);
+    }
+    let antialiasing = renderer.samples() > 1;
+    if antialiasing && let Err(error) = renderer.prepare_for_multisampling() {
+        log.line(&format!("Picking reads the window directly: {error}"));
+    }
+    log.line(&format!(
+        "Anti-aliasing: {}",
+        if antialiasing {
+            format!("{} samples", renderer.samples())
+        } else {
+            "off".to_string()
+        }
+    ));
+    // For testing the off-screen depth buffer where anti-aliasing is not available.
+    if !antialiasing && std::env::var_os("MIXER_TEST_PICK_TARGET").is_some() {
+        let result = renderer.prepare_for_multisampling();
+        log.line(&format!("Off-screen depth buffer for picking: {result:?}"));
+    }
     log.line(&format!(
         "--- {APP_NAME} {} started",
         env!("CARGO_PKG_VERSION")
@@ -169,9 +206,11 @@ fn run() -> Result<(), String> {
         ))
         .map_err(|error| error.to_string())?;
 
-    let app = RefCell::new(App::new(renderer)?);
-    if let Some(path) = open_path {
-        app.borrow_mut().open_at_start(path);
+    let app = RefCell::new(App::new(renderer, wanted, antialiasing)?);
+    match open_path {
+        // A file given when starting goes straight to the editor.
+        Some(path) => app.borrow_mut().open_at_start(path),
+        None => app.borrow_mut().show_start(),
     }
 
     // Windows pauses this thread's main loop while a window edge is being dragged,

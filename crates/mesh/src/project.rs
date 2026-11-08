@@ -1,12 +1,12 @@
 //! Saving and opening: the modeler's own project file, and importing OBJ files.
 //!
-//! A project file (`.lem`) is plain text in the style of OBJ, so it can be read and
+//! A project file (`.mix`, or `.lem` from before the rename) is plain text in the style of OBJ, so it can be read and
 //! repaired by hand, and it keeps exactly what the editor has: faces with any number
 //! of corners, loose edges, and loose vertices, Z up, untriangulated.
 //!
 //! ```text
-//! # Low-End Modeler project
-//! lem 1
+//! # Mixer project
+//! mixer 1
 //! v 0 0 0
 //! v 1 0 0
 //! v 1 1 0
@@ -53,17 +53,31 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// What was read, and what had to be left out.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoadReport {
     /// Faces left out because they repeated a vertex, had fewer than three corners, or
     /// repeated another face.
     pub skipped_faces: usize,
+    /// The project's own settings, if it saved any.
+    pub settings: ProjectSettings,
+}
+
+/// Settings a project remembers besides its shape, so that exporting it again gives
+/// the same file. Each is left out of the file when not set.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProjectSettings {
+    /// `"obj"` or `"glb"`.
+    pub export_format: Option<String>,
+    /// The export scale.
+    pub export_scale: Option<f32>,
+    /// The exported file's name, without its extension.
+    pub export_name: Option<String>,
 }
 
 /// Which kind of file is being read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
-    /// The modeler's own `.lem` project.
+    /// Mixer's own `.mix` project, or an older `.lem` one.
     Project,
     /// An OBJ file, Y up.
     Obj,
@@ -79,8 +93,26 @@ fn bad(line: usize, message: impl Into<String>) -> ParseError {
 impl Mesh {
     /// The mesh as project file text. Selection is not saved.
     pub fn to_project(&self) -> String {
+        self.to_project_with(&ProjectSettings::default())
+    }
+
+    /// The mesh and the project's settings as project file text.
+    pub fn to_project_with(&self, settings: &ProjectSettings) -> String {
         let mut out = String::with_capacity(self.corner_count() * 12 + self.vertex_count() * 40);
-        let _ = writeln!(out, "# Low-End Modeler project\nlem {PROJECT_VERSION}");
+        let _ = writeln!(out, "# Mixer project\nmixer {PROJECT_VERSION}");
+        if let Some(format) = &settings.export_format {
+            let _ = writeln!(out, "export {format}");
+        }
+        if let Some(scale) = settings.export_scale {
+            let _ = writeln!(out, "scale {scale}");
+        }
+        if let Some(name) = &settings.export_name {
+            // One line, whatever was typed.
+            let name: String = name.chars().filter(|c| !c.is_control()).collect();
+            if !name.trim().is_empty() {
+                let _ = writeln!(out, "exportname {}", name.trim());
+            }
+        }
         let slots = self
             .vertices()
             .map(|(id, _)| id.index() as usize + 1)
@@ -152,7 +184,8 @@ impl Mesh {
             };
             let rest: Vec<&str> = words.collect();
             match keyword {
-                "lem" => {
+                // Projects from before the rename start with "lem".
+                "mixer" | "lem" => {
                     let version: u32 = rest
                         .first()
                         .and_then(|v| v.parse().ok())
@@ -160,7 +193,7 @@ impl Mesh {
                     if version > PROJECT_VERSION {
                         return Err(bad(
                             line,
-                            "this project was saved by a newer version of the modeler",
+                            "this project was saved by a newer version of Mixer",
                         ));
                     }
                     seen_header = true;
@@ -220,6 +253,19 @@ impl Mesh {
                         previous = Some(v);
                     }
                 }
+                "export" if kind == FileKind::Project => {
+                    report.settings.export_format = rest.first().map(|f| f.to_string());
+                }
+                "scale" if kind == FileKind::Project => {
+                    report.settings.export_scale = rest
+                        .first()
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .filter(|s| s.is_finite() && *s > 0.0);
+                }
+                "exportname" if kind == FileKind::Project => {
+                    let name = rest.join(" ");
+                    report.settings.export_name = (!name.is_empty()).then_some(name);
+                }
                 "g" if kind == FileKind::Project => {
                     group = rest
                         .first()
@@ -241,7 +287,7 @@ impl Mesh {
             }
         }
         if kind == FileKind::Project && !seen_header {
-            return Err(bad(0, "this is not a Low-End Modeler project file"));
+            return Err(bad(0, "this is not a Mixer project file"));
         }
         Ok((mesh, report))
     }

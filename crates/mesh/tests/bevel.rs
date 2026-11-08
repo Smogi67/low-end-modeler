@@ -4,7 +4,7 @@ mod common;
 use std::collections::HashSet;
 
 use common::{cube, edge, grid, is_closed_and_consistent};
-use modeler_mesh::{
+use mixer_mesh::{
     Document, EdgeId, Element, MAX_BEVEL_SEGMENTS, Mesh, MeshError, Primitive, SelectMode,
     SelectOp, VertexId,
 };
@@ -91,7 +91,7 @@ fn is_convex(mesh: &Mesh) -> bool {
     })
 }
 
-fn bevel(mesh: &mut Mesh, width: f32, segments: usize) -> modeler_mesh::Bevel {
+fn bevel(mesh: &mut Mesh, width: f32, segments: usize) -> mixer_mesh::Bevel {
     let result = mesh
         .bevel_selected_edges(width, segments, SelectMode::Edge)
         .unwrap();
@@ -578,8 +578,8 @@ fn random_bevels_stay_valid_keep_holes_and_undo_exactly() {
     assert!(worked >= 150, "only {worked} bevels worked");
 }
 
-fn settings(width: f32, segments: usize, shape: f32) -> modeler_mesh::BevelSettings {
-    modeler_mesh::BevelSettings {
+fn settings(width: f32, segments: usize, shape: f32) -> mixer_mesh::BevelSettings {
+    mixer_mesh::BevelSettings {
         width,
         segments,
         shape,
@@ -636,7 +636,7 @@ fn without_clamping_the_width_is_not_limited() {
     mesh.select_all();
     let made = mesh
         .bevel_selected(
-            &modeler_mesh::BevelSettings {
+            &mixer_mesh::BevelSettings {
                 width: 0.8,
                 clamp: false,
                 ..settings(0.0, 1, 0.5)
@@ -649,8 +649,8 @@ fn without_clamping_the_width_is_not_limited() {
     assert!(made.max_width > 1000.0);
 }
 
-fn vertex_settings(width: f32, segments: usize) -> modeler_mesh::BevelSettings {
-    modeler_mesh::BevelSettings {
+fn vertex_settings(width: f32, segments: usize) -> mixer_mesh::BevelSettings {
+    mixer_mesh::BevelSettings {
         vertices: true,
         ..settings(width, segments, 0.5)
     }
@@ -770,7 +770,7 @@ fn random_vertex_bevels_stay_valid_and_undo_exactly() {
         let picks: Vec<Element> = (0..1 + next(5))
             .map(|_| Element::Vertex(ids[next(ids.len())]))
             .collect();
-        let s = modeler_mesh::BevelSettings {
+        let s = mixer_mesh::BevelSettings {
             vertices: true,
             width: [0.0, 0.1, 0.4, 3.0][next(4)],
             segments: 1 + next(4),

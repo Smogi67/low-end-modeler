@@ -151,10 +151,11 @@ impl Mesh {
         let node_list: Vec<String> = (0..parts.len()).map(|i| i.to_string()).collect();
         // glTF forbids empty lists, so a file with nothing in it has a bare scene.
         let mut json = if parts.is_empty() {
-            "{\"asset\":{\"version\":\"2.0\",\"generator\":\"Low-End Modeler\"},\"scene\":0,\"scenes\":[{}]".to_string()
+            "{\"asset\":{\"version\":\"2.0\",\"generator\":\"Mixer\"},\"scene\":0,\"scenes\":[{}]"
+                .to_string()
         } else {
             format!(
-                "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"Low-End Modeler\"}},\"scene\":0,\
+                "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"Mixer\"}},\"scene\":0,\
              \"scenes\":[{{\"nodes\":[{}]}}],\"nodes\":[{nodes}],\"meshes\":[{meshes}],\
              \"accessors\":[{accessors}],\"bufferViews\":[{views}]",
                 node_list.join(",")

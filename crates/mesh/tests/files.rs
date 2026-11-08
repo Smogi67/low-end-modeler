@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, is_closed_and_consistent};
-use modeler_mesh::{FileKind, Mesh, Primitive, SelectMode, VertexId};
+use mixer_mesh::{FileKind, Mesh, Primitive, SelectMode, VertexId};
 
 fn position(mesh: &Mesh, v: VertexId) -> [f32; 3] {
     mesh.vertex(v).unwrap().position()
@@ -75,14 +75,14 @@ fn busy_mesh() -> Mesh {
     )
     .unwrap();
     // Round off the cube: n-gons, odd floats and many faces.
-    let cube_faces = mesh.linked_faces(&[modeler_mesh::Element::Vertex(
+    let cube_faces = mesh.linked_faces(&[mixer_mesh::Element::Vertex(
         mesh.vertices().next().unwrap().0,
     )]);
     let elements: Vec<_> = cube_faces
         .into_iter()
-        .map(modeler_mesh::Element::Face)
+        .map(mixer_mesh::Element::Face)
         .collect();
-    mesh.select_elements(SelectMode::Face, &elements, modeler_mesh::SelectOp::Replace)
+    mesh.select_elements(SelectMode::Face, &elements, mixer_mesh::SelectOp::Replace)
         .unwrap();
     mesh.bevel_selected_edges(0.137, 3, SelectMode::Face)
         .unwrap();
@@ -100,7 +100,7 @@ fn busy_mesh() -> Mesh {
 fn a_project_reads_back_exactly() {
     let mesh = busy_mesh();
     let text = mesh.to_project();
-    assert!(text.starts_with("# Low-End Modeler project\nlem 1\n"));
+    assert!(text.starts_with("# Mixer project\nmixer 1\n"));
     let (back, report) = Mesh::from_text(&text, FileKind::Project).unwrap();
     back.validate().unwrap();
     assert_eq!(report.skipped_faces, 0);
@@ -118,7 +118,7 @@ fn an_empty_project_round_trips() {
 #[test]
 fn bad_project_files_are_refused_with_a_line_number() {
     let cases = [
-        ("v 0 0 0\n", 0, "not a Low-End Modeler project"),
+        ("v 0 0 0\n", 0, "not a Mixer project"),
         ("lem 99\n", 1, "newer version"),
         ("lem 1\nv 0 0\n", 2, "three numbers"),
         ("lem 1\nv 0 x 0\n", 2, "not a number"),
@@ -361,4 +361,22 @@ fn write_samples_when_asked() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn projects_remember_their_export_settings() {
+    use mixer_mesh::ProjectSettings;
+    let (mesh, _, _) = cube();
+    let settings = ProjectSettings {
+        export_format: Some("glb".to_string()),
+        export_scale: Some(2.5),
+        export_name: Some("big sword".to_string()),
+    };
+    let text = mesh.to_project_with(&settings);
+    let (opened, report) = Mesh::from_text(&text, FileKind::Project).unwrap();
+    assert_eq!(report.settings, settings);
+    assert_eq!(opened.to_project(), mesh.to_project());
+    // A file without them, and a bad scale, give nothing.
+    let (_, report) = Mesh::from_text("mixer 1\nscale -3\n", FileKind::Project).unwrap();
+    assert_eq!(report.settings, ProjectSettings::default());
 }

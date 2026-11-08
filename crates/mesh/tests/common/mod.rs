@@ -2,7 +2,7 @@
 //! in Stage 3; these exist only to give the tests something to edit.
 #![allow(dead_code)]
 
-use modeler_mesh::{EdgeId, FaceId, Mesh, VertexId};
+use mixer_mesh::{EdgeId, FaceId, Mesh, VertexId};
 
 /// A cube with consistent outward winding.
 pub fn cube() -> (Mesh, [VertexId; 8], [FaceId; 6]) {

@@ -2,7 +2,7 @@
 //! keep changing a shape for as long as it is still as it was made. No window or graphics
 //! code, so it is tested directly.
 
-use modeler_mesh::{
+use mixer_mesh::{
     Document, Element, FaceId, Mesh, MeshError, Primitive, SelectMode, SelectOp, VertexId,
 };
 

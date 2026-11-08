@@ -45,7 +45,7 @@ const START: usize = 103;
 /// Statuses and notes, drawn in grey.
 const MUTED: usize = 200;
 const WAKE: u32 = WM_APP + 1;
-const APP_EXE: &str = "low-end-modeler.exe";
+const APP_EXE: &str = "mixer.exe";
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -181,7 +181,7 @@ pub fn run() {
         InitCommonControlsEx(&controls);
 
         let instance = GetModuleHandleW(null());
-        let class = wide("LowEndModelerSetup");
+        let class = wide("MixerSetup");
         let background = CreateSolidBrush(0x00FF_FFFF);
         BACKGROUND.set(background as isize);
         let mut window_class: WNDCLASSW = std::mem::zeroed();
@@ -202,7 +202,7 @@ pub fn run() {
         };
         AdjustWindowRect(&mut frame, style, 0);
         let (outer_w, outer_h) = (frame.right - frame.left, frame.bottom - frame.top);
-        let title = wide("Low-End Modeler setup");
+        let title = wide("Mixer setup");
         let window = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -244,7 +244,7 @@ pub fn run() {
         let static_class = "STATIC";
         add(
             static_class,
-            "Low-End Modeler setup",
+            "Mixer setup",
             0,
             0,
             [24, 16, 592, 32],
@@ -253,7 +253,7 @@ pub fn run() {
         add(
             static_class,
             &format!(
-                "Setup installs only what Low-End Modeler needs, into the folder it is in:\n{}",
+                "Setup installs only what Mixer needs, into the folder it is in:\n{}",
                 folder.display()
             ),
             0,
@@ -315,7 +315,7 @@ pub fn run() {
         );
         add(
             static_class,
-            "Optional: nothing. The C runtime is built into the modeler.",
+            "Optional: nothing. The C runtime is built into Mixer.",
             0,
             MUTED,
             [24, 234, 592, 22],
@@ -351,7 +351,7 @@ pub fn run() {
 
         let start_button = add(
             "BUTTON",
-            "Start Low-End Modeler",
+            "Start Mixer",
             BS_PUSHBUTTON as u32 | WS_TABSTOP,
             START,
             [252, 548, 176, 32],
@@ -634,9 +634,9 @@ fn work(
     send(Event::Line("  it loads".into()));
     send(Event::Progress(1.0));
     Ok(if opengl_ok {
-        "Done. Low-End Modeler is ready to start.".to_string()
+        "Done. Mixer is ready to start.".to_string()
     } else {
-        "Done, but the graphics driver lacks OpenGL 2.1, so the modeler may not start. \
+        "Done, but the graphics driver lacks OpenGL 2.1, so Mixer may not start. \
          Update the driver, then start it."
             .to_string()
     })

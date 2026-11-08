@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use modeler_mesh::{CutPoint, Mesh, VertexId};
+use mixer_mesh::{CutPoint, Mesh, VertexId};
 
 use crate::picking::ViewInfo;
 
@@ -168,7 +168,7 @@ pub fn knife_cut(
 mod tests {
     use super::*;
     use crate::camera::Camera;
-    use modeler_mesh::{Primitive, SelectMode};
+    use mixer_mesh::{Primitive, SelectMode};
 
     fn front_view() -> ViewInfo {
         let mut camera = Camera {

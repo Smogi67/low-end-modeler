@@ -29,11 +29,7 @@ impl Mesh {
         }
         let mut out = String::with_capacity(self.corner_count() * 32 + 128);
         // Writing to a String cannot fail.
-        let _ = writeln!(
-            out,
-            "# Low-End Modeler\n# {} triangles",
-            self.triangle_count()
-        );
+        let _ = writeln!(out, "# Mixer\n# {} triangles", self.triangle_count());
         let safe_name: String = name
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })

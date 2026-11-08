@@ -9,7 +9,7 @@ use imgui::{
     Condition, Drag, ItemHoveredFlags, ProgressBar, SliderFlags, StyleColor, StyleVar, Ui,
     WindowFlags,
 };
-use modeler_mesh::{
+use mixer_mesh::{
     BevelSettings, BooleanOp, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES,
 };
 
@@ -53,7 +53,7 @@ pub enum Shape {
 }
 
 impl Shape {
-    const ALL: [Shape; 7] = [
+    pub const ALL: [Shape; 7] = [
         Shape::Cube,
         Shape::Cone,
         Shape::Cylinder,
@@ -63,7 +63,7 @@ impl Shape {
         Shape::Circle,
     ];
 
-    fn icon(self) -> char {
+    pub fn icon(self) -> char {
         match self {
             Shape::Cube => icon::CUBE,
             Shape::Cone => icon::CONE,
@@ -416,6 +416,8 @@ pub enum Action {
     Boolean(BooleanOp),
     /// Switches between Edit mode and View mode, which hides lines and points.
     ToggleView,
+    /// Back to the start window, asking about unsaved changes first.
+    StartWindow,
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -828,7 +830,7 @@ fn top_bar(
         .build();
     ui.set_cursor_screen_pos([start[0] + 28.0, start[1] + 7.0]);
     let font = ui.push_font(fonts.tool);
-    ui.text("Low-End Modeler");
+    ui.text("Mixer");
     drop(font);
     ui.same_line_with_spacing(0.0, 16.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 2.0]);
@@ -1064,6 +1066,7 @@ fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32
     let spacing = ui.push_style_var(StyleVar::ItemSpacing([8.0, 6.0]));
     if let Some(_menu) = ui.begin_popup("##file_menu") {
         let items = [
+            (icon::MENU, "Start window\u{2026}", "", Action::StartWindow),
             (icon::NEW, "New", "Ctrl+N", Action::New),
             (icon::FOLDER, "Open\u{2026}", "Ctrl+O", Action::Open),
             (icon::SAVE, "Save", "Ctrl+S", Action::Save),
@@ -1092,7 +1095,10 @@ fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32
         {
             *action = Some(Action::Export);
         }
-        ui.text_colored(color::FAINT, "Open reads .lem projects and .obj files.");
+        ui.text_colored(
+            color::FAINT,
+            "Open reads .mix projects, older .lem ones, and .obj files.",
+        );
     }
     drop(spacing);
     drop(padding);
@@ -2189,7 +2195,7 @@ pub fn draw_region(ui: &Ui, region: &Region) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use modeler_mesh::Mesh;
+    use mixer_mesh::Mesh;
 
     #[test]
     fn default_values_make_a_valid_version_of_every_shape() {
@@ -2285,7 +2291,7 @@ mod tests {
                 toward: [0.55, -0.66, 0.5],
                 orthographic: false,
             },
-            document: "a rather long project name that needs shortening.lem",
+            document: "a rather long project name that needs shortening.mix",
             unsaved: true,
             confirm: None,
             gizmo_tool: None,
@@ -2329,7 +2335,7 @@ mod tests {
         {
             let mut info = info(target, &warnings, transform);
             if case == 4 {
-                info.confirm = Some("Save changes to sword.lem first?");
+                info.confirm = Some("Save changes to sword.mix first?");
             }
             // Some buttons only work in edge mode, and the loop cut hint must draw too.
             if target == Target::Several {
@@ -2359,7 +2365,7 @@ mod tests {
                 },
                 path_prompt: (case == 5).then(|| PathPrompt {
                     purpose: PathPurpose::SaveAs,
-                    text: "/somewhere/model.lem".to_string(),
+                    text: "/somewhere/model.mix".to_string(),
                 }),
                 ..Default::default()
             };
@@ -2413,7 +2419,7 @@ mod tests {
             };
             // The View mode button. The File menu, opened earlier in each row of the sweep,
             // is still open when the sweep reaches it, so click it on its own.
-            click(&mut context, &mut state, 459.0, 25.0);
+            click(&mut context, &mut state, 389.0, 25.0);
             // The mirror tool: the seventh button, below one gap between groups.
             let size = tool_button_size(800.0);
             let mirror_button = [
@@ -2425,7 +2431,7 @@ mod tests {
                 ([1215.0, 25.0], 900..1280, 52..480),
                 (mirror_button, 60..320, 300..520),
                 // The File menu, beside the name at the top left.
-                ([200.0, 25.0], 150..460, 40..260),
+                ([132.0, 25.0], 80..400, 40..260),
             ] {
                 for y in ys.step_by(11) {
                     for x in xs.clone().step_by(13) {
@@ -2469,6 +2475,7 @@ mod tests {
             "Boolean(Subtract)",
             "Boolean(Intersect)",
             "ToggleView",
+            "StartWindow",
             "New",
             "Open",
             "Save",

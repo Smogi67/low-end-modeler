@@ -1,5 +1,5 @@
 [package]
-name = "low-end-modeler"
+name = "mixer"
 description = "Small 3D modeler for low-end Windows laptops."
 version.workspace = true
 edition.workspace = true
@@ -7,15 +7,18 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-modeler-mesh = { path = "../mesh" }
+mixer-mesh = { path = "../mesh" }
 glow = "0.18"
 imgui = "0.12"
 sdl2 = { version = "0.38", default-features = false }
-# Windows file dialogs and message boxes. Only used on Windows, but kept for every
+# Windows file dialogs, message boxes, the Documents folder and the local time. Only used on Windows, but kept for every
 # platform so the Windows code can be type-checked anywhere (see `platform.rs`).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Shell",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

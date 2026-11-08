@@ -1,6 +1,6 @@
 //! Joining parts into groups, and separating them.
 
-use modeler_mesh::{Document, Element, FileKind, Mesh, MeshError, Primitive, SelectMode, SelectOp};
+use mixer_mesh::{Document, Element, FileKind, Mesh, MeshError, Primitive, SelectMode, SelectOp};
 
 /// Three separate shapes: a cube, a cone, and a sphere, each its own part.
 fn three_shapes() -> Mesh {

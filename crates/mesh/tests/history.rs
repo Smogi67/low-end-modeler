@@ -2,15 +2,9 @@
 
 mod common;
 use common::{cube, edge, grid};
-use modeler_mesh::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits, Mesh, MeshError,
-};
+use mixer_mesh::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits, Mesh, MeshError};
 
-fn doc_with_cube() -> (
-    Document,
-    [modeler_mesh::VertexId; 8],
-    [modeler_mesh::FaceId; 6],
-) {
+fn doc_with_cube() -> (Document, [mixer_mesh::VertexId; 8], [mixer_mesh::FaceId; 6]) {
     let (mesh, v, f) = cube();
     (Document::new(mesh), v, f)
 }
@@ -18,7 +12,7 @@ fn doc_with_cube() -> (
 /// Every kind of edit, undone and redone, must restore the exact state each time.
 #[test]
 fn every_edit_can_be_undone_and_redone() {
-    type Edit = fn(&mut Mesh, &[modeler_mesh::VertexId; 8], &[modeler_mesh::FaceId; 6]);
+    type Edit = fn(&mut Mesh, &[mixer_mesh::VertexId; 8], &[mixer_mesh::FaceId; 6]);
     let edits: Vec<(&'static str, Edit)> = vec![
         ("add vertex", |m, _, _| {
             m.add_vertex([9.0; 3]).unwrap();

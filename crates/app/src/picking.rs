@@ -1,7 +1,7 @@
 //! Finding what is under the mouse or inside a dragged shape. No graphics code: the
 //! depth check is passed in, so this is tested without a window.
 
-use modeler_mesh::{EdgeId, Element, FaceId, Mesh, SelectMode, VertexId};
+use mixer_mesh::{EdgeId, Element, FaceId, Mesh, SelectMode, VertexId};
 
 use crate::camera::Mat4;
 
@@ -284,7 +284,7 @@ impl DepthImage {
 mod tests {
     use super::*;
     use crate::camera::Camera;
-    use modeler_mesh::Primitive;
+    use mixer_mesh::Primitive;
 
     fn view() -> (ViewInfo, Camera) {
         let mut camera = Camera {

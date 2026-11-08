@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use imgui::{Key, MouseButton as ImguiButton};
-use modeler_mesh::{
+use mixer_mesh::{
     BevelSettings, BooleanOp, EdgeId, Element, FaceId, FileKind, MAX_BEVEL_SEGMENTS, MAX_LOOP_CUTS,
-    Mesh, MeshError, SelectMode, SelectOp,
+    Mesh, MeshError, ProjectSettings, SelectMode, SelectOp,
 };
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
@@ -20,18 +20,22 @@ use sdl2::video::Window;
 use crate::camera::Camera;
 use crate::controls::{Button, Drag, Modifiers, drag_for};
 use crate::editor::Editor;
-use crate::export::{PROJECT_EXTENSION, open_file, save_project, warnings, write_export};
+use crate::export::{
+    ExportFormat, PROJECT_EXTENSION, open_file, save_project, warnings, write_export,
+};
 use crate::gizmo::{self, Handle};
 use crate::imgui_gl::ImguiGl;
 use crate::knife::{KnifeCut, knife_cut, snapped_vertex};
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
+use crate::places::{self, Settings};
 use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
+use crate::start::{StartAction, StartState, build_start};
 use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
-    Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, ViewState, build as build_ui,
-    draw_gizmo, draw_knife, draw_lines, draw_region,
+    Action, DragTool, ModeChoice, PanelInfo, PanelState, PathPurpose, Shape, ViewState,
+    build as build_ui, draw_gizmo, draw_knife, draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -54,6 +58,8 @@ const LOOP_SELECT_REACH: f32 = 14.0;
 #[derive(Debug, Clone, PartialEq)]
 enum Pending {
     New,
+    /// Back to the start window.
+    Start,
     /// Open this file, or ask which one.
     Open(Option<PathBuf>),
     Quit,
@@ -200,10 +206,21 @@ pub struct App {
     /// What to do once a typed Save As path arrives.
     after_save: Option<Pending>,
     quit: bool,
+    /// The start window, while it shows.
+    start: Option<Box<StartState>>,
+    settings: Settings,
+    /// Whether this run has anti-aliasing, which only changes on a restart.
+    antialiasing_now: bool,
+    /// Anti-aliasing was asked for at the start, but the driver refused it.
+    antialiasing_refused: bool,
 }
 
 impl App {
-    pub fn new(renderer: Renderer) -> Result<Self, String> {
+    pub fn new(
+        renderer: Renderer,
+        antialiasing_wanted: bool,
+        antialiasing_now: bool,
+    ) -> Result<Self, String> {
         let mut imgui = imgui::Context::create();
         // No settings file: nothing to save, and it spares the disk.
         imgui.set_ini_filename(None);
@@ -211,10 +228,7 @@ impl App {
         imgui.io_mut().config_input_text_cursor_blink = false;
         let fonts = theme::install(&mut imgui);
         let imgui_gl = ImguiGl::new(renderer.gl(), &mut imgui)?;
-        let export_folder = std::env::current_exe()
-            .ok()
-            .and_then(|path| Some(path.parent()?.join("exports")))
-            .unwrap_or_else(|| PathBuf::from("exports"));
+        let export_folder = places::mixer_folder().join("Exports");
         let export_folder_text = export_folder.display().to_string();
         Ok(Self {
             renderer,
@@ -249,6 +263,10 @@ impl App {
             confirming: None,
             after_save: None,
             quit: false,
+            start: None,
+            settings: Settings::load(),
+            antialiasing_now,
+            antialiasing_refused: antialiasing_wanted && !antialiasing_now,
         })
     }
 
@@ -353,7 +371,17 @@ impl App {
         };
         let gizmo_parts = self.gizmo_parts();
         let ui = self.imgui.new_frame();
-        let output = build_ui(ui, &mut self.state, &info, &self.fonts);
+        let mut start_action = None;
+        let output = match &mut self.start {
+            Some(start) => {
+                start_action = build_start(ui, start, &self.fonts);
+                crate::ui::UiOutput {
+                    action: None,
+                    rects: vec![[0.0, 0.0, width as f32, height as f32]],
+                }
+            }
+            None => build_ui(ui, &mut self.state, &info, &self.fonts),
+        };
         let action = output.action;
         if let Mouse::Selecting {
             region,
@@ -428,6 +456,126 @@ impl App {
             self.apply_action(action);
             self.request_frames();
         }
+        if let Some(action) = start_action {
+            self.apply_start(action);
+            self.request_frames();
+        }
+    }
+
+    /// Shows the start window, with the recent projects as they are now.
+    pub fn show_start(&mut self) {
+        let folder = if std::env::var_os("MIXER_HOME").is_some() {
+            places::projects_folder().display().to_string()
+        } else {
+            "Documents > Mixer > Projects".to_string()
+        };
+        let mut start = StartState::new(
+            places::recent_projects(),
+            folder,
+            self.settings.antialiasing,
+            self.antialiasing_now,
+        );
+        start.antialiasing_refused = self.antialiasing_refused;
+        self.start = Some(Box::new(start));
+        self.mouse_state = Mouse::Idle;
+        self.request_frames();
+    }
+
+    fn apply_start(&mut self, action: StartAction) {
+        let Some(start) = self.start.as_mut() else {
+            return;
+        };
+        start.message.clear();
+        match action {
+            StartAction::Quick => {
+                let folder = places::quick_folder();
+                let path = places::unused_path(
+                    &folder,
+                    &format!("Quick {}", places::timestamp()),
+                    PROJECT_EXTENSION,
+                );
+                self.begin_project(path, Some(Shape::Cube));
+            }
+            StartAction::Create => {
+                let Some(name) = places::clean_project_name(&start.name) else {
+                    start.message = "Type a name for the project first.".to_string();
+                    return;
+                };
+                let folder = places::projects_folder().join(&name);
+                let path = folder.join(format!("{name}.{PROJECT_EXTENSION}"));
+                if path.exists() {
+                    start.message = format!(
+                        "A project called {name} already exists. Open it from Recent, or pick another name."
+                    );
+                    return;
+                }
+                let (shape, format, scale) = (start.shape, start.export_format, start.scale);
+                self.state.export_format = format;
+                self.state.scale = scale;
+                self.begin_project(path, shape);
+            }
+            StartAction::OpenRecent(i) => {
+                if let Some(recent) = start.recent.get(i) {
+                    let path = recent.path.clone();
+                    self.perform(Pending::Open(Some(path)));
+                }
+            }
+            StartAction::OpenOther => {
+                if let Picked::Path(path) = self.pick_path(PathPurpose::Open) {
+                    self.perform(Pending::Open(Some(path)));
+                } else if let Some(start) = self.start.as_mut() {
+                    // Without Windows's dialog, a path can be given when starting Mixer.
+                    self.state.path_prompt = None;
+                    if !cfg!(windows) {
+                        start.message =
+                            "Start Mixer with a file's path to open it on this system.".to_string();
+                    }
+                }
+            }
+            StartAction::OpenFolder => {
+                let folder = places::mixer_folder();
+                let _ = std::fs::create_dir_all(places::projects_folder());
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("explorer").arg(&folder).spawn();
+                }
+                #[cfg(not(windows))]
+                {
+                    start.message = format!("The Mixer folder is {}", folder.display());
+                }
+            }
+            StartAction::SetAntialiasing(on) => {
+                self.settings.antialiasing = on;
+                start.antialiasing = on;
+                if let Err(error) = self.settings.save() {
+                    start.message = error;
+                }
+            }
+        }
+    }
+
+    /// Makes a new project file at `path`, starting with `shape`, and opens the editor.
+    fn begin_project(&mut self, path: PathBuf, shape: Option<Shape>) {
+        self.editor.replace(Mesh::new());
+        self.camera = Camera::default();
+        self.state.file_name = file_stem(&path);
+        self.state.message.clear();
+        if let Some(shape) = shape {
+            let mut settings = self.state.clone();
+            settings.location = [0.0; 3];
+            if let Err(error) = self.editor.add(shape, &settings) {
+                self.state.message = format!("Could not add the shape: {error}");
+            }
+        }
+        self.export_folder = places::exports_beside(&path);
+        self.export_folder_text = self.export_folder.display().to_string();
+        self.stale = Stale::Everything;
+        if self.save_to(path) {
+            self.start = None;
+        } else if let Some(start) = self.start.as_mut() {
+            start.message = self.state.message.clone();
+        }
+        self.request_frames();
     }
 
     pub fn read_pixels(&self, window: &Window) -> (i32, i32, Vec<u8>) {
@@ -477,6 +625,7 @@ impl App {
                 }
             }
             Action::New => self.request(Pending::New),
+            Action::StartWindow => self.request(Pending::Start),
             Action::Open => self.request(Pending::Open(None)),
             Action::Save => self.save(false, None),
             Action::SaveAs => self.save(true, None),
@@ -701,7 +850,7 @@ impl App {
                     &[
                         FileType {
                             name: "Projects and OBJ files",
-                            pattern: "*.lem;*.obj",
+                            pattern: "*.mix;*.lem;*.obj",
                         },
                         FileType {
                             name: "All files",
@@ -716,8 +865,8 @@ impl App {
                     true,
                     "Save as",
                     &[FileType {
-                        name: "Low-End Modeler project",
-                        pattern: "*.lem",
+                        name: "Mixer project",
+                        pattern: "*.mix",
                     }],
                     &folder,
                     &self.document_name,
@@ -767,11 +916,16 @@ impl App {
         if path.extension().is_none() {
             path.set_extension(PROJECT_EXTENSION);
         }
-        match save_project(self.editor.document().mesh(), &path) {
+        let settings = ProjectSettings {
+            export_format: Some(self.state.export_format.extension().to_string()),
+            export_scale: Some(self.state.scale),
+            export_name: Some(self.state.file_name.clone()),
+        };
+        match save_project(self.editor.document().mesh(), &settings, &path) {
             Ok(()) => {
+                places::remember(&path);
                 self.document_name = file_name(&path);
                 self.state.message = format!("Saved {}", self.document_name);
-                self.state.file_name = file_stem(&path);
                 self.project_path = Some(path);
                 self.saved_version = self.editor.document().version();
                 true
@@ -806,6 +960,23 @@ impl App {
                     if kind == FileKind::Project {
                         self.project_path = Some(path.clone());
                         self.document_name = file_name(&path);
+                        self.export_folder = places::exports_beside(&path);
+                        self.export_folder_text = self.export_folder.display().to_string();
+                        let settings = &report.settings;
+                        if let Some(format) = settings
+                            .export_format
+                            .as_deref()
+                            .and_then(ExportFormat::from_name)
+                        {
+                            self.state.export_format = format;
+                        }
+                        if let Some(scale) = settings.export_scale {
+                            self.state.scale = scale;
+                        }
+                        if let Some(name) = &settings.export_name {
+                            self.state.file_name = name.clone();
+                        }
+                        places::remember(&path);
                     } else {
                         // An imported OBJ is saved as a new project, never over the OBJ.
                         self.project_path = None;
@@ -820,9 +991,14 @@ impl App {
                     self.state.message = format!("Opened {}.{skipped}", file_name(&path));
                     self.frame_model();
                     self.stale = Stale::Everything;
+                    self.start = None;
                 }
-                Err(error) => self.state.message = error,
+                Err(error) => match self.start.as_mut() {
+                    Some(start) => start.message = error,
+                    None => self.state.message = error,
+                },
             },
+            Pending::Start => self.show_start(),
         }
         self.request_frames();
     }
@@ -843,7 +1019,8 @@ impl App {
         if low[0] <= high[0] {
             self.camera.target = std::array::from_fn(|i| (low[i] + high[i]) / 2.0);
             let size = (0..3).map(|i| high[i] - low[i]).fold(0.0, f32::max);
-            self.camera.distance = (size * 1.8).clamp(2.0, 5000.0);
+            // Room around it, so the whole shape and some ground show.
+            self.camera.distance = (size * 3.0).clamp(6.0, 5000.0);
         }
     }
 
@@ -1620,6 +1797,12 @@ impl App {
     pub fn handle_event(&mut self, event: &Event, mouse: &MouseUtil, mods: Mod) {
         if let Event::MouseMotion { x, y, .. } = *event {
             self.pointer = [x as f32, y as f32];
+        }
+        // The start window takes everything while it shows.
+        if self.start.is_some() {
+            self.feed_imgui(event);
+            self.request_frames();
+            return;
         }
         let snap = modifiers(mods).ctrl;
         self.snapping = snap;

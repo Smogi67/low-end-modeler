@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use modeler_mesh::{EdgeId, FaceId, Mesh, SelectMode, VertexId};
+use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, VertexId};
 
 use crate::picking::face_dot;
 
@@ -228,7 +228,7 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use modeler_mesh::{Element, Primitive, SelectOp};
+    use mixer_mesh::{Element, Primitive, SelectOp};
 
     fn cube() -> Mesh {
         let mut mesh = Mesh::new();

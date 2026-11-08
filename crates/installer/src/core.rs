@@ -190,7 +190,7 @@ pub fn install(
         std::fs::rename(&temporary, &target).map_err(|error| {
             let _ = std::fs::remove_file(&temporary);
             format!(
-                "Could not put {name} in place: {error}. If Low-End Modeler is open, close it \
+                "Could not put {name} in place: {error}. If Mixer is open, close it \
                  and try again."
             )
         })?;

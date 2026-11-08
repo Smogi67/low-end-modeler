@@ -1,6 +1,6 @@
 [package]
-name = "low-end-modeler-setup"
-description = "Installs what Low-End Modeler needs, and nothing else. See spec section 6."
+name = "mixer-setup"
+description = "Installs what Mixer needs, and nothing else. See spec section 6."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

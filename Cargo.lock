@@ -211,26 +211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "low-end-modeler"
-version = "0.1.0"
-dependencies = [
- "glow",
- "imgui",
- "modeler-mesh",
- "sdl2",
- "windows-sys",
-]
-
-[[package]]
-name = "low-end-modeler-setup"
-version = "0.1.0"
-dependencies = [
- "miniz_oxide",
- "sha2",
- "windows-sys",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -252,10 +232,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
-name = "modeler-mesh"
+name = "mixer"
+version = "0.1.0"
+dependencies = [
+ "glow",
+ "imgui",
+ "mixer-mesh",
+ "sdl2",
+ "windows-sys",
+]
+
+[[package]]
+name = "mixer-mesh"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "mixer-setup"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "sha2",
+ "windows-sys",
 ]
 
 [[package]]

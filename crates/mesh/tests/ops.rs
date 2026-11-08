@@ -2,7 +2,7 @@
 
 mod common;
 use common::{cube, cycle, edge, euler_characteristic, grid, is_closed_and_consistent};
-use modeler_mesh::{Mesh, MeshError, VertexId};
+use mixer_mesh::{Mesh, MeshError, VertexId};
 use std::collections::HashSet;
 
 fn verts(mesh: &mut Mesh, count: usize) -> Vec<VertexId> {
