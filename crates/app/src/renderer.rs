@@ -167,16 +167,23 @@ impl Renderer {
             let version = gl.get_parameter_string(glow::VERSION);
             let (major, minor) = parse_version(&version)
                 .ok_or_else(|| format!("Could not read the OpenGL version: {version:?}"))?;
+            let supported = supports_required_version(major, minor);
             let info = GlInfo {
                 renderer: gl.get_parameter_string(glow::RENDERER),
                 vendor: gl.get_parameter_string(glow::VENDOR),
-                shading_language: gl.get_parameter_string(glow::SHADING_LANGUAGE_VERSION),
+                // OpenGL 1.1 has no shading language, and asking stops the app.
+                shading_language: if supported {
+                    gl.get_parameter_string(glow::SHADING_LANGUAGE_VERSION)
+                } else {
+                    "none".to_string()
+                },
                 version,
             };
-            if !supports_required_version(major, minor) {
+            if !supported {
                 return Err(format!(
-                    "This app needs OpenGL 2.1, but the graphics driver only offers {}.\n\
-                     Graphics chip: {}\n\nUpdating the graphics driver may fix this.",
+                    "Mixer needs OpenGL 2.1, but the graphics driver only offers {}.\n\
+                     Graphics chip: {}\n\nUpdating the graphics driver through Windows Update \
+                     or the maker's website may fix this.",
                     info.version, info.renderer
                 ));
             }
