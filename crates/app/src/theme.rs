@@ -65,19 +65,24 @@ pub mod icon {
     pub const INFO: char = '\u{e0f9}';
     pub const CHECK: char = '\u{e06c}';
     pub const FOLDER: char = '\u{e247}';
+    pub const SETTINGS: char = '\u{e154}';
+    pub const MONITOR: char = '\u{e11d}';
+    pub const MOUSE: char = '\u{e28e}';
+    pub const DRIVE: char = '\u{e0ed}';
 }
 
 /// Every icon, as start and end pairs, closed with a zero. Keeping the list short keeps
 /// the font texture small.
-static ICON_RANGES: [u32; 95] = [
+static ICON_RANGES: [u32; 103] = [
     0xe061, 0xe061, 0xe06c, 0xe06c, 0xe076, 0xe076, 0xe09e, 0xe09e, 0xe0b2, 0xe0b2, 0xe0ba, 0xe0ba,
-    0xe0c9, 0xe0c9, 0xe0e8, 0xe0e9, 0xe0f3, 0xe0f3, 0xe0f5, 0xe0f5, 0xe0f9, 0xe0f9, 0xe115, 0xe115,
-    0xe14d, 0xe14d, 0xe167, 0xe167, 0xe172, 0xe172, 0xe18e, 0xe18e, 0xe193, 0xe193, 0xe1c3, 0xe1c3,
-    0xe1ce, 0xe1ce, 0xe247, 0xe247, 0xe257, 0xe257, 0xe284, 0xe284, 0xe2a0, 0xe2a1, 0xe2e5, 0xe2e6,
-    0xe2ea, 0xe2eb, 0xe2f0, 0xe2f0, 0xe345, 0xe345, 0xe35e, 0xe35e, 0xe439, 0xe439, 0xe43d, 0xe43d,
-    0xe43f, 0xe43f, 0xe44c, 0xe44c, 0xe45a, 0xe45a, 0xe464, 0xe464, 0xe467, 0xe467, 0xe4b0, 0xe4b0,
-    0xe4b3, 0xe4b3, 0xe4e9, 0xe4e9, 0xe4ff, 0xe4ff, 0xe509, 0xe509, 0xe51d, 0xe51d, 0xe523, 0xe523,
-    0xe525, 0xe525, 0xe60e, 0xe60e, 0xe648, 0xe648, 0xe658, 0xe65a, 0xe74f, 0xe74f, 0,
+    0xe0c9, 0xe0c9, 0xe0e8, 0xe0e9, 0xe0ed, 0xe0ed, 0xe0f3, 0xe0f3, 0xe0f5, 0xe0f5, 0xe0f9, 0xe0f9,
+    0xe115, 0xe115, 0xe11d, 0xe11d, 0xe14d, 0xe14d, 0xe154, 0xe154, 0xe167, 0xe167, 0xe172, 0xe172,
+    0xe18e, 0xe18e, 0xe193, 0xe193, 0xe1c3, 0xe1c3, 0xe1ce, 0xe1ce, 0xe247, 0xe247, 0xe257, 0xe257,
+    0xe284, 0xe284, 0xe28e, 0xe28e, 0xe2a0, 0xe2a1, 0xe2e5, 0xe2e6, 0xe2ea, 0xe2eb, 0xe2f0, 0xe2f0,
+    0xe345, 0xe345, 0xe35e, 0xe35e, 0xe439, 0xe439, 0xe43d, 0xe43d, 0xe43f, 0xe43f, 0xe44c, 0xe44c,
+    0xe45a, 0xe45a, 0xe464, 0xe464, 0xe467, 0xe467, 0xe4b0, 0xe4b0, 0xe4b3, 0xe4b3, 0xe4e9, 0xe4e9,
+    0xe4ff, 0xe4ff, 0xe509, 0xe509, 0xe51d, 0xe51d, 0xe523, 0xe523, 0xe525, 0xe525, 0xe60e, 0xe60e,
+    0xe648, 0xe648, 0xe658, 0xe65a, 0xe74f, 0xe74f, 0,
 ];
 
 /// Latin-1 plus a few typographic marks used in the interface.
@@ -103,6 +108,7 @@ pub mod color {
     pub const ACCENT_SOFT: [f32; 4] = [0.957, 0.553, 0.157, 0.20];
     pub const ON_ACCENT: [f32; 4] = [0.10, 0.07, 0.04, 1.0];
     pub const WARNING: [f32; 4] = [0.98, 0.76, 0.30, 1.0];
+    pub const SUCCESS: [f32; 4] = [0.50, 0.78, 0.29, 1.0];
     pub const DANGER: [f32; 4] = [0.95, 0.40, 0.40, 1.0];
     pub const AXIS: [[f32; 4]; 3] = [
         [0.93, 0.33, 0.38, 1.0],
@@ -161,14 +167,34 @@ fn icons(size: f32) -> FontSource<'static> {
 /// Adds the fonts and sets the colors and shapes. Call once, before the font texture is
 /// built.
 pub fn install(context: &mut imgui::Context) -> Fonts {
-    let atlas = context.fonts();
-    atlas.tex_glyph_padding = 1;
-    // The first font added is the default, used for body text with small icons.
-    atlas.add_font(&[text(INTER_REGULAR, 15.0), icons(15.0)]);
-    let heading = atlas.add_font(&[text(INTER_SEMIBOLD, 11.5)]);
-    let tool = atlas.add_font(&[text(INTER_SEMIBOLD, 13.0), icons(19.0)]);
-    let title = atlas.add_font(&[text(INTER_SEMIBOLD, 22.0), icons(34.0)]);
+    let fonts = install_fonts(context, 1.0);
+    install_style(context);
+    fonts
+}
 
+/// Puts the fonts in the atlas, drawn sharp for an interface `scale` times bigger than
+/// normal: the letters are made that much bigger, and Dear ImGui is told to shrink them
+/// back, because the whole interface is then drawn `scale` times bigger. The font
+/// texture must be built and uploaded again afterwards.
+pub fn install_fonts(context: &mut imgui::Context, scale: f32) -> Fonts {
+    let atlas = context.fonts();
+    atlas.clear();
+    atlas.tex_glyph_padding = 1;
+    let s = scale;
+    // The first font added is the default, used for body text with small icons.
+    atlas.add_font(&[text(INTER_REGULAR, 15.0 * s), icons(15.0 * s)]);
+    let heading = atlas.add_font(&[text(INTER_SEMIBOLD, 11.5 * s)]);
+    let tool = atlas.add_font(&[text(INTER_SEMIBOLD, 13.0 * s), icons(19.0 * s)]);
+    let title = atlas.add_font(&[text(INTER_SEMIBOLD, 22.0 * s), icons(34.0 * s)]);
+    context.io_mut().font_global_scale = 1.0 / s;
+    Fonts {
+        heading,
+        tool,
+        title,
+    }
+}
+
+fn install_style(context: &mut imgui::Context) {
     let style = context.style_mut();
     style.window_rounding = 10.0;
     style.child_rounding = 8.0;
@@ -239,12 +265,6 @@ pub fn install(context: &mut imgui::Context) -> Fonts {
     set(style, StyleColor::TextSelectedBg, ACCENT_SOFT);
     set(style, StyleColor::NavHighlight, ACCENT);
     set(style, StyleColor::ModalWindowDimBg, [0.0, 0.0, 0.0, 0.45]);
-
-    Fonts {
-        heading,
-        tool,
-        title,
-    }
 }
 
 #[cfg(test)]

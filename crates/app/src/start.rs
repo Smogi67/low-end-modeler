@@ -21,33 +21,26 @@ pub struct StartState {
     pub message: String,
     /// Where new projects go, to show.
     pub projects_folder: String,
-    /// The anti-aliasing setting, and whether this run has it.
-    pub antialiasing: bool,
-    pub antialiasing_now: bool,
-    /// Asked for when Mixer started, but the graphics driver refused.
-    pub antialiasing_refused: bool,
     /// The recent project whose Delete was clicked, waiting for a yes or no.
     pub confirm_delete: Option<usize>,
 }
 
 impl StartState {
+    /// `export_format` and `scale` are the defaults from the settings.
     pub fn new(
         recent: Vec<Recent>,
         projects_folder: String,
-        antialiasing: bool,
-        now: bool,
+        export_format: ExportFormat,
+        scale: f32,
     ) -> Self {
         Self {
             name: String::new(),
             shape: Some(Shape::Cube),
-            export_format: ExportFormat::Obj,
-            scale: 1.0,
+            export_format,
+            scale,
             recent,
             message: String::new(),
             projects_folder,
-            antialiasing,
-            antialiasing_now: now,
-            antialiasing_refused: false,
             confirm_delete: None,
         }
     }
@@ -68,11 +61,12 @@ pub enum StartAction {
     CancelDelete,
     OpenOther,
     OpenFolder,
-    SetAntialiasing(bool),
+    /// Opens the settings window.
+    Settings,
 }
 
 const WIDTH: f32 = 860.0;
-const HEIGHT: f32 = 600.0;
+const HEIGHT: f32 = 630.0;
 
 /// Draws the start window over the whole app window.
 pub fn build_start(ui: &Ui, state: &mut StartState, fonts: &Fonts) -> Option<StartAction> {
@@ -111,7 +105,7 @@ pub fn build_start(ui: &Ui, state: &mut StartState, fonts: &Fonts) -> Option<Sta
             ui.child_window("##right")
                 .size([column, -44.0])
                 .build(|| right_column(ui, state, fonts, &mut action));
-            settings_row(ui, state, &mut action);
+            settings_row(ui, &mut action);
         });
     drop(rounding);
     drop(padding);
@@ -425,21 +419,20 @@ fn confirm_row(
     ui.dummy([0.0, 0.0]);
 }
 
-fn settings_row(ui: &Ui, state: &mut StartState, action: &mut Option<StartAction>) {
+fn settings_row(ui: &Ui, action: &mut Option<StartAction>) {
     ui.separator();
-    let mut smooth = state.antialiasing;
-    if ui.checkbox("Smooth edges (anti-aliasing)", &mut smooth) {
-        *action = Some(StartAction::SetAntialiasing(smooth));
+    if ui.button_with_size(
+        format!("{}  Settings##start", icon::SETTINGS),
+        [140.0, 30.0],
+    ) {
+        *action = Some(StartAction::Settings);
     }
     ui.same_line_with_spacing(0.0, 12.0);
-    let note = if state.antialiasing && state.antialiasing_refused {
-        "Your graphics driver did not allow it, so it is off."
-    } else if state.antialiasing == state.antialiasing_now {
-        "Turn off if Mixer feels slow."
-    } else {
-        "Changes the next time Mixer starts."
-    };
-    ui.text_colored(color::FAINT, note);
+    ui.align_text_to_frame_padding();
+    ui.text_colored(
+        color::FAINT,
+        "Anti-aliasing, interface size, mouse, auto-save and more.",
+    );
 }
 
 #[cfg(test)]
@@ -470,7 +463,12 @@ mod tests {
                 age: "2 days ago".to_string(),
             },
         ];
-        let mut state = StartState::new(recent, "Documents > Mixer > Projects".into(), true, true);
+        let mut state = StartState::new(
+            recent,
+            "Documents > Mixer > Projects".into(),
+            ExportFormat::Obj,
+            1.0,
+        );
         state.message = "A project called Sword already exists.".to_string();
         let mut seen = std::collections::HashSet::new();
         let mut frame = |context: &mut imgui::Context, state: &mut StartState| {
@@ -517,7 +515,7 @@ mod tests {
             "CancelDelete",
             "OpenOther",
             "OpenFolder",
-            "SetAntialiasing(false)",
+            "Settings",
         ] {
             assert!(
                 seen.contains(expected),

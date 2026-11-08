@@ -5,7 +5,7 @@
 //! a couple of frames to show the result of a click, so such events ask for a few.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use imgui::{Key, MouseButton as ImguiButton};
 use mixer_mesh::{
@@ -27,9 +27,11 @@ use crate::gizmo::{self, Handle};
 use crate::imgui_gl::ImguiGl;
 use crate::knife::{KnifeCut, knife_cut, snapped_vertex};
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
-use crate::places::{self, Settings};
+use crate::places;
 use crate::renderer::{Renderer, View};
 use crate::scene::{MovedParts, Scene};
+use crate::settings::Settings;
+use crate::settings_window::{SettingsAction, SettingsState, build_settings};
 use crate::start::{StartAction, StartState, build_start};
 use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
@@ -216,6 +218,17 @@ pub struct App {
     antialiasing_now: bool,
     /// Anti-aliasing was asked for at the start, but the driver refused it.
     antialiasing_refused: bool,
+    /// The settings window, while it shows.
+    settings_window: Option<Box<SettingsState>>,
+    /// The rendering engine this run uses, which only changes on a restart.
+    renderer_now: String,
+    /// How much bigger than normal the interface is drawn.
+    ui_scale: f32,
+    /// The window's size in pixels. The interface works in pixels divided by
+    /// `ui_scale`; the 3D view and the mouse in pixels.
+    pixels: [f32; 2],
+    /// When the project was last saved, by hand or automatically.
+    last_save: Instant,
 }
 
 impl App {
@@ -229,16 +242,28 @@ impl App {
         imgui.set_ini_filename(None);
         imgui.set_log_filename(None);
         imgui.io_mut().config_input_text_cursor_blink = false;
-        let fonts = theme::install(&mut imgui);
+        let settings = Settings::load();
+        let ui_scale = settings.ui_scale();
+        let mut fonts = theme::install(&mut imgui);
+        if ui_scale != 1.0 {
+            fonts = theme::install_fonts(&mut imgui, ui_scale);
+        }
         let imgui_gl = ImguiGl::new(renderer.gl(), &mut imgui)?;
+        let mut editor = Editor::new();
+        editor.set_undo_steps(settings.undo_steps as usize);
+        let renderer_now = settings.renderer.clone();
         let export_folder = places::mixer_folder().join("Exports");
         let export_folder_text = export_folder.display().to_string();
         Ok(Self {
             renderer,
             imgui,
             imgui_gl,
-            editor: Editor::new(),
-            state: PanelState::default(),
+            editor,
+            state: PanelState {
+                export_format: settings.export_format,
+                scale: settings.export_scale,
+                ..PanelState::default()
+            },
             camera: Camera::default(),
             mouse_state: Mouse::Idle,
             scene: Scene::default(),
@@ -268,9 +293,14 @@ impl App {
             after_save: None,
             quit: false,
             start: None,
-            settings: Settings::load(),
+            settings,
             antialiasing_now,
             antialiasing_refused: antialiasing_wanted && !antialiasing_now,
+            settings_window: None,
+            renderer_now,
+            ui_scale,
+            pixels: [1.0, 1.0],
+            last_save: Instant::now(),
         })
     }
 
@@ -296,8 +326,11 @@ impl App {
         let (width, height) = window.drawable_size();
         let (width, height) = (width as i32, height as i32);
 
+        self.pixels = [width as f32, height as f32];
         let io = self.imgui.io_mut();
-        io.display_size = [width as f32, height as f32];
+        let s = self.ui_scale;
+        io.display_size = [width as f32 / s, height as f32 / s];
+        io.display_framebuffer_scale = [s, s];
         let now = Instant::now();
         io.delta_time = (now - self.last_frame).as_secs_f32().max(0.001);
         self.last_frame = now;
@@ -333,7 +366,7 @@ impl App {
             },
             bevel: match &self.mouse_state {
                 Mouse::Transforming { transform, .. } if transform.kind == Kind::Bevel => {
-                    let size = self.imgui.io().display_size;
+                    let size = self.pixels;
                     let input = Input {
                         mouse: self.pointer,
                         snap: self.snapping,
@@ -383,15 +416,21 @@ impl App {
         let gizmo_parts = self.gizmo_parts();
         let ui = self.imgui.new_frame();
         let mut start_action = None;
-        let output = match &mut self.start {
-            Some(start) => {
-                start_action = build_start(ui, start, &self.fonts);
-                crate::ui::UiOutput {
-                    action: None,
-                    rects: vec![[0.0, 0.0, width as f32, height as f32]],
-                }
+        let mut settings_action = None;
+        let whole = crate::ui::UiOutput {
+            action: None,
+            rects: vec![[0.0, 0.0, width as f32, height as f32]],
+        };
+        let output = match (&mut self.settings_window, &mut self.start) {
+            (Some(window), _) => {
+                settings_action = build_settings(ui, window, &self.fonts);
+                whole
             }
-            None => build_ui(ui, &mut self.state, &info, &self.fonts),
+            (None, Some(start)) => {
+                start_action = build_start(ui, start, &self.fonts);
+                whole
+            }
+            (None, None) => build_ui(ui, &mut self.state, &info, &self.fonts),
         };
         let action = output.action;
         if let Mouse::Selecting {
@@ -459,6 +498,7 @@ impl App {
             fade_radius: self.camera.grid_fade_radius(),
             point_depth_bias: self.camera.point_depth_bias(),
             overlays: !self.view_only,
+            grid: self.settings.grid,
         };
         self.renderer.render(width, height, &view);
         self.imgui_gl.render(self.renderer.gl(), draw_data, height);
@@ -474,6 +514,96 @@ impl App {
             self.apply_start(action);
             self.request_frames();
         }
+        if let Some(action) = settings_action {
+            self.apply_settings_window(action);
+            self.request_frames();
+        }
+    }
+
+    /// Opens the settings window over whatever shows.
+    fn open_settings(&mut self) {
+        self.settings_window = Some(Box::new(SettingsState {
+            page: 0,
+            values: self.settings.clone(),
+            antialiasing_now: self.antialiasing_now,
+            antialiasing_refused: self.antialiasing_refused,
+            renderer_now: self.renderer_now.clone(),
+        }));
+        self.mouse_state = Mouse::Idle;
+        self.request_frames();
+    }
+
+    fn apply_settings_window(&mut self, action: SettingsAction) {
+        match action {
+            SettingsAction::Close => self.settings_window = None,
+            SettingsAction::Changed => {
+                let Some(window) = &self.settings_window else {
+                    return;
+                };
+                let new = window.values.clone();
+                self.change_settings(new);
+            }
+        }
+    }
+
+    /// Takes new settings: saves them, and applies what can change while Mixer runs.
+    fn change_settings(&mut self, new: Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        let new = &self.settings;
+        if new.ui_scale() != old.ui_scale() {
+            self.ui_scale = new.ui_scale();
+            self.fonts = theme::install_fonts(&mut self.imgui, self.ui_scale);
+            self.imgui_gl
+                .reload_fonts(self.renderer.gl(), &mut self.imgui);
+        }
+        if new.undo_steps != old.undo_steps {
+            self.editor.set_undo_steps(new.undo_steps as usize);
+        }
+        if new.recent != old.recent
+            && let Some(start) = self.start.as_mut()
+        {
+            start.recent = places::recent_projects(new.recent as usize);
+        }
+        if let Err(error) = self.settings.save() {
+            self.state.message = format!("Could not save the settings: {error}");
+        }
+    }
+
+    /// How long until an automatic save is due, if one will be.
+    pub fn autosave_wait(&self) -> Option<Duration> {
+        let minutes = self.settings.autosave;
+        if minutes == 0 || self.project_path.is_none() {
+            return None;
+        }
+        let every = Duration::from_secs(u64::from(minutes) * 60);
+        Some(every.saturating_sub(self.last_save.elapsed()))
+    }
+
+    /// Saves the project if an automatic save is due and nothing is in the way: there
+    /// are unsaved changes, and no drag, question or window is open.
+    pub fn tick(&mut self) {
+        if self.autosave_wait() != Some(Duration::ZERO) {
+            return;
+        }
+        let busy = !matches!(self.mouse_state, Mouse::Idle)
+            || self.start.is_some()
+            || self.settings_window.is_some()
+            || self.confirming.is_some()
+            || self.state.path_prompt.is_some()
+            || self.editor.document().version() == self.saved_version;
+        if busy {
+            // Tries again a little later.
+            self.last_save = Instant::now()
+                .checked_sub(Duration::from_secs(u64::from(self.settings.autosave) * 60))
+                .map_or_else(Instant::now, |due| due + Duration::from_secs(10));
+            return;
+        }
+        if let Some(path) = self.project_path.clone()
+            && self.save_to(path)
+        {
+            self.state.message = format!("Auto-saved {}", self.document_name);
+        }
+        self.request_frames();
     }
 
     /// Shows the start window, with the recent projects as they are now.
@@ -483,13 +613,12 @@ impl App {
         } else {
             "Documents > Mixer > Projects".to_string()
         };
-        let mut start = StartState::new(
-            places::recent_projects(),
+        let start = StartState::new(
+            places::recent_projects(self.settings.recent as usize),
             folder,
-            self.settings.antialiasing,
-            self.antialiasing_now,
+            self.settings.export_format,
+            self.settings.export_scale,
         );
-        start.antialiasing_refused = self.antialiasing_refused;
         self.start = Some(Box::new(start));
         self.mouse_state = Mouse::Idle;
         self.request_frames();
@@ -508,6 +637,8 @@ impl App {
                     &format!("Quick {}", places::timestamp()),
                     PROJECT_EXTENSION,
                 );
+                self.state.export_format = self.settings.export_format;
+                self.state.scale = self.settings.export_scale;
                 self.begin_project(path, Some(Shape::Cube));
             }
             StartAction::ShowRecent(i) => {
@@ -537,7 +668,7 @@ impl App {
                             self.project_path = None;
                             self.saved_version = self.editor.document().version();
                         }
-                        start.recent = places::recent_projects();
+                        start.recent = places::recent_projects(self.settings.recent as usize);
                         start.message = if cfg!(windows) {
                             format!("{name} is in the Recycle Bin.")
                         } else {
@@ -595,13 +726,7 @@ impl App {
                     start.message = format!("The Mixer folder is {}", folder.display());
                 }
             }
-            StartAction::SetAntialiasing(on) => {
-                self.settings.antialiasing = on;
-                start.antialiasing = on;
-                if let Err(error) = self.settings.save() {
-                    start.message = error;
-                }
-            }
+            StartAction::Settings => self.open_settings(),
         }
     }
 
@@ -635,9 +760,41 @@ impl App {
         (width, height, self.renderer.read_pixels(width, height))
     }
 
+    /// The mouse wheel or a touchpad's two-finger scroll, over the 3D view.
+    fn wheel_view(&mut self, x: f32, y: f32, mods: Modifiers) {
+        /// Pixels of turning or sliding per scroll unit, in touchpad mode.
+        const TOUCHPAD_PIXELS: f32 = 20.0;
+        let (width, height) = self.viewport();
+        let zoom = |app: &mut Self, steps: f32| {
+            let steps = if app.settings.invert_zoom {
+                -steps
+            } else {
+                steps
+            };
+            if app.settings.zoom_to_pointer {
+                app.camera.zoom_at(steps, app.pointer, width, height);
+            } else {
+                app.camera.zoom_steps(steps);
+            }
+        };
+        if self.settings.touchpad {
+            if mods.ctrl {
+                zoom(self, y);
+            } else if mods.shift {
+                self.camera
+                    .pan_pixels(x * TOUCHPAD_PIXELS, y * TOUCHPAD_PIXELS, height);
+            } else {
+                let speed = self.settings.turn_speed as f32 / 100.0 * TOUCHPAD_PIXELS;
+                self.camera.orbit_pixels(x * speed, y * speed);
+            }
+        } else if y != 0.0 {
+            zoom(self, y);
+        }
+    }
+
+    /// The 3D view's size in pixels.
     fn viewport(&self) -> (f32, f32) {
-        let size = self.imgui.io().display_size;
-        (size[0].max(1.0), size[1].max(1.0))
+        (self.pixels[0].max(1.0), self.pixels[1].max(1.0))
     }
 
     fn select_edit(&mut self, label: &'static str, edit: impl FnOnce(&mut Mesh, SelectMode)) {
@@ -676,6 +833,7 @@ impl App {
                 }
             }
             Action::New => self.request(Pending::New),
+            Action::Settings => self.open_settings(),
             Action::StartWindow => self.request(Pending::Start),
             Action::Open => self.request(Pending::Open(None)),
             Action::Save => self.save(false, None),
@@ -720,6 +878,9 @@ impl App {
                     self.state.export_format,
                 ) {
                     Ok(path) => {
+                        if self.settings.open_export_folder {
+                            let _ = places::show_in_folder(&path);
+                        }
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
                         format!("Saved {name}")
                     }
@@ -1028,6 +1189,7 @@ impl App {
                 self.state.message = format!("Saved {}", self.document_name);
                 self.project_path = Some(path);
                 self.saved_version = self.editor.document().version();
+                self.last_save = Instant::now();
                 true
             }
             Err(error) => {
@@ -1125,6 +1287,19 @@ impl App {
     }
 
     /// Opens a file named when the app was started.
+    /// What shows when Mixer starts without a file: the start window, or, if the
+    /// settings turn it off, the most recent project.
+    pub fn open_first(&mut self) {
+        let recent = places::recent_projects(1);
+        match recent.first() {
+            Some(last) if !self.settings.start_window => {
+                let path = last.path.clone();
+                self.open_at_start(path);
+            }
+            _ => self.show_start(),
+        }
+    }
+
     pub fn open_at_start(&mut self, path: PathBuf) {
         self.perform(Pending::Open(Some(path)));
     }
@@ -1929,7 +2104,20 @@ impl App {
         if let Event::MouseMotion { x, y, .. } = *event {
             self.pointer = [x as f32, y as f32];
         }
-        // The start window takes everything while it shows.
+        // The settings and start windows take everything while they show.
+        if self.settings_window.is_some() {
+            if let Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } = event
+            {
+                self.settings_window = None;
+            } else {
+                self.feed_imgui(event);
+            }
+            self.request_frames();
+            return;
+        }
         if self.start.is_some() {
             self.feed_imgui(event);
             self.request_frames();
@@ -2028,7 +2216,10 @@ impl App {
                 let pointer = self.pointer;
                 let height = self.viewport().1;
                 match &mut self.mouse_state {
-                    Mouse::Camera(Drag::Orbit) => self.camera.orbit_pixels(dx, dy),
+                    Mouse::Camera(Drag::Orbit) => {
+                        let speed = self.settings.turn_speed as f32 / 100.0;
+                        self.camera.orbit_pixels(dx * speed, dy * speed);
+                    }
                     Mouse::Camera(Drag::Pan) => self.camera.pan_pixels(dx, dy, height),
                     Mouse::Camera(Drag::Zoom) => self.camera.zoom_pixels(dy),
                     Mouse::Selecting {
@@ -2061,21 +2252,27 @@ impl App {
                 }
                 // Moving over empty viewport needs no drawing. The panel highlights
                 // its buttons, so it does, as does leaving it or using a slider.
-                let over = in_rects(&self.ui_rects, x as f32, y as f32);
+                let s = self.ui_scale;
+                let over = in_rects(&self.ui_rects, x as f32 / s, y as f32 / s);
                 if over || self.pointer_over_panel || ui_mouse {
                     self.request_frames();
                 }
                 self.pointer_over_panel = over;
             }
-            Event::MouseWheel { y, direction, .. } if y != 0 => {
+            Event::MouseWheel {
+                precise_x,
+                precise_y,
+                direction,
+                ..
+            } => {
                 self.request_frames();
                 if !ui_mouse && !self.pointer_over_panel {
-                    let steps = if direction == MouseWheelDirection::Flipped {
-                        -y
+                    let flip = if direction == MouseWheelDirection::Flipped {
+                        -1.0
                     } else {
-                        y
+                        1.0
                     };
-                    self.camera.zoom_steps(steps as f32);
+                    self.wheel_view(precise_x * flip, precise_y * flip, modifiers(mods));
                 }
             }
             Event::KeyDown {
@@ -2214,7 +2411,8 @@ impl App {
         let io = self.imgui.io_mut();
         match event {
             Event::MouseMotion { x, y, .. } => {
-                io.add_mouse_pos_event([*x as f32, *y as f32]);
+                let s = self.ui_scale;
+                io.add_mouse_pos_event([*x as f32 / s, *y as f32 / s]);
             }
             Event::MouseButtonDown { mouse_btn, .. } | Event::MouseButtonUp { mouse_btn, .. } => {
                 let down = matches!(event, Event::MouseButtonDown { .. });
@@ -2315,6 +2513,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::Minus | Keycode::KP_MINUS => Some(Action::SelectLess),
             Keycode::R => Some(Action::LoopCut),
             Keycode::J => Some(Action::Join),
+            Keycode::Comma => Some(Action::Settings),
             Keycode::B if mods.shift => Some(Action::BevelVertices),
             Keycode::B => Some(Action::Bevel),
             Keycode::S if mods.shift => Some(Action::SaveAs),
@@ -2360,6 +2559,7 @@ fn changes_the_shape(action: Action) -> bool {
             | Action::ToggleOrtho
             | Action::ResetView
             | Action::ToggleView
+            | Action::Settings
             | Action::New
             | Action::Open
             | Action::Save

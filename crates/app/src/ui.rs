@@ -424,6 +424,8 @@ pub enum Action {
     ToggleView,
     /// Back to the start window, asking about unsaved changes first.
     StartWindow,
+    /// Opens the settings window.
+    Settings,
     /// Shading for the selected faces: 0 flat, otherwise smooth up to that angle.
     Shade(u8),
     /// Adds a modifier to the selected part.
@@ -859,9 +861,13 @@ fn top_bar(
     file_menu(ui, info, action, height);
     ui.same_line_with_spacing(0.0, 10.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 9.0]);
+    // On a narrow window, or with a big interface size, the bar gets shorter: a shorter
+    // name, and the mode buttons without their words.
+    let narrow = ui.window_size()[0] < 1240.0;
+    let longest = if narrow { 12 } else { 22 };
     // The file's name, shortened if long, with a dot while there are unsaved changes.
-    let mut name: String = info.document.chars().take(22).collect();
-    if info.document.chars().count() > 22 {
+    let mut name: String = info.document.chars().take(longest).collect();
+    if info.document.chars().count() > longest {
         name.push('\u{2026}');
     }
     ui.text_colored(color::MUTED, &name);
@@ -913,7 +919,10 @@ fn top_bar(
     ];
     let items: Vec<_> = modes
         .iter()
-        .map(|(glyph, label, mode, tip)| (*glyph, *label, info.mode == *mode, *tip))
+        .map(|(glyph, label, mode, tip)| {
+            let label = if narrow { "" } else { *label };
+            (*glyph, label, info.mode == *mode, *tip)
+        })
         .collect();
     if let Some(i) = segmented(ui, "mode", &items, height) {
         *action = Some(Action::SetMode(modes[i].2));
@@ -973,13 +982,27 @@ fn top_bar(
         .map_or("Nothing to redo".to_string(), |l| format!("Redo {l}"));
     tooltip(ui, &redo, "Ctrl+Y");
 
-    // Shortcuts, then Export, at the right edge.
+    // Settings, shortcuts, then Export, at the right edge. On a narrow window, or with a
+    // big interface size, the two small buttons give way to the ones before them.
+    // Settings is in the File menu too.
     let width = 112.0;
-    ui.same_line_with_pos(ui.window_size()[0] - width - 12.0 - (height + 4.0) - 8.0);
-    if icon_button(ui, "help", icon::KEYBOARD, false, true, height + 4.0) {
-        ui.open_popup("##help_popup");
+    let used = ui.item_rect_max()[0] - ui.window_pos()[0] + 8.0;
+    let settings_x = ui.window_size()[0] - width - 12.0 - 2.0 * (height + 4.0) - 12.0;
+    let help_x = ui.window_size()[0] - width - 12.0 - (height + 4.0) - 8.0;
+    if used <= settings_x {
+        ui.same_line_with_pos(settings_x);
+        if icon_button(ui, "settings", icon::SETTINGS, false, true, height + 4.0) {
+            *action = Some(Action::Settings);
+        }
+        tooltip(ui, "Settings", "Ctrl+,");
     }
-    tooltip(ui, "Keyboard and mouse", "");
+    if used <= help_x {
+        ui.same_line_with_pos(help_x);
+        if icon_button(ui, "help", icon::KEYBOARD, false, true, height + 4.0) {
+            ui.open_popup("##help_popup");
+        }
+        tooltip(ui, "Keyboard and mouse", "");
+    }
     help_popup(ui, fonts);
     ui.same_line_with_pos(ui.window_size()[0] - width - 12.0);
     let colors = [
@@ -1089,6 +1112,12 @@ fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32
     if let Some(_menu) = ui.begin_popup("##file_menu") {
         let items = [
             (icon::MENU, "Start window\u{2026}", "", Action::StartWindow),
+            (
+                icon::SETTINGS,
+                "Settings\u{2026}",
+                "Ctrl+,",
+                Action::Settings,
+            ),
             (icon::NEW, "New", "Ctrl+N", Action::New),
             (icon::FOLDER, "Open\u{2026}", "Ctrl+O", Action::Open),
             (icon::SAVE, "Save", "Ctrl+S", Action::Save),
@@ -1185,6 +1214,7 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                 &[
                     ("New, open, save", "Ctrl+N, Ctrl+O, Ctrl+S"),
                     ("Save as", "Ctrl+Shift+S"),
+                    ("Settings", "Ctrl+comma"),
                     ("Export", "Ctrl+E"),
                     ("Undo, redo", "Ctrl+Z, Ctrl+Y"),
                 ],
@@ -2243,11 +2273,23 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
 }
 
 /// Draws the move, rotate or scale handles over the 3D view.
+/// Window pixels to the interface's units, which differ when the interface is drawn
+/// bigger (Settings > Interface size). The 3D view and the mouse work in pixels.
+fn pixels_to_ui(ui: &Ui) -> impl Fn([f32; 2]) -> [f32; 2] + use<> {
+    let k = 1.0 / ui.io().display_framebuffer_scale[0].max(0.01);
+    move |p: [f32; 2]| [p[0] * k, p[1] * k]
+}
+
+fn pixel_length(ui: &Ui, length: f32) -> f32 {
+    length / ui.io().display_framebuffer_scale[0].max(0.01)
+}
+
 pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gizmo::Handle>) {
     use crate::gizmo::{Handle, Shape};
     if parts.is_empty() {
         return;
     }
+    let at = pixels_to_ui(ui);
     let list = ui.get_background_draw_list();
     for part in parts {
         let lit = hover == Some(part.handle);
@@ -2270,16 +2312,19 @@ pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gi
             match shape {
                 Shape::Line(points) => {
                     for pair in points.windows(2) {
-                        list.add_line(pair[0], pair[1], tint)
+                        list.add_line(at(pair[0]), at(pair[1]), tint)
                             .thickness(thickness)
                             .build();
                     }
                 }
                 Shape::Triangle([a, b, c]) => {
-                    list.add_triangle(*a, *b, *c, tint).filled(true).build();
+                    list.add_triangle(at(*a), at(*b), at(*c), tint)
+                        .filled(true)
+                        .build();
                 }
                 Shape::Square(center, half) => {
-                    let h = if lit { half + 1.5 } else { *half };
+                    let h = pixel_length(ui, if lit { half + 1.5 } else { *half });
+                    let center = at(*center);
                     list.add_rect(
                         [center[0] - h, center[1] - h],
                         [center[0] + h, center[1] + h],
@@ -2289,7 +2334,7 @@ pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gi
                     .build();
                 }
                 Shape::Circle(center, radius) => {
-                    list.add_circle(*center, *radius, tint)
+                    list.add_circle(at(*center), pixel_length(ui, *radius), tint)
                         .num_segments(64)
                         .thickness(thickness)
                         .build();
@@ -2301,39 +2346,45 @@ pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gi
 
 /// A knife path being drawn, and where it will cut.
 pub fn draw_knife(ui: &Ui, path: &[[f32; 2]], cuts: &[[f32; 2]]) {
+    let at = pixels_to_ui(ui);
     let list = ui.get_foreground_draw_list();
     let line = [1.0, 0.85, 0.25, 1.0];
     for pair in path.windows(2) {
-        list.add_line(pair[0], pair[1], line).thickness(2.0).build();
+        list.add_line(at(pair[0]), at(pair[1]), line)
+            .thickness(2.0)
+            .build();
     }
     for &p in &path[..path.len().saturating_sub(1)] {
-        list.add_circle(p, 3.5, line).filled(true).build();
+        list.add_circle(at(p), 3.5, line).filled(true).build();
     }
     for &p in cuts {
-        list.add_circle(p, 4.5, [0.35, 0.95, 0.45, 1.0])
+        list.add_circle(at(p), 4.5, [0.35, 0.95, 0.45, 1.0])
             .filled(true)
             .build();
-        list.add_circle(p, 4.5, [0.05, 0.08, 0.05, 1.0]).build();
+        list.add_circle(at(p), 4.5, [0.05, 0.08, 0.05, 1.0]).build();
     }
 }
 
-/// Draws a selection shape being dragged.
 /// Lines on top of the 3D view, such as where a loop cut will go.
 pub fn draw_lines(ui: &Ui, lines: &[[[f32; 2]; 2]]) {
+    let at = pixels_to_ui(ui);
     let list = ui.get_foreground_draw_list();
     for &[a, b] in lines {
-        list.add_line(a, b, [1.0, 0.85, 0.25, 1.0])
+        list.add_line(at(a), at(b), [1.0, 0.85, 0.25, 1.0])
             .thickness(2.0)
             .build();
     }
 }
 
+/// Draws a selection shape being dragged.
 pub fn draw_region(ui: &Ui, region: &Region) {
+    let at = pixels_to_ui(ui);
     let list = ui.get_foreground_draw_list();
     let line = [1.0, 0.72, 0.36, 1.0];
     let fill = [1.0, 0.62, 0.2, 0.08];
     match region {
         Region::Box { a, b } => {
+            let (a, b) = (at(*a), at(*b));
             let min = [a[0].min(b[0]), a[1].min(b[1])];
             let max = [a[0].max(b[0]), a[1].max(b[1])];
             list.add_rect(min, max, fill).filled(true).build();
@@ -2341,12 +2392,13 @@ pub fn draw_region(ui: &Ui, region: &Region) {
         }
         Region::Brush { path, radius } => {
             if let Some(last) = path.last() {
-                list.add_circle(*last, *radius, fill).filled(true).build();
-                list.add_circle(*last, *radius, line).build();
+                let (center, radius) = (at(*last), pixel_length(ui, *radius));
+                list.add_circle(center, radius, fill).filled(true).build();
+                list.add_circle(center, radius, line).build();
             }
         }
         Region::Lasso { points } => {
-            list.add_polyline(points.clone(), line)
+            list.add_polyline(points.iter().map(|&p| at(p)).collect::<Vec<_>>(), line)
                 .thickness(1.5)
                 .build();
         }
@@ -2663,6 +2715,7 @@ mod tests {
             "Boolean(Intersect)",
             "ToggleView",
             "StartWindow",
+            "Settings",
             "Shade(0)",
             "Shade(180)",
             "Shade(30)",

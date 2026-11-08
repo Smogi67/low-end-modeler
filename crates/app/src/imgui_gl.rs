@@ -54,29 +54,7 @@ impl ImguiGl {
             let screen = gl.get_uniform_location(program, "u_screen");
 
             let texture = gl.create_texture()?;
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            for (name, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
-                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, name, value as i32);
-            }
-            let fonts = context.fonts();
-            let atlas = fonts.build_alpha8_texture();
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::ALPHA as i32,
-                atlas.width as i32,
-                atlas.height as i32,
-                0,
-                glow::ALPHA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(atlas.data)),
-            );
+            upload_fonts(gl, texture, context);
 
             Ok(Self {
                 program,
@@ -86,6 +64,11 @@ impl ImguiGl {
                 index_buffer: gl.create_buffer()?,
             })
         }
+    }
+
+    /// Builds the font texture again, after the fonts changed.
+    pub fn reload_fonts(&self, gl: &glow::Context, context: &mut imgui::Context) {
+        upload_fonts(gl, self.texture, context);
     }
 
     pub fn render(&self, gl: &glow::Context, draw_data: &imgui::DrawData, height: i32) {
@@ -137,7 +120,14 @@ impl ImguiGl {
                     let DrawCmd::Elements { count, cmd_params } = command else {
                         continue;
                     };
-                    let clip = cmd_params.clip_rect;
+                    // The interface may be drawn bigger than its own units.
+                    let scale = draw_data.framebuffer_scale;
+                    let clip = [
+                        cmd_params.clip_rect[0] * scale[0],
+                        cmd_params.clip_rect[1] * scale[1],
+                        cmd_params.clip_rect[2] * scale[0],
+                        cmd_params.clip_rect[3] * scale[1],
+                    ];
                     gl.scissor(
                         clip[0] as i32,
                         height - clip[3] as i32,
@@ -172,5 +162,36 @@ impl ImguiGl {
             gl.disable(glow::BLEND);
             gl.enable(glow::DEPTH_TEST);
         }
+    }
+}
+
+/// Builds Dear ImGui's font texture and puts it in `texture`.
+fn upload_fonts(gl: &glow::Context, texture: glow::Texture, context: &mut imgui::Context) {
+    // SAFETY: the OpenGL context is current on this thread for the app's lifetime, and
+    // the atlas data lives until the upload ends.
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        for (name, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+            (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, name, value as i32);
+        }
+        let fonts = context.fonts();
+        let atlas = fonts.build_alpha8_texture();
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::ALPHA as i32,
+            atlas.width as i32,
+            atlas.height as i32,
+            0,
+            glow::ALPHA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(atlas.data)),
+        );
     }
 }

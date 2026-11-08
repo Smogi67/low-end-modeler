@@ -17,6 +17,8 @@ mod places;
 mod platform;
 mod renderer;
 mod scene;
+mod settings;
+mod settings_window;
 mod start;
 mod theme;
 mod transform;
@@ -130,7 +132,7 @@ fn run() -> Result<(), String> {
 
     // Anti-aliasing takes 4 samples per pixel. If the graphics driver refuses, Mixer
     // tries again without, rather than not starting.
-    let wanted = places::Settings::load().antialiasing;
+    let wanted = settings::Settings::load().antialiasing;
     let open = |samples: u8| -> Result<(sdl2::video::Window, sdl2::video::GLContext), String> {
         gl_attr.set_multisample_buffers(u8::from(samples > 0));
         gl_attr.set_multisample_samples(samples);
@@ -210,7 +212,7 @@ fn run() -> Result<(), String> {
     match open_path {
         // A file given when starting goes straight to the editor.
         Some(path) => app.borrow_mut().open_at_start(path),
-        None => app.borrow_mut().show_start(),
+        None => app.borrow_mut().open_first(),
     }
 
     // Windows pauses this thread's main loop while a window edge is being dragged,
@@ -265,10 +267,22 @@ fn run() -> Result<(), String> {
 
         // Sleeps here until something happens, unless more frames are wanted. Then
         // everything else already waiting is handled too, so a fast drag draws once.
+        // Auto-save needs a wake-up, even when nothing happens.
         let mut next = if wants_frame && app.borrow().wants_frame() {
             events.poll_event()
         } else {
-            Some(events.wait_event())
+            let wait = app.borrow().autosave_wait();
+            match wait {
+                Some(wait) => {
+                    let ms = wait.as_millis().clamp(1, u32::MAX as u128) as u32;
+                    let event = events.wait_event_timeout(ms);
+                    if event.is_none() {
+                        app.borrow_mut().tick();
+                    }
+                    event
+                }
+                None => Some(events.wait_event()),
+            }
         };
         while let Some(event) = next {
             // Closing with unsaved changes asks first; the answer comes in later frames.

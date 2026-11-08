@@ -70,6 +70,24 @@ impl Camera {
             (self.distance * ZOOM_PER_WHEEL_STEP.powf(steps)).clamp(MIN_DISTANCE, MAX_DISTANCE);
     }
 
+    /// Zooms so that what is under the pointer stays under it, at the target's depth.
+    pub fn zoom_at(&mut self, steps: f32, pointer: [f32; 2], width: f32, height: f32) {
+        let before = self.distance;
+        self.zoom_steps(steps);
+        let shrink = 1.0 - self.distance / before;
+        let (width, height) = (width.max(1.0), height.max(1.0));
+        let nx = 2.0 * pointer[0] / width - 1.0;
+        let ny = 1.0 - 2.0 * pointer[1] / height;
+        // The world height at the old distance.
+        let half_height = 2.0 * before * (FIELD_OF_VIEW / 2.0).tan() / 2.0;
+        let half_width = half_height * width / height;
+        let [right, up, _] = self.rotation_rows();
+        for axis in 0..3 {
+            self.target[axis] +=
+                (right[axis] * nx * half_width + up[axis] * ny * half_height) * shrink;
+        }
+    }
+
     pub fn zoom_pixels(&mut self, dy: f32) {
         self.zoom_steps(-dy * 0.05);
     }
@@ -279,6 +297,34 @@ pub fn multiply(a: &Mat4, b: &Mat4) -> Mat4 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zooming_at_the_pointer_keeps_what_is_under_it() {
+        let mut camera = Camera::default();
+        // The point on the target's plane under a pointer, at a given distance.
+        let under = |c: &Camera, pointer: [f32; 2]| -> [f32; 3] {
+            let (w, h) = (800.0, 600.0);
+            let nx = 2.0 * pointer[0] / w - 1.0;
+            let ny = 1.0 - 2.0 * pointer[1] / h;
+            let half_height = c.world_height_at_target() / 2.0;
+            let half_width = half_height * w / h;
+            let [right, up, _] = c.rotation_rows();
+            std::array::from_fn(|i| {
+                c.target[i] + right[i] * nx * half_width + up[i] * ny * half_height
+            })
+        };
+        let pointer = [620.0, 150.0];
+        let before = under(&camera, pointer);
+        camera.zoom_at(2.0, pointer, 800.0, 600.0);
+        let after = under(&camera, pointer);
+        for i in 0..3 {
+            assert!((before[i] - after[i]).abs() < 1e-4, "{before:?} {after:?}");
+        }
+        // At the middle, only the distance changes.
+        let target = camera.target;
+        camera.zoom_at(-1.0, [400.0, 300.0], 800.0, 600.0);
+        assert_eq!(camera.target, target);
+    }
+
     use super::*;
 
     /// Where a world point lands on screen: x and y run from -1 to 1 across the viewport.

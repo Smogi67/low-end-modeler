@@ -128,6 +128,8 @@ pub struct View {
     pub point_depth_bias: f32,
     /// Edges, points and selection colors. Off in View mode.
     pub overlays: bool,
+    /// The grid, which the settings can turn off.
+    pub grid: bool,
 }
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
@@ -452,11 +454,13 @@ impl Renderer {
                 .iter()
                 .position(|&p| p == view.plane)
                 .unwrap_or(0) as i32;
-            gl.draw_arrays(
-                glow::LINES,
-                first * self.grid_vertex_count,
-                self.grid_vertex_count,
-            );
+            if view.grid {
+                gl.draw_arrays(
+                    glow::LINES,
+                    first * self.grid_vertex_count,
+                    self.grid_vertex_count,
+                );
+            }
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
             gl.uniform_1_f32(self.fade_radius.as_ref(), 0.0);

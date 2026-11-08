@@ -76,7 +76,8 @@ impl Editor {
     /// Starts over with this mesh, as after opening a file. History and shape records
     /// are cleared; the selection mode stays.
     pub fn replace(&mut self, mesh: Mesh) {
-        self.document = Document::new(mesh);
+        let limits = self.document.limits();
+        self.document = mixer_mesh::Document::with_limits(mesh, limits);
         self.records.clear();
         self.session = None;
         self.target_record = None;
@@ -85,6 +86,13 @@ impl Editor {
 
     fn changed(&mut self) {
         self.revision += 1;
+    }
+
+    /// How many steps undo keeps; older ones are dropped.
+    pub fn set_undo_steps(&mut self, steps: usize) {
+        let mut limits = self.document.limits();
+        limits.max_steps = steps.max(1);
+        self.document.set_limits(limits);
     }
 
     fn end_session(&mut self) {
