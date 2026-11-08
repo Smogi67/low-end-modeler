@@ -75,16 +75,22 @@ pub fn exports_beside(project: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Exports"))
 }
 
-/// Mixer's own settings, kept between runs.
+/// Mixer's own settings, kept between runs. The Mixer Launcher writes some lines of
+/// the same file, which are kept as they are.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// Smooth edges. Takes effect when Mixer next starts.
     pub antialiasing: bool,
+    /// Lines Mixer does not use itself, such as the launcher's.
+    others: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { antialiasing: true }
+        Self {
+            antialiasing: true,
+            others: Vec::new(),
+        }
     }
 }
 
@@ -103,8 +109,12 @@ impl Settings {
         let mut settings = Self::default();
         for line in text.lines() {
             let mut words = line.split_whitespace();
-            if let (Some("antialiasing"), Some(value)) = (words.next(), words.next()) {
-                settings.antialiasing = value != "off";
+            match (words.next(), words.next()) {
+                (Some("antialiasing"), Some(value)) => settings.antialiasing = value != "off",
+                (Some(word), _) if !word.starts_with('#') => {
+                    settings.others.push(line.to_string());
+                }
+                _ => {}
             }
         }
         settings
@@ -112,7 +122,12 @@ impl Settings {
 
     fn text(&self) -> String {
         let on = if self.antialiasing { "on" } else { "off" };
-        format!("# Mixer settings\nantialiasing {on}\n")
+        let mut text = format!("# Mixer settings\nantialiasing {on}\n");
+        for line in &self.others {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -368,8 +383,20 @@ mod tests {
         assert!(Settings::parse("").antialiasing);
         let off = Settings {
             antialiasing: false,
+            ..Settings::default()
         };
         assert_eq!(Settings::parse(&off.text()), off);
+        // The launcher's lines survive Mixer saving its own.
+        let shared = Settings::parse("antialiasing on\nrenderer opengl2\nupdates off\n");
+        let saved = Settings {
+            antialiasing: false,
+            ..shared
+        }
+        .text();
+        assert!(
+            saved.contains("antialiasing off\nrenderer opengl2\nupdates off\n"),
+            "{saved}"
+        );
     }
 
     #[test]

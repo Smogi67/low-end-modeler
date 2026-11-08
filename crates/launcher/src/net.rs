@@ -13,7 +13,7 @@ use windows_sys::Win32::Networking::WinHttp::{
     WinHttpSetTimeouts,
 };
 
-use crate::core::Download;
+use crate::update::split_url;
 
 /// Refuses anything this big, which no expected file comes near.
 const MOST_BYTES: usize = 64 * 1024 * 1024;
@@ -50,9 +50,15 @@ fn failure(doing: &str) -> String {
     format!("Could not {doing}: {reason} (error {code}).")
 }
 
-/// Downloads the file, calling `progress` with the bytes so far and the total.
-pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<Vec<u8>, String> {
-    let agent = wide(concat!("MixerSetup/", env!("CARGO_PKG_VERSION")));
+/// Downloads an https address, calling `progress` with the bytes so far and the total;
+/// it returns false to stop. `accept` adds an Accept header, as GitHub's API wants.
+pub fn get(
+    url: &str,
+    accept: Option<&str>,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<Vec<u8>, String> {
+    let (host, path) = split_url(url).ok_or_else(|| format!("{url} is not an https address."))?;
+    let agent = wide(concat!("MixerLauncher/", env!("CARGO_PKG_VERSION")));
     // SAFETY: each call gets valid zero-ended strings or null where allowed, and every
     // handle is checked before use and closed by `Handle`.
     unsafe {
@@ -77,12 +83,12 @@ pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<V
             return Err(failure("start a download"));
         }
         WinHttpSetTimeouts(session.0, 30_000, 30_000, 30_000, 60_000);
-        let host = wide(item.host);
-        let connection = Handle(WinHttpConnect(session.0, host.as_ptr(), 443, 0));
+        let host_wide = wide(host);
+        let connection = Handle(WinHttpConnect(session.0, host_wide.as_ptr(), 443, 0));
         if connection.0.is_null() {
-            return Err(failure(&format!("connect to {}", item.host)));
+            return Err(failure(&format!("connect to {host}")));
         }
-        let (verb, path) = (wide("GET"), wide(item.path));
+        let (verb, path) = (wide("GET"), wide(path));
         let request = Handle(WinHttpOpenRequest(
             connection.0,
             verb.as_ptr(),
@@ -95,10 +101,16 @@ pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<V
         if request.0.is_null() {
             return Err(failure("prepare the download"));
         }
-        if WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) == 0
+        let headers = accept.map(|a| wide(&format!("Accept: {a}\r\n")));
+        let (header_text, header_length) = match &headers {
+            // u32::MAX: the headers end with a zero.
+            Some(h) => (h.as_ptr(), u32::MAX),
+            None => (null(), 0),
+        };
+        if WinHttpSendRequest(request.0, header_text, header_length, null(), 0, 0, 0) == 0
             || WinHttpReceiveResponse(request.0, std::ptr::null_mut()) == 0
         {
-            return Err(failure(&format!("reach {}", item.host)));
+            return Err(failure(&format!("reach {host}")));
         }
 
         let number = |which: u32| -> Option<u32> {
@@ -115,15 +127,24 @@ pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<V
             (ok != 0).then_some(value)
         };
         let status = number(WINHTTP_QUERY_STATUS_CODE).unwrap_or(0);
-        if status != 200 {
-            return Err(format!(
-                "The server answered with code {status} instead of the file. The download \
-                 address may have moved; please report this."
-            ));
+        match status {
+            200 => {}
+            404 => return Err(format!("{host} has nothing at that address (code 404).")),
+            403 | 429 => {
+                return Err(format!(
+                    "{host} is limiting requests right now (code {status}). Try again later."
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "{host} answered with code {status} instead of the file. Please report \
+                     this."
+                ));
+            }
         }
-        let total = number(WINHTTP_QUERY_CONTENT_LENGTH).map_or(item.size, u64::from);
+        let total = number(WINHTTP_QUERY_CONTENT_LENGTH).map_or(0, u64::from);
 
-        let mut body: Vec<u8> = Vec::with_capacity(total as usize);
+        let mut body: Vec<u8> = Vec::with_capacity((total as usize).min(MOST_BYTES));
         loop {
             let mut available = 0u32;
             if WinHttpQueryDataAvailable(request.0, &mut available) == 0 {
@@ -148,7 +169,9 @@ pub fn download(item: &Download, progress: &mut dyn FnMut(u64, u64)) -> Result<V
             if body.len() > MOST_BYTES {
                 return Err("The download is far bigger than expected, so it was stopped.".into());
             }
-            progress(body.len() as u64, total.max(body.len() as u64));
+            if !progress(body.len() as u64, total.max(body.len() as u64)) {
+                return Err(crate::jobs::CANCELLED.into());
+            }
         }
         Ok(body)
     }

@@ -135,7 +135,13 @@ fn title(ui: &Ui, fonts: &Fonts) {
     drop(font);
     ui.same_line_with_spacing(0.0, 14.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 12.0]);
-    ui.text_colored(color::MUTED, "Low-poly models for Roblox");
+    ui.text_colored(
+        color::MUTED,
+        concat!(
+            "Low-poly models for Roblox  \u{2022}  version ",
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
 }
 
 /// Colored text that wraps at the edge of its column.

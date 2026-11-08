@@ -1,5 +1,6 @@
-//! Asks Windows for its current control styles, so the setup window does not look
-//! like Windows 95. Done with linker options, which need no resource compiler.
+//! Embeds a manifest that asks Windows for its current control styles, for the few
+//! system dialogs the launcher may show. Done with linker options, which need no
+//! resource compiler.
 
 fn main() {
     let windows_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")

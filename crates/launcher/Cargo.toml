@@ -1,6 +1,6 @@
 [package]
-name = "mixer-setup"
-description = "Installs what Mixer needs, and nothing else. See spec section 6."
+name = "mixer-launcher"
+description = "Starts Mixer, keeps it up to date, and installs what it needs. See spec section 6."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,10 +16,13 @@ miniz_oxide = "0.8"
 # the Windows code can be type-checked anywhere.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
     "Win32_Graphics_OpenGL",
     "Win32_Networking_WinHttp",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -27,6 +30,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+# Measures text with the real fonts in layout tests.
+fontdue = "0.9"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(check_windows)"] }

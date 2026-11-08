@@ -50,22 +50,22 @@ fn main() {
     }
 }
 
-/// SDL2.dll comes from the setup program. Offers to start it.
+/// SDL2.dll comes from the Mixer Launcher. Offers to start it.
 #[cfg(any(windows, check_windows))]
 fn explain_missing_sdl() {
-    let setup = std::env::current_exe()
+    let launcher = std::env::current_exe()
         .ok()
-        .map(|exe| exe.with_file_name("mixer-setup.exe"));
+        .map(|exe| exe.with_file_name("mixer-launcher.exe"));
     let text = "Mixer needs SDL2.dll, which is not installed in this folder yet.\n\n\
-                Start the setup program now? It downloads SDL2 from its official site and \
-                puts it next to Mixer. Then start Mixer again.";
+                Start the Mixer Launcher now? It downloads SDL2 from its official site, \
+                puts it next to Mixer, and starts Mixer.";
     if platform::ask(APP_NAME, text)
-        && let Some(setup) = setup
-        && std::process::Command::new(&setup).spawn().is_err()
+        && let Some(launcher) = launcher
+        && std::process::Command::new(&launcher).spawn().is_err()
     {
         platform::ask(
             APP_NAME,
-            "Could not start mixer-setup.exe. Is it in the same folder as \
+            "Could not start mixer-launcher.exe. Is it in the same folder as \
              Mixer? Unzip the whole download into one folder, then try again.\n\nClose?",
         );
     }

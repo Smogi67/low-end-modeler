@@ -3,10 +3,13 @@ name: Build Windows app
 on:
   push:
     branches: [main]
+    # A version tag (v0.10.0) also publishes a GitHub Release, which the Mixer
+    # Launcher updates from.
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   # The SDL2 source bundled by the sdl2 crate asks for a CMake version older than
@@ -28,17 +31,21 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build the app and setup
-        run: cargo build --release --package mixer --package mixer-setup
+      - name: Build the app and the launcher
+        run: cargo build --release --package mixer --package mixer-launcher
 
-      # The release zip: both programs, the README and the font licenses. SDL2.dll is
-      # left out on purpose; setup downloads it (spec section 6).
+      # The release zip: both programs, the README, the font licenses and the version.
+      # SDL2.dll is left out on purpose; the launcher downloads it (spec section 6).
       - name: Put the release folder together
         shell: pwsh
         run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          Write-Output "Version $version"
+          "VERSION=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           New-Item -ItemType Directory -Force release/licenses | Out-Null
           Copy-Item target/release/mixer.exe release/
-          Copy-Item target/release/mixer-setup.exe release/
+          Copy-Item target/release/mixer-launcher.exe release/
+          Set-Content -NoNewline -Encoding ascii release/version.txt $version
           Copy-Item dist/README.txt release/
           Copy-Item crates/app/assets/fonts/Inter-LICENSE.txt release/licenses/
           Copy-Item crates/app/assets/fonts/Lucide-LICENSE.txt release/licenses/
@@ -63,29 +70,66 @@ jobs:
           if ($report.IndexOf("delay load") -lt 0 -or $delayed -notmatch "SDL2.dll") {
             throw "SDL2.dll is not delay-loaded"
           }
-          $setup = & $dumpbin /DEPENDENTS release/mixer-setup.exe | Out-String
-          Write-Output $setup
-          if ($setup -match "SDL2") { throw "setup must not need SDL2" }
+          $launcher = & $dumpbin /DEPENDENTS release/mixer-launcher.exe | Out-String
+          Write-Output $launcher
+          if ($launcher -match "SDL2") { throw "the launcher must not need SDL2" }
 
-      # Runs setup's real download, check and install, in a copy of the folder.
-      - name: Run setup without a window
+      # Runs the launcher's real download, check and install, in a copy of the folder.
+      - name: Run the launcher without a window
         shell: pwsh
         run: |
           Copy-Item -Recurse release trial
-          $process = Start-Process -FilePath trial/mixer-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-output.txt
-          Get-Content setup-output.txt
-          if ($process.ExitCode -ne 0) { throw "setup failed with code $($process.ExitCode)" }
-          if (-not (Test-Path trial/SDL2.dll)) { throw "setup did not install SDL2.dll" }
-          if (-not (Test-Path trial/README-SDL.txt)) { throw "setup did not install README-SDL.txt" }
+          $process = Start-Process -FilePath trial/mixer-launcher.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput launcher-output.txt
+          Get-Content launcher-output.txt
+          if ($process.ExitCode -ne 0) { throw "the launcher failed with code $($process.ExitCode)" }
+          if (-not (Test-Path trial/SDL2.dll)) { throw "the launcher did not install SDL2.dll" }
+          if (-not (Test-Path trial/README-SDL.txt)) { throw "the launcher did not install README-SDL.txt" }
           # A second run finds everything in place and downloads nothing.
-          $again = Start-Process -FilePath trial/mixer-setup.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput setup-again.txt
-          Get-Content setup-again.txt
-          if ($again.ExitCode -ne 0) { throw "second setup run failed" }
-          if (-not (Select-String -Path setup-again.txt -Pattern "already installed" -Quiet)) { throw "second run should find SDL2 installed" }
+          $again = Start-Process -FilePath trial/mixer-launcher.exe -ArgumentList "--no-window" -Wait -PassThru -NoNewWindow -RedirectStandardOutput launcher-again.txt
+          Get-Content launcher-again.txt
+          if ($again.ExitCode -ne 0) { throw "second launcher run failed" }
+          if (-not (Select-String -Path launcher-again.txt -Pattern "already installed" -Quiet)) { throw "second run should find SDL2 installed" }
+
+      # A version tag publishes the zip and its fingerprint as a GitHub Release.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -ne "v$env:VERSION") { throw "tag $tag does not match version $env:VERSION in Cargo.toml" }
+          $zip = "mixer-$env:VERSION-windows.zip"
+          Compress-Archive -Path release/* -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Set-Content -NoNewline -Encoding ascii "$zip.sha256" "$hash  $zip`n"
+          Get-Content "$zip.sha256"
+          gh release create $tag $zip "$zip.sha256" --title "Mixer $env:VERSION" --notes-file dist/release-notes.md
+
+      # The real update, from the newest release on GitHub, into a copy of the folder
+      # that pretends to be version 0.0.1. Before the first release there is nothing to
+      # update from, which is fine.
+      - name: Update an old copy from the newest release
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse trial updating
+          Set-Content -NoNewline -Encoding ascii updating/version.txt "0.0.1"
+          $process = Start-Process -FilePath updating/mixer-launcher.exe -ArgumentList "--no-window","--update" -Wait -PassThru -NoNewWindow -RedirectStandardOutput update-output.txt
+          Get-Content update-output.txt
+          if ($process.ExitCode -ne 0) { throw "the update failed with code $($process.ExitCode)" }
+          if (Select-String -Path update-output.txt -Pattern "up to date" -Quiet) {
+            Write-Output "No release to update from yet."
+          } else {
+            $now = Get-Content updating/version.txt
+            Write-Output "Version after the update: $now"
+            if ($now -eq "0.0.1") { throw "the update did not change version.txt" }
+            if (-not (Test-Path updating/mixer-launcher.old.exe)) { throw "the running launcher was not moved aside" }
+            if (-not (Test-Path updating/SDL2.dll)) { throw "the update removed SDL2.dll" }
+          }
 
       # Screenshots of the real windows, printed into this log as text so they can be
-      # checked without downloading anything: setup's first screen, setup after
-      # Continue, and the app's message when SDL2.dll is missing.
+      # checked without downloading anything: the launcher's pages, and the app's
+      # message when SDL2.dll is missing.
       - name: Take screenshots
         shell: pwsh
         continue-on-error: true
@@ -104,16 +148,32 @@ jobs:
             }
             Write-Output "SHOT $name END"
           }
+          # A fresh folder: the welcome page, with SDL2 still to get.
           Copy-Item -Recurse release fresh1
-          $first = Start-Process -FilePath fresh1/mixer-setup.exe -PassThru
-          Start-Sleep -Seconds 6
-          Shot "setup-first"
+          $first = Start-Process -FilePath fresh1/mixer-launcher.exe -PassThru
+          Start-Sleep -Seconds 8
+          Shot "launcher-welcome"
           Stop-Process -Id $first.Id -Force
+          # Ready to start, with an update offered (shown without asking GitHub).
+          Copy-Item -Recurse trial ready1
+          $ready = Start-Process -FilePath ready1/mixer-launcher.exe -ArgumentList "--show-update" -PassThru
+          Start-Sleep -Seconds 6
+          Shot "launcher-home"
+          Stop-Process -Id $ready.Id -Force
+          Copy-Item -Recurse trial ready2
+          $advanced = Start-Process -FilePath ready2/mixer-launcher.exe -ArgumentList "--page","advanced" -PassThru
+          Start-Sleep -Seconds 6
+          Shot "launcher-advanced"
+          Stop-Process -Id $advanced.Id -Force
+          # Install and start, as pressed: the steps, then Mixer opens.
           Copy-Item -Recurse release fresh2
-          $second = Start-Process -FilePath fresh2/mixer-setup.exe -ArgumentList "--press-continue" -PassThru
-          Start-Sleep -Seconds 12
-          Shot "setup-done"
-          Stop-Process -Id $second.Id -Force
+          $second = Start-Process -FilePath fresh2/mixer-launcher.exe -ArgumentList "--press-continue" -PassThru
+          Start-Sleep -Milliseconds 1500
+          Shot "launcher-working"
+          Start-Sleep -Seconds 10
+          Shot "launcher-started-mixer"
+          Get-Process mixer -ErrorAction SilentlyContinue | Stop-Process -Force
+          Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
           Copy-Item -Recurse release fresh3
           $app = Start-Process -FilePath fresh3/mixer.exe -PassThru
           Start-Sleep -Seconds 6

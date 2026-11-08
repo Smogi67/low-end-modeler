@@ -1,5 +1,6 @@
-//! What the setup program installs, and how, without any Windows code, so it is
-//! tested on any system. The window and the download are in `gui.rs` and `net.rs`.
+//! What the launcher installs, and how, without any Windows code, so it is tested on
+//! any system. The window is in `gui.rs` and `view.rs`, the download in `net.rs`, and
+//! updating Mixer itself in `update.rs`.
 //!
 //! Spec section 6 sets the rules: list only what the app really needs, use official
 //! sources over HTTPS, check every file before installing it, and show every real
@@ -22,9 +23,7 @@ pub struct Part {
 
 /// Something to download and install next to the app.
 pub struct Download {
-    pub name: &'static str,
     pub version: &'static str,
-    pub purpose: &'static str,
     /// Official HTTPS address, split for WinHTTP.
     pub host: &'static str,
     pub path: &'static str,
@@ -45,9 +44,7 @@ impl Download {
 /// and later 2.x releases keep working with it. The fingerprints were taken from
 /// the file on SDL's GitHub releases page on 2026-11-07.
 pub const SDL2: Download = Download {
-    name: "SDL2",
     version: "2.32.10",
-    purpose: "the window, mouse and keyboard",
     host: "github.com",
     path: "/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip",
     size: 608_965,
@@ -125,13 +122,15 @@ pub fn size_text(bytes: u64) -> String {
     }
 }
 
-/// A step of the install, for the console and the progress bar.
+/// What a job reports while it runs, for the window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// A line for the console.
+    /// A line for the log.
     Line(String),
-    /// Overall progress, from 0 to 1.
-    Progress(f32),
+    /// The job moved on to this step of its list.
+    Step(usize),
+    /// Progress of the current step, from 0 to 1, with a line such as "1.9 MB of 3.1 MB".
+    Progress(f32, String),
 }
 
 /// Checks a downloaded zip, unpacks the parts and writes them into `folder`. Each
@@ -157,10 +156,9 @@ pub fn install(
         ));
     }
     events(Event::Line(format!("  matches {}", short(&fingerprint))));
-    events(Event::Progress(0.85));
 
     let mut unpacked = Vec::with_capacity(download.parts.len());
-    for (i, part) in download.parts.iter().enumerate() {
+    for part in download.parts {
         events(Event::Line(format!("Unzipping {}...", part.name)));
         let bytes = unzip_file(zip, part.name)?;
         let found = sha256_hex(&bytes);
@@ -175,9 +173,6 @@ pub fn install(
             part.name,
             size_text(bytes.len() as u64)
         )));
-        events(Event::Progress(
-            0.85 + 0.1 * (i + 1) as f32 / download.parts.len() as f32,
-        ));
         unpacked.push((part.name, bytes));
     }
 
@@ -195,7 +190,6 @@ pub fn install(
             )
         })?;
     }
-    events(Event::Progress(1.0));
     Ok(())
 }
 
@@ -209,7 +203,7 @@ fn short(fingerprint: &str) -> String {
 
 /// True if a file can be created in `folder`.
 pub fn can_write(folder: &Path) -> bool {
-    let probe = folder.join("setup-write-test.tmp");
+    let probe = folder.join("launcher-write-test.tmp");
     let ok = std::fs::write(&probe, b"test").is_ok();
     let _ = std::fs::remove_file(&probe);
     ok
@@ -223,10 +217,19 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<usize> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?) as usize)
 }
 
-/// Reads one file from a zip archive: stored or deflated, checked against the zip's
-/// own CRC-32. Only what the official SDL zip uses is supported: no encryption, no
-/// ZIP64.
-pub fn unzip_file(zip: &[u8], name: &str) -> Result<Vec<u8>, String> {
+/// One file in a zip archive's directory.
+struct Entry {
+    name: String,
+    method: usize,
+    crc: u32,
+    packed: usize,
+    size: usize,
+    local: usize,
+}
+
+/// The files listed in a zip archive. Only what plain zip tools make is supported: no
+/// encryption, no ZIP64. Names use `/`, even from tools that wrote `\`.
+fn entries(zip: &[u8]) -> Result<Vec<Entry>, String> {
     let broken = || "The download is not a readable zip file.".to_string();
     // The end record sits at the end, after a comment of up to 65535 bytes.
     let lowest = zip.len().saturating_sub(22 + 65535);
@@ -236,6 +239,7 @@ pub fn unzip_file(zip: &[u8], name: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(broken)?;
     let count = u16_at(zip, end + 10).ok_or_else(broken)?;
     let mut at = u32_at(zip, end + 16).ok_or_else(broken)?;
+    let mut found = Vec::with_capacity(count);
     for _ in 0..count {
         if !zip
             .get(at..)
@@ -243,42 +247,71 @@ pub fn unzip_file(zip: &[u8], name: &str) -> Result<Vec<u8>, String> {
         {
             return Err(broken());
         }
-        let method = u16_at(zip, at + 10).ok_or_else(broken)?;
-        let crc = u32_at(zip, at + 16).ok_or_else(broken)? as u32;
-        let packed = u32_at(zip, at + 20).ok_or_else(broken)?;
-        let size = u32_at(zip, at + 24).ok_or_else(broken)?;
         let name_length = u16_at(zip, at + 28).ok_or_else(broken)?;
         let extra = u16_at(zip, at + 30).ok_or_else(broken)?;
         let comment = u16_at(zip, at + 32).ok_or_else(broken)?;
-        let local = u32_at(zip, at + 42).ok_or_else(broken)?;
-        let entry = zip.get(at + 46..at + 46 + name_length).ok_or_else(broken)?;
+        let name = zip.get(at + 46..at + 46 + name_length).ok_or_else(broken)?;
+        found.push(Entry {
+            name: String::from_utf8_lossy(name).replace('\\', "/"),
+            method: u16_at(zip, at + 10).ok_or_else(broken)?,
+            crc: u32_at(zip, at + 16).ok_or_else(broken)? as u32,
+            packed: u32_at(zip, at + 20).ok_or_else(broken)?,
+            size: u32_at(zip, at + 24).ok_or_else(broken)?,
+            local: u32_at(zip, at + 42).ok_or_else(broken)?,
+        });
         at += 46 + name_length + extra + comment;
-        if entry != name.as_bytes() {
-            continue;
-        }
-        if !zip
-            .get(local..)
-            .is_some_and(|rest| rest.starts_with(b"PK\x03\x04"))
-        {
-            return Err(broken());
-        }
-        let start = local
-            + 30
-            + u16_at(zip, local + 26).ok_or_else(broken)?
-            + u16_at(zip, local + 28).ok_or_else(broken)?;
-        let data = zip.get(start..start + packed).ok_or_else(broken)?;
-        let bytes = match method {
-            0 => data.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, size)
-                .map_err(|_| broken())?,
-            _ => return Err(format!("{name} is packed in a way setup cannot unpack.")),
-        };
-        if bytes.len() != size || crc32(&bytes) != crc {
-            return Err(format!("{name} inside the download is damaged."));
-        }
-        return Ok(bytes);
     }
-    Err(format!("The download does not contain {name}."))
+    Ok(found)
+}
+
+fn read_entry(zip: &[u8], entry: &Entry) -> Result<Vec<u8>, String> {
+    let broken = || "The download is not a readable zip file.".to_string();
+    let local = entry.local;
+    if !zip
+        .get(local..)
+        .is_some_and(|rest| rest.starts_with(b"PK\x03\x04"))
+    {
+        return Err(broken());
+    }
+    let start = local
+        + 30
+        + u16_at(zip, local + 26).ok_or_else(broken)?
+        + u16_at(zip, local + 28).ok_or_else(broken)?;
+    let data = zip.get(start..start + entry.packed).ok_or_else(broken)?;
+    let bytes = match entry.method {
+        0 => data.to_vec(),
+        8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, entry.size)
+            .map_err(|_| broken())?,
+        _ => {
+            return Err(format!(
+                "{} is packed in a way the launcher cannot unpack.",
+                entry.name
+            ));
+        }
+    };
+    if bytes.len() != entry.size || crc32(&bytes) != entry.crc {
+        return Err(format!("{} inside the download is damaged.", entry.name));
+    }
+    Ok(bytes)
+}
+
+/// Reads one file from a zip archive, checked against the zip's own CRC-32.
+pub fn unzip_file(zip: &[u8], name: &str) -> Result<Vec<u8>, String> {
+    let entries = entries(zip)?;
+    let entry = entries
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| format!("The download does not contain {name}."))?;
+    read_entry(zip, entry)
+}
+
+/// Reads every file from a zip archive, leaving out folder entries.
+pub fn unzip_all(zip: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    entries(zip)?
+        .iter()
+        .filter(|e| !e.name.ends_with('/'))
+        .map(|e| Ok((e.name.clone(), read_entry(zip, e)?)))
+        .collect()
 }
 
 /// The CRC-32 that zip files use.
@@ -298,11 +331,11 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A zip with these files, the first stored and the rest deflated.
-    fn make_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    pub(crate) fn make_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut directory = Vec::new();
         for (i, (name, data)) in files.iter().enumerate() {
@@ -394,9 +427,7 @@ mod tests {
             sha256: dll_hash,
         }]));
         Download {
-            name: "Thing",
             version: "1",
-            purpose: "testing",
             host: "example.com",
             path: "/thing.zip",
             size: zip.len() as u64,
@@ -405,8 +436,8 @@ mod tests {
         }
     }
 
-    fn temp_folder(name: &str) -> std::path::PathBuf {
-        let folder = std::env::temp_dir().join(format!("setup-{name}-{}", std::process::id()));
+    pub(crate) fn temp_folder(name: &str) -> std::path::PathBuf {
+        let folder = std::env::temp_dir().join(format!("launcher-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         folder
@@ -425,7 +456,6 @@ mod tests {
         install(&download, &zip, &folder, &mut |e| seen.push(e)).unwrap();
         assert_eq!(std::fs::read(folder.join("Thing.dll")).unwrap(), dll);
         assert_eq!(find(&download, &folder), Found::Installed);
-        assert!(seen.contains(&Event::Progress(1.0)));
         assert!(
             seen.iter()
                 .any(|e| matches!(e, Event::Line(l) if l.contains("matches")))
