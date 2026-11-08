@@ -18,7 +18,7 @@ pub const MOST_RECENT: usize = 20;
 pub const SLOWEST_TURN: u32 = 25;
 pub const FASTEST_TURN: u32 = 300;
 
-/// How Mixer may draw. Only OpenGL 2.1 is built so far (Stage 10 step 4 adds the rest).
+/// The rendering engines: OpenGL 2.1 is Mixer's own; the others go through wgpu.
 pub const RENDERERS: [(&str, &str, &str); 4] = [
     (
         "opengl2.1",

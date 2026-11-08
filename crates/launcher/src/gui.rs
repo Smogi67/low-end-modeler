@@ -51,7 +51,7 @@ use crate::checks;
 use crate::core::{self, Event, NEEDED_OPENGL, SDL2};
 use crate::jobs::{self, Io, Plan};
 use crate::net;
-use crate::settings::{self, LauncherSettings};
+use crate::settings::{self, Engines, LauncherSettings};
 use crate::update::{self, APP_EXE, Release, Version};
 use crate::view::{self, Action, Font, Frame, Graphics, JobView, Model, Page, Shape, UpdateState};
 
@@ -76,6 +76,8 @@ struct Shared {
     finished: Option<Result<(), String>>,
     /// The update check: a newer release, none, or why it failed.
     check: Option<Result<Option<Release>, String>>,
+    /// Which engines this PC offers, once `mixer --check-engines` has run.
+    engines: Option<Engines>,
 }
 
 /// Command-line options, for automated screenshots and checks.
@@ -708,6 +710,8 @@ pub fn run() {
     let options = options();
     let settings_file = settings::settings_file(documents());
     let saved = LauncherSettings::load(&settings_file);
+    let engines_file = settings_file.with_file_name("engines.txt");
+    let engines = Engines::load(&engines_file);
     let installed = options
         .pretend_version
         .unwrap_or_else(|| update::installed_version(&folder));
@@ -725,6 +729,7 @@ pub fn run() {
         },
         settings: saved,
         draft: saved,
+        engines: engines.clone(),
         job: JobView::default(),
         show_log: false,
         hover: None,
@@ -834,6 +839,11 @@ pub fn run() {
         if check {
             start_check();
         }
+        // Mixer checks the engines itself when a new version first starts; this covers
+        // a new install, so the recommendation is right before Mixer has run.
+        if engines.version != installed.to_string() && folder_has_mixer() {
+            start_engine_check(engines_file);
+        }
         ShowWindow(window, SW_SHOW);
         if options.press_continue {
             PostMessageW(window, WAKE, 1, 0);
@@ -866,6 +876,53 @@ fn start_check() {
             shared.lock().unwrap_or_else(|e| e.into_inner()).check = Some(result);
             // SAFETY: posting to a window from another thread is allowed; if the window
             // is gone, the post fails harmlessly.
+            unsafe { PostMessageW(window as HWND, WAKE, 0, 0) };
+        });
+    });
+}
+
+fn folder_has_mixer() -> bool {
+    own_folder().join(APP_EXE).exists()
+}
+
+/// Runs `mixer --check-engines` on a second thread, which writes engines.txt.
+fn start_engine_check(file: PathBuf) {
+    APP.with(|app| {
+        let Ok(app) = app.try_borrow() else {
+            return;
+        };
+        let Some(app) = app.as_ref() else {
+            return;
+        };
+        let shared = Arc::clone(&app.shared);
+        let exe = app.folder.join(APP_EXE);
+        let window = app.window as isize;
+        std::thread::spawn(move || {
+            let Ok(mut child) = std::process::Command::new(&exe)
+                .arg("--check-engines")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            else {
+                return;
+            };
+            // A stuck driver must not keep the check alive forever.
+            let started = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if started.elapsed().as_secs() < 30 => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        return;
+                    }
+                }
+            }
+            shared.lock().unwrap_or_else(|e| e.into_inner()).engines = Some(Engines::load(&file));
+            // SAFETY: as in `start_check`.
             unsafe { PostMessageW(window as HWND, WAKE, 0, 0) };
         });
     });
@@ -934,14 +991,18 @@ impl App {
 
     /// Takes in what the work threads sent.
     fn wake(&mut self) {
-        let (events, finished, check) = {
+        let (events, finished, check, engines) = {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             (
                 std::mem::take(&mut shared.events),
                 shared.finished.take(),
                 shared.check.take(),
+                shared.engines.take(),
             )
         };
+        if let Some(engines) = engines {
+            self.model.engines = engines;
+        }
         if let Some(check) = check {
             self.model.update = match check {
                 Ok(Some(release)) => UpdateState::Available(release),
@@ -1050,11 +1111,8 @@ impl App {
                 }
             }
             Action::Repair => self.start_job(Plan::repair(self.model.installed)),
-            Action::Pick(renderer) => {
-                if renderer.built() {
-                    self.model.draft.renderer = renderer;
-                }
-            }
+            // Every engine may be picked, even one that seems missing (owner's choice).
+            Action::Pick(renderer) => self.model.draft.renderer = renderer,
             Action::ToggleUpdates => {
                 self.model.draft.check_updates = !self.model.draft.check_updates;
             }

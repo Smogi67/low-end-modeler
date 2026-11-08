@@ -208,6 +208,25 @@ jobs:
           Start-Sleep -Seconds 6
           Shot "app-without-sdl"
           Stop-Process -Id $app.Id -Force
+          # The newer rendering engines. GitHub's Windows machine has no graphics card,
+          # but Windows' own software adapter (WARP) runs DirectX 12; Vulkan and
+          # OpenGL 3.3 are expected to fall back to OpenGL 2.1 here, which then reports
+          # its own problem.
+          Copy-Item -Recurse trial engines1
+          New-Item -ItemType Directory -Force engineshome | Out-Null
+          $env:MIXER_HOME = (Resolve-Path engineshome).Path
+          Start-Process -FilePath engines1/mixer.exe -ArgumentList "--check-engines" -Wait
+          Get-Content engineshome/engines.txt
+          foreach ($engine in "directx12", "vulkan", "opengl3.3") {
+            Set-Content -Encoding ascii engineshome/settings.txt "renderer $engine"
+            $run = Start-Process -FilePath engines1/mixer.exe -PassThru
+            Start-Sleep -Seconds 10
+            Shot "app-$engine"
+            Stop-Process -Id $run.Id -Force -ErrorAction SilentlyContinue
+            Get-Process mixer -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Output "--- mixer.log after $engine"
+            Get-Content engines1/mixer.log -Tail 8
+          }
 
       - name: Upload the release folder
         uses: actions/upload-artifact@v4

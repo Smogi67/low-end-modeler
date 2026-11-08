@@ -24,11 +24,11 @@ use crate::export::{
     ExportFormat, PROJECT_EXTENSION, open_file, save_project, warnings, write_export,
 };
 use crate::gizmo::{self, Handle};
-use crate::imgui_gl::ImguiGl;
+use crate::gpu::Gpu;
 use crate::knife::{KnifeCut, knife_cut, snapped_vertex};
 use crate::picking::{DepthImage, Region, ViewInfo, pick_edge, pick_point, pick_region};
 use crate::places;
-use crate::renderer::{Renderer, View};
+use crate::renderer::View;
 use crate::scene::{MovedParts, Scene};
 use crate::settings::Settings;
 use crate::settings_window::{SettingsAction, SettingsState, build_settings};
@@ -164,9 +164,8 @@ enum Stale {
 }
 
 pub struct App {
-    renderer: Renderer,
+    gpu: Gpu,
     imgui: imgui::Context,
-    imgui_gl: ImguiGl,
     editor: Editor,
     state: PanelState,
     camera: Camera,
@@ -224,6 +223,8 @@ pub struct App {
     settings_window: Option<Box<SettingsState>>,
     /// The rendering engine this run uses, which only changes on a restart.
     renderer_now: String,
+    /// The engine the settings asked for at the start, which may have failed.
+    renderer_wanted: String,
     /// How much bigger than normal the interface is drawn.
     ui_scale: f32,
     /// The window's size in pixels. The interface works in pixels divided by
@@ -235,7 +236,7 @@ pub struct App {
 
 impl App {
     pub fn new(
-        renderer: Renderer,
+        mut gpu: Gpu,
         antialiasing_wanted: bool,
         antialiasing_now: bool,
     ) -> Result<Self, String> {
@@ -250,16 +251,16 @@ impl App {
         if ui_scale != 1.0 {
             fonts = theme::install_fonts(&mut imgui, ui_scale);
         }
-        let imgui_gl = ImguiGl::new(renderer.gl(), &mut imgui)?;
+        gpu.prepare_ui(&mut imgui)?;
         let mut editor = Editor::new();
         editor.set_undo_steps(settings.undo_steps as usize);
-        let renderer_now = settings.renderer.clone();
+        let renderer_now = gpu.key().to_string();
+        let renderer_wanted = settings.renderer.clone();
         let export_folder = places::mixer_folder().join("Exports");
         let export_folder_text = export_folder.display().to_string();
         Ok(Self {
-            renderer,
+            gpu,
             imgui,
-            imgui_gl,
             editor,
             state: PanelState {
                 export_format: settings.export_format,
@@ -301,6 +302,7 @@ impl App {
             antialiasing_refused: antialiasing_wanted && !antialiasing_now,
             settings_window: None,
             renderer_now,
+            renderer_wanted,
             ui_scale,
             pixels: [1.0, 1.0],
             last_save: Instant::now(),
@@ -319,9 +321,22 @@ impl App {
         self.frames_wanted = self.frames_wanted.max(UI_SETTLE_FRAMES);
     }
 
-    /// The OpenGL error waiting to be reported, if any.
-    pub fn gl_error(&self) -> Option<u32> {
-        self.renderer.error_code()
+    /// An error the graphics driver reported, if any, for the log.
+    pub fn gpu_error(&self) -> Option<String> {
+        self.gpu.error()
+    }
+
+    /// Shows the frame drawn last.
+    pub fn present(&mut self, window: &Window) {
+        self.gpu.present(window);
+    }
+
+    /// A message for the status bar, and for the start window if it shows.
+    pub fn note(&mut self, text: String) {
+        if let Some(start) = self.start.as_mut() {
+            start.message = text.clone();
+        }
+        self.state.message = text;
     }
 
     /// Draws one frame into the back buffer. The caller swaps it onto the screen.
@@ -482,7 +497,7 @@ impl App {
         if self.stale == Stale::Everything || (self.stale == Stale::Moved && modified) {
             let mesh = self.editor.document().mesh();
             self.scene.rebuild(mesh, self.editor.drawing_mode());
-            self.renderer.upload_scene(&self.scene);
+            self.gpu.upload_scene(&self.scene);
             // Warnings are about what gets exported.
             let shown = mesh.evaluated();
             self.warnings = warnings(shown.triangle_count(), shown.open_edge_count());
@@ -492,7 +507,7 @@ impl App {
             let changed = self
                 .scene
                 .update_moved(self.editor.document().mesh(), parts);
-            self.renderer.update_scene(&self.scene, &changed);
+            self.gpu.update_scene(&self.scene, &changed);
         }
         self.stale = Stale::Nothing;
 
@@ -509,8 +524,7 @@ impl App {
             shadows: self.settings.shadows,
             plain_edges: !self.settings.shadows && self.settings.flat_edges,
         };
-        self.renderer.render(width, height, &view);
-        self.imgui_gl.render(self.renderer.gl(), draw_data, height);
+        self.gpu.draw(width, height, &view, draw_data);
 
         self.frames_drawn += 1;
         self.frames_wanted = self.frames_wanted.saturating_sub(1);
@@ -537,6 +551,8 @@ impl App {
             antialiasing_now: self.antialiasing_now,
             antialiasing_refused: self.antialiasing_refused,
             renderer_now: self.renderer_now.clone(),
+            renderer_wanted: self.renderer_wanted.clone(),
+            engines: crate::engines::read(),
         }));
         self.mouse_state = Mouse::Idle;
         self.request_frames();
@@ -562,8 +578,7 @@ impl App {
         if new.ui_scale() != old.ui_scale() {
             self.ui_scale = new.ui_scale();
             self.fonts = theme::install_fonts(&mut self.imgui, self.ui_scale);
-            self.imgui_gl
-                .reload_fonts(self.renderer.gl(), &mut self.imgui);
+            self.gpu.reload_fonts(&mut self.imgui);
         }
         if new.undo_steps != old.undo_steps {
             self.editor.set_undo_steps(new.undo_steps as usize);
@@ -766,7 +781,7 @@ impl App {
     pub fn read_pixels(&self, window: &Window) -> (i32, i32, Vec<u8>) {
         let (width, height) = window.drawable_size();
         let (width, height) = (width as i32, height as i32);
-        (width, height, self.renderer.read_pixels(width, height))
+        (width, height, self.gpu.read_pixels(width, height))
     }
 
     /// The mouse wheel or a touchpad's two-finger scroll, over the 3D view.
@@ -1407,7 +1422,7 @@ impl App {
             // New elements exist, so the card needs all of it once.
             let mesh = self.editor.document().mesh();
             self.scene.rebuild(mesh, self.editor.drawing_mode());
-            self.renderer.upload_scene(&self.scene);
+            self.gpu.upload_scene(&self.scene);
         }
         let mesh = self.editor.document().mesh();
         let rails = if kind == Kind::Slide {
@@ -1643,9 +1658,7 @@ impl App {
     fn sight(&self) -> Sight {
         let (width, height) = self.viewport();
         let matrix = self.camera.view_projection(width / height);
-        let depth = self
-            .renderer
-            .read_depth(width as i32, height as i32, &matrix);
+        let depth = self.gpu.read_depth(width as i32, height as i32, &matrix);
         Sight {
             view: ViewInfo {
                 matrix,

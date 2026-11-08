@@ -14,7 +14,8 @@ pub const FLOATS_PER_TRIANGLE_VERTEX: usize = 7;
 pub const FLOATS_PER_LINE_VERTEX: usize = 6;
 
 const NORMAL_COLOR: [f32; 3] = [0.11, 0.115, 0.13];
-const SELECTED_COLOR: [f32; 3] = [1.0, 0.55, 0.10];
+/// Bright, so that the glow around it shows (renderer.rs).
+const SELECTED_COLOR: [f32; 3] = [1.0, 0.62, 0.18];
 /// Sharp edges, in Blender's cyan.
 const SHARP_COLOR: [f32; 3] = [0.15, 0.72, 0.95];
 

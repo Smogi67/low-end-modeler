@@ -7,8 +7,10 @@ mod app;
 mod camera;
 mod controls;
 mod editor;
+mod engines;
 mod export;
 mod gizmo;
+mod gpu;
 mod grid;
 mod imgui_gl;
 mod knife;
@@ -23,20 +25,35 @@ mod start;
 mod theme;
 mod transform;
 mod ui;
+mod wgpu_renderer;
 
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
 
 use app::App;
+use gpu::Gpu;
 use renderer::Renderer;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::messagebox::{MessageBoxFlag, show_simple_message_box};
-use sdl2::video::{GLProfile, SwapInterval};
+use sdl2::video::{GLContext, GLProfile, SwapInterval, Window};
+use wgpu_renderer::{Engine, WgpuRenderer};
 
 const APP_NAME: &str = "Mixer";
 
 fn main() {
+    // Run by Mixer itself and by the launcher: asks the graphics drivers which engines
+    // they offer. Needs no SDL.
+    if std::env::args().nth(1).as_deref() == Some("--check-engines") {
+        match engines::check_all() {
+            Ok(report) => print!("{}", report.text()),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // Before anything touches SDL, which would fail without its DLL.
     #[cfg(any(windows, check_windows))]
     if platform::sdl_is_missing() {
@@ -148,95 +165,59 @@ fn run() -> Result<(), String> {
 
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
-    let gl_attr = video.gl_attr();
-    gl_attr.set_context_profile(GLProfile::Compatibility);
-    gl_attr.set_context_version(2, 1);
-    gl_attr.set_double_buffer(true);
-    gl_attr.set_depth_size(24);
-
-    // Anti-aliasing takes 4 samples per pixel. If the graphics driver refuses, Mixer
-    // tries again without, rather than not starting.
-    let wanted = settings::Settings::load().antialiasing;
-    let open = |samples: u8| -> Result<(sdl2::video::Window, sdl2::video::GLContext), String> {
-        gl_attr.set_multisample_buffers(u8::from(samples > 0));
-        gl_attr.set_multisample_samples(samples);
-        let window = video
-            .window(APP_NAME, 1280, 800)
-            .opengl()
-            .resizable()
-            .maximized()
-            .position_centered()
-            .build()
-            .map_err(|error| format!("Could not open a window: {error}"))?;
-        let context = window
-            .gl_create_context()
-            .map_err(|error| format!("Could not start OpenGL 2.1: {error}"))?;
-        Ok((window, context))
-    };
-    let mut fallback_note = None;
-    let (mut window, context) = if wanted {
-        match open(4) {
-            Ok(opened) => opened,
-            Err(error) => {
-                fallback_note = Some(format!("Anti-aliasing not available: {error}"));
-                open(0)?
-            }
-        }
-    } else {
-        open(0)?
-    };
-    window.gl_make_current(&context)?;
-    // Limits drawing to the screen's refresh rate during drags. Not all drivers
-    // allow this, and the app still works without it.
-    let _ = video.gl_set_swap_interval(SwapInterval::VSync);
-
-    // SAFETY: the context created above is current, and stays alive until run ends.
-    let gl = unsafe {
-        glow::Context::from_loader_function(|name| video.gl_get_proc_address(name) as *const _)
-    };
-    let (mut renderer, info) = Renderer::new(gl)?;
-
+    let settings = settings::Settings::load();
+    let wanted = settings.antialiasing;
     let mut log = Log::open();
-    if let Some(note) = fallback_note {
-        log.line(&note);
-    }
-    let antialiasing = renderer.samples() > 1;
-    if antialiasing && let Err(error) = renderer.prepare_for_multisampling() {
-        log.line(&format!("Picking reads the window directly: {error}"));
-    }
-    log.line(&format!(
-        "Anti-aliasing: {}",
-        if antialiasing {
-            format!("{} samples", renderer.samples())
-        } else {
-            "off".to_string()
-        }
-    ));
-    // For testing the off-screen depth buffer where anti-aliasing is not available.
-    if !antialiasing && std::env::var_os("MIXER_TEST_PICK_TARGET").is_some() {
-        let result = renderer.prepare_for_multisampling();
-        log.line(&format!("Off-screen depth buffer for picking: {result:?}"));
-    }
     log.line(&format!(
         "--- {APP_NAME} {} started",
         env!("CARGO_PKG_VERSION")
     ));
-    log.line(&format!("OpenGL version: {}", info.version));
-    log.line(&format!("GLSL version: {}", info.shading_language));
-    log.line(&format!("Graphics chip: {}", info.renderer));
-    log.line(&format!("Vendor: {}", info.vendor));
-    window
-        .set_title(&format!(
-            "{APP_NAME} - OpenGL {} - {}",
-            info.version, info.renderer
-        ))
-        .map_err(|error| error.to_string())?;
 
-    let app = RefCell::new(App::new(renderer, wanted, antialiasing)?);
+    // The engine picked in the settings. If a newer one cannot start, Mixer uses
+    // OpenGL 2.1 and says so, rather than not opening.
+    let mut engine_note = None;
+    let mut started = None;
+    if let Some(engine) = Engine::from_key(&settings.renderer) {
+        match start_wgpu(&video, engine, wanted) {
+            Ok(engine_start) => started = Some(engine_start),
+            Err(reason) => {
+                log.line(&format!("{} could not start: {reason}", engine.name()));
+                engine_note = Some(format!(
+                    "{} could not start, so Mixer uses OpenGL 2.1 this time. mixer.log \
+                     says why; Settings > Display has the other engines.",
+                    engine.name()
+                ));
+            }
+        }
+    }
+    let Started {
+        mut window,
+        _context,
+        gpu,
+        antialiasing,
+        report,
+    } = match started {
+        Some(engine_start) => engine_start,
+        None => start_gl(&video, wanted)?,
+    };
+    for line in &report {
+        log.line(line);
+    }
+    if let Some(title) = report.first() {
+        window
+            .set_title(&format!("{APP_NAME} - {title}"))
+            .map_err(|error| error.to_string())?;
+    }
+    engines::check_in_background();
+
+    let app = RefCell::new(App::new(gpu, wanted, antialiasing)?);
     match open_path {
         // A file given when starting goes straight to the editor.
         Some(path) => app.borrow_mut().open_at_start(path),
         None => app.borrow_mut().open_first(),
+    }
+    if let Some(note) = engine_note {
+        app.borrow_mut().note(note);
     }
 
     // Windows pauses this thread's main loop while a window edge is being dragged,
@@ -254,14 +235,14 @@ fn run() -> Result<(), String> {
             && let Ok(mut app) = app.try_borrow_mut()
         {
             app.draw(&window);
-            window.gl_swap_window();
+            app.present(&window);
         }
     });
 
     let mouse = sdl.mouse();
     let keyboard = sdl.keyboard();
     let mut events = sdl.event_pump()?;
-    let mut reported_gl_error = false;
+    let mut reported_gpu_error = false;
 
     'main: loop {
         if app.borrow().quit_now() {
@@ -275,17 +256,17 @@ fn run() -> Result<(), String> {
                 // The panel only takes its final shape after a first frame.
                 app.draw(&window);
                 let (width, height, pixels) = app.read_pixels(&window);
-                if let Some(code) = app.gl_error() {
-                    log.line(&format!("OpenGL error code: {code:#x}"));
+                if let Some(error) = app.gpu_error() {
+                    log.line(&error);
                 }
                 save_ppm(path, width, height, &pixels)?;
                 log.line(&format!("Screenshot saved to {path}"));
                 break 'main;
             }
-            window.gl_swap_window();
-            if !reported_gl_error && let Some(code) = app.gl_error() {
-                log.line(&format!("OpenGL error code: {code:#x}"));
-                reported_gl_error = true;
+            app.present(&window);
+            if !reported_gpu_error && let Some(error) = app.gpu_error() {
+                log.line(&error);
+                reported_gpu_error = true;
             }
         }
 
@@ -325,6 +306,162 @@ fn run() -> Result<(), String> {
 
     log.line(&format!("Frames drawn: {}", app.borrow().frames_drawn()));
     Ok(())
+}
+
+/// A window with its engine ready, and what to write in the log (the first line also
+/// goes in the title bar).
+struct Started {
+    window: Window,
+    /// OpenGL 2.1's context, which must live as long as the window is drawn in.
+    _context: Option<GLContext>,
+    gpu: Gpu,
+    antialiasing: bool,
+    report: Vec<String>,
+}
+
+/// Opens the window with OpenGL 2.1, as Mixer always has.
+fn start_gl(video: &sdl2::VideoSubsystem, wanted: bool) -> Result<Started, String> {
+    let gl_attr = video.gl_attr();
+    gl_attr.set_context_profile(GLProfile::Compatibility);
+    gl_attr.set_context_version(2, 1);
+    gl_attr.set_double_buffer(true);
+    gl_attr.set_depth_size(24);
+
+    // Anti-aliasing takes 4 samples per pixel. If the graphics driver refuses, Mixer
+    // tries again without, rather than not starting.
+    let open = |samples: u8| -> Result<(Window, GLContext), String> {
+        gl_attr.set_multisample_buffers(u8::from(samples > 0));
+        gl_attr.set_multisample_samples(samples);
+        let window = video
+            .window(APP_NAME, 1280, 800)
+            .opengl()
+            .resizable()
+            .maximized()
+            .position_centered()
+            .build()
+            .map_err(|error| format!("Could not open a window: {error}"))?;
+        let context = window
+            .gl_create_context()
+            .map_err(|error| format!("Could not start OpenGL 2.1: {error}"))?;
+        Ok((window, context))
+    };
+    let mut report = vec![String::new()];
+    let (window, context) = if wanted {
+        match open(4) {
+            Ok(opened) => opened,
+            Err(error) => {
+                report.push(format!("Anti-aliasing not available: {error}"));
+                open(0)?
+            }
+        }
+    } else {
+        open(0)?
+    };
+    window.gl_make_current(&context)?;
+    // Limits drawing to the screen's refresh rate during drags. Not all drivers
+    // allow this, and the app still works without it.
+    let _ = video.gl_set_swap_interval(SwapInterval::VSync);
+
+    // SAFETY: the context created above is current, and stays alive as long as the
+    // window, in `Started`.
+    let gl = unsafe {
+        glow::Context::from_loader_function(|name| video.gl_get_proc_address(name) as *const _)
+    };
+    let (mut renderer, info) = Renderer::new(gl)?;
+    let antialiasing = renderer.samples() > 1;
+    if antialiasing && let Err(error) = renderer.prepare_for_multisampling() {
+        report.push(format!("Picking reads the window directly: {error}"));
+    }
+    report.push(format!(
+        "Anti-aliasing: {}",
+        if antialiasing {
+            format!("{} samples", renderer.samples())
+        } else {
+            "off".to_string()
+        }
+    ));
+    // For testing the off-screen depth buffer where anti-aliasing is not available.
+    if !antialiasing && std::env::var_os("MIXER_TEST_PICK_TARGET").is_some() {
+        let result = renderer.prepare_for_multisampling();
+        report.push(format!("Off-screen depth buffer for picking: {result:?}"));
+    }
+    report.push("Rendering engine: OpenGL 2.1".to_string());
+    report.push(format!("OpenGL version: {}", info.version));
+    report.push(format!("GLSL version: {}", info.shading_language));
+    report.push(format!("Graphics chip: {}", info.renderer));
+    report.push(format!("Vendor: {}", info.vendor));
+    report[0] = format!("OpenGL {} - {}", info.version, info.renderer);
+    Ok(Started {
+        window,
+        _context: Some(context),
+        gpu: Gpu::Gl {
+            renderer: Box::new(renderer),
+            ui: None,
+        },
+        antialiasing,
+        report,
+    })
+}
+
+/// Opens the window with one of the newer engines. Errors are words for the owner.
+fn start_wgpu(
+    video: &sdl2::VideoSubsystem,
+    engine: Engine,
+    wanted: bool,
+) -> Result<Started, String> {
+    let window = video
+        .window(APP_NAME, 1280, 800)
+        .resizable()
+        .maximized()
+        .position_centered()
+        .build()
+        .map_err(|error| format!("could not open a window: {error}"))?;
+    // A driver may panic instead of returning an error. That must not stop Mixer, which
+    // then starts with OpenGL 2.1, so the usual error message is held back meanwhile.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        WgpuRenderer::new(&window, engine, wanted)
+    }));
+    std::panic::set_hook(hook);
+    let (renderer, info) = match result {
+        Ok(started) => started?,
+        Err(panic) => {
+            let text = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            return Err(format!("the graphics driver failed: {text}"));
+        }
+    };
+    let software = if info.software {
+        " (software, slow)"
+    } else {
+        ""
+    };
+    let antialiasing = renderer.samples() > 1;
+    let report = vec![
+        format!("{} - {}{software}", engine.name(), info.adapter),
+        format!("Rendering engine: {}", engine.name()),
+        format!("Graphics chip: {}{software}", info.adapter),
+        format!("Driver: {}", info.driver),
+        format!(
+            "Anti-aliasing: {}",
+            if antialiasing {
+                format!("{} samples", renderer.samples())
+            } else {
+                "off".to_string()
+            }
+        ),
+    ];
+    Ok(Started {
+        window,
+        _context: None,
+        gpu: Gpu::Wgpu(Box::new(renderer)),
+        antialiasing,
+        report,
+    })
 }
 
 /// Writes a plain image file, for automated checks of what was drawn.

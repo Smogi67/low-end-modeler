@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// How Mixer draws. Only OpenGL 2.1 exists so far; the others come with Stage 10
-/// step 4, and are listed so the window can say so.
+/// How Mixer draws: OpenGL 2.1 with Mixer's own renderer, or a newer engine through
+/// wgpu (Stage 10 step 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Renderer {
     OpenGl21,
@@ -50,13 +50,74 @@ impl Renderer {
         }
     }
 
-    /// Whether this version of Mixer can draw with it.
-    pub fn built(self) -> bool {
-        self == Renderer::OpenGl21
-    }
-
     fn from_key(word: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|r| r.key() == word)
+    }
+}
+
+/// How well an engine works on this PC, as Mixer found out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Support {
+    /// A graphics card offers it.
+    Yes,
+    /// Only a slow software stand-in offers it.
+    Software,
+    No,
+}
+
+/// Documents › Mixer › engines.txt, which `mixer --check-engines` writes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Engines {
+    /// The Mixer version that checked.
+    pub version: String,
+    found: Vec<(Renderer, Support)>,
+}
+
+impl Engines {
+    pub fn parse(text: &str) -> Self {
+        let mut engines = Engines::default();
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let (Some(key), Some(value)) = (words.next(), words.next()) else {
+                continue;
+            };
+            if key == "version" {
+                engines.version = value.to_string();
+                continue;
+            }
+            let support = match value {
+                "yes" => Support::Yes,
+                "software" => Support::Software,
+                "no" => Support::No,
+                _ => continue,
+            };
+            if let Some(renderer) = Renderer::from_key(key) {
+                engines.found.retain(|(r, _)| *r != renderer);
+                engines.found.push((renderer, support));
+            }
+        }
+        engines
+    }
+
+    pub fn load(file: &Path) -> Self {
+        Self::parse(&std::fs::read_to_string(file).unwrap_or_default())
+    }
+
+    /// `None` until Mixer has checked.
+    pub fn support(&self, renderer: Renderer) -> Option<Support> {
+        self.found
+            .iter()
+            .find(|(r, _)| *r == renderer)
+            .map(|(_, s)| *s)
+    }
+
+    /// The same suggestion Mixer's settings make: DirectX 12 on a graphics card that
+    /// offers it, else Vulkan, else OpenGL 2.1.
+    pub fn recommended(&self) -> Renderer {
+        [Renderer::DirectX12, Renderer::Vulkan]
+            .into_iter()
+            .find(|&r| self.support(r) == Some(Support::Yes))
+            .unwrap_or(Renderer::OpenGl21)
     }
 }
 
@@ -160,6 +221,27 @@ pub fn settings_file(documents: Option<PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The file Mixer writes (see crates/app/src/engines.rs).
+    #[test]
+    fn engines_are_read_as_mixer_writes_them() {
+        let text = "# Which rendering engines this computer offers.\nversion 0.13.0\n\
+                    opengl2.1 yes\nvulkan yes NVIDIA GeForce GTX 1050\n\
+                    directx12 software Microsoft Basic Render Driver\nopengl3.3 no \n";
+        let engines = Engines::parse(text);
+        assert_eq!(engines.version, "0.13.0");
+        assert_eq!(engines.support(Renderer::Vulkan), Some(Support::Yes));
+        assert_eq!(
+            engines.support(Renderer::DirectX12),
+            Some(Support::Software)
+        );
+        assert_eq!(engines.support(Renderer::OpenGl33), Some(Support::No));
+        assert_eq!(engines.recommended(), Renderer::Vulkan);
+        let laptop = Engines::parse("version 0.13.0\nvulkan no\ndirectx12 software x\n");
+        assert_eq!(laptop.recommended(), Renderer::OpenGl21);
+        assert_eq!(Engines::parse("").support(Renderer::Vulkan), None);
+        assert_eq!(Engines::parse("").recommended(), Renderer::OpenGl21);
+    }
 
     #[test]
     fn the_launchers_lines_go_in_without_disturbing_mixers() {

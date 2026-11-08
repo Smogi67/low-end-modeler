@@ -10,7 +10,11 @@ publish = false
 mixer-mesh = { path = "../mesh" }
 glow = "0.18"
 imgui = "0.12"
-sdl2 = { version = "0.38", default-features = false }
+sdl2 = { version = "0.38", default-features = false, features = ["raw-window-handle"] }
+# The newer rendering engines: Vulkan, DirectX 12 and OpenGL 3.3 (Stage 10 step 4).
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "gles", "vulkan", "wgsl"] }
+pollster = "0.4"
+raw-window-handle = "0.6"
 # Windows file dialogs, message boxes, the Documents folder and the local time. Only used on Windows, but kept for every
 # platform so the Windows code can be type-checked anywhere (see `platform.rs`).
 windows-sys = { version = "0.59", features = [
@@ -28,8 +32,12 @@ windows-sys = { version = "0.59", features = [
 # then needs SDL2.dll, which the setup program downloads (owner's decision,
 # 2026-11-07, spec section 6). The DLL loads late, so a missing one gets a clear
 # message instead of a Windows error. See build.rs.
+[dev-dependencies]
+# Checks the WGSL shaders in tests, without a graphics card.
+naga = { version = "30", features = ["wgsl-in"] }
+
 [target.'cfg(windows)'.dependencies]
-sdl2 = { version = "0.38", default-features = false, features = ["bundled"] }
+sdl2 = { version = "0.38", default-features = false, features = ["bundled", "raw-window-handle"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(check_windows)"] }

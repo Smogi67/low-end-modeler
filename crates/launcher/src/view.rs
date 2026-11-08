@@ -5,7 +5,7 @@
 //! Sizes are in pixels at 100% display scaling; the window multiplies them.
 
 use crate::core::{self, Found, SDL2};
-use crate::settings::{LauncherSettings, Renderer};
+use crate::settings::{Engines, LauncherSettings, Renderer, Support};
 use crate::update::{self, Release, Version};
 
 /// The window's inside, before scaling.
@@ -236,6 +236,8 @@ pub struct Model {
     pub settings: LauncherSettings,
     /// The Advanced page's choices before Save.
     pub draft: LauncherSettings,
+    /// Which engines this PC offers, as Mixer found out.
+    pub engines: Engines,
     pub job: JobView,
     pub show_log: bool,
     pub hover: Option<Action>,
@@ -776,21 +778,41 @@ pub fn frame(model: &Model, measure: Measure) -> Frame {
     b.frame
 }
 
+/// The tag beside an engine: recommended, or a warning when it seems missing or only
+/// runs in software. Unchecked newer engines get the warning too, as they may well be
+/// unsupported; OpenGL 2.1 works almost everywhere.
+fn engine_tag(
+    engines: &Engines,
+    renderer: Renderer,
+    recommended: &'static str,
+) -> Option<(&'static str, u32, u32)> {
+    if renderer == engines.recommended() {
+        return Some((recommended, color::OK_SOFT, color::OK));
+    }
+    match (renderer, engines.support(renderer)) {
+        (Renderer::OpenGl21, _) | (_, Some(Support::Yes)) => None,
+        (_, Some(Support::Software)) => {
+            Some(("Software only, slow", color::WARNING_SOFT, color::WARNING))
+        }
+        _ => Some(("May be unsupported", color::WARNING_SOFT, color::WARNING)),
+    }
+}
+
 fn home(b: &mut Builder) {
     let line = format!("Version {}", b.model.installed);
     let mut y = b.head("Mixer", &line);
     y += b.update_status(y);
     let renderer = b.model.settings.renderer;
-    let rows = [
-        b.sdl_row(),
-        b.graphics_row(),
+    let rows = [b.sdl_row(), b.graphics_row(), {
+        let tag = engine_tag(&b.model.engines, renderer, "Recommended");
+        let warned = tag.is_some_and(|t| t.2 == color::WARNING);
         (
-            Icon::Ok,
+            if warned { Icon::Warn } else { Icon::Ok },
             "Rendering engine",
             renderer.name().to_string(),
-            (renderer == Renderer::OpenGl21).then_some(("Recommended", color::OK_SOFT, color::OK)),
-        ),
-    ];
+            tag,
+        )
+    }];
     y += b.checks(y, &rows);
     b.message(y);
     b.foot_link("Advanced\u{2026}", Action::Advanced, true);
@@ -884,7 +906,6 @@ fn advanced(b: &mut Builder) {
         let row = [MARGIN, y, width, 50.0];
         let selected = b.model.draft.renderer == renderer;
         let action = Action::Pick(renderer);
-        let usable = renderer.built();
         if selected {
             b.fill(row, 8.0, color::ACCENT_SOFT);
             b.add(Shape::Outline {
@@ -893,7 +914,7 @@ fn advanced(b: &mut Builder) {
                 color: color::ACCENT,
                 width: 1.0,
             });
-        } else if usable && b.hovered(action) {
+        } else if b.hovered(action) {
             b.fill(row, 8.0, color::FRAME);
         }
         let center = [MARGIN + 20.0, y + 17.0];
@@ -918,23 +939,19 @@ fn advanced(b: &mut Builder) {
                 ring: Some((color::FAINT, 2.0)),
             });
         }
-        let name_color = if usable { color::TEXT } else { color::MUTED };
         b.text(
             MARGIN + 40.0,
             y + 7.0,
             renderer.name(),
             Font::Strong,
-            name_color,
+            color::TEXT,
         );
         let name_width = b.width_of(renderer.name(), Font::Strong);
-        let (tag, fill, text) = if !usable {
-            ("Coming in a later update", color::FRAME, color::FAINT)
-        } else if renderer == Renderer::OpenGl21 {
-            ("Recommended for this PC", color::OK_SOFT, color::OK)
-        } else {
-            ("May be unsupported", color::WARNING_SOFT, color::WARNING)
-        };
-        b.tag(MARGIN + 48.0 + name_width, y + 7.0, tag, fill, text);
+        if let Some((tag, fill, text)) =
+            engine_tag(&b.model.engines, renderer, "Recommended for this PC")
+        {
+            b.tag(MARGIN + 48.0 + name_width, y + 7.0, tag, fill, text);
+        }
         b.text(
             MARGIN + 40.0,
             y + 27.0,
@@ -942,9 +959,7 @@ fn advanced(b: &mut Builder) {
             Font::Small,
             color::MUTED,
         );
-        if usable {
-            b.frame.hits.push(Hit { rect: row, action });
-        }
+        b.frame.hits.push(Hit { rect: row, action });
         y += 54.0;
     }
     y += 6.0;
@@ -1320,6 +1335,11 @@ pub mod tests {
             update: UpdateState::Available(release),
             settings: LauncherSettings::default(),
             draft: LauncherSettings::default(),
+            // The owner's laptop: nothing newer than OpenGL 2.1 on its graphics chip.
+            engines: Engines::parse(
+                "version 0.13.0\nvulkan no\ndirectx12 software Microsoft Basic Render \
+                 Driver\nopengl3.3 no\n",
+            ),
             job: JobView {
                 title: "Updating to Mixer 0.11.0".into(),
                 steps: vec![
@@ -1487,9 +1507,10 @@ pub mod tests {
             assert!(found.contains(&needed), "home lacks {needed:?}");
         }
         let advanced = actions(&model(Page::Advanced));
-        assert!(advanced.contains(&Action::Pick(Renderer::OpenGl21)));
-        // Engines that are not built yet cannot be picked.
-        assert!(!advanced.contains(&Action::Pick(Renderer::Vulkan)));
+        // Every engine can be picked, even one that seems missing (owner's choice).
+        for renderer in Renderer::ALL {
+            assert!(advanced.contains(&Action::Pick(renderer)), "{renderer:?}");
+        }
         for needed in [
             Action::Save,
             Action::Back,

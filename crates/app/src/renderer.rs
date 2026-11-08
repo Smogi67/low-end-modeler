@@ -28,11 +28,17 @@ void main() {
 const FRAGMENT_SHADER: &str = r#"#version 120
 uniform vec3 u_fade_center;
 uniform float u_fade_radius;
+// Above 0: the soft glow drawn around bright edges, this strong. Dark edges get none.
+uniform float u_glow;
 varying vec3 v_color;
 varying vec3 v_world;
 void main() {
     // The grid fades out with distance, which hides the flicker of far, dense lines.
     float alpha = 1.0;
+    if (u_glow > 0.0) {
+        float light = dot(v_color, vec3(0.3, 0.55, 0.15));
+        alpha = u_glow * smoothstep(0.3, 0.55, light);
+    }
     if (u_fade_radius > 0.0) {
         float d = distance(v_world, u_fade_center);
         alpha = 1.0 - smoothstep(u_fade_radius * 0.3, u_fade_radius, d);
@@ -55,7 +61,9 @@ void main() {
 }
 "#;
 
-const MESH_FRAGMENT_SHADER: &str = r#"#version 120
+/// The start of the faces' fragment shader; `mesh_fragment_shader` adds the selection
+/// color, which the newer engines share.
+const MESH_FRAGMENT_SHADER: &str = r#"
 uniform vec3 u_light;
 // 1 lights faces by which way they face, with darker sides; 0 lights them all evenly.
 uniform float u_shadows;
@@ -65,7 +73,7 @@ void main() {
     // The light follows the camera. A face seen from behind turns red, which shows
     // inside-out faces at a glance.
     vec3 color = gl_FrontFacing ? vec3(0.74, 0.75, 0.77) : vec3(0.62, 0.20, 0.20);
-    color = mix(color, vec3(1.0, 0.60, 0.22), v_selected * 0.55);
+    color = mix(color, SELECTED_FACE, v_selected * SELECTED_FACE_AMOUNT);
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(v_normal) * side;
     // A key light near the camera, plus soft light from the sky above.
@@ -76,11 +84,27 @@ void main() {
 }
 "#;
 
+fn mesh_fragment_shader() -> String {
+    let [r, g, b] = SELECTED_FACE;
+    format!(
+        "#version 120\nconst vec3 SELECTED_FACE = vec3({r:?}, {g:?}, {b:?});\n\
+         const float SELECTED_FACE_AMOUNT = {SELECTED_FACE_AMOUNT:?};\n{MESH_FRAGMENT_SHADER}"
+    )
+}
+
+/// The tint of selected faces, and how much of it they get.
+pub const SELECTED_FACE: [f32; 3] = [1.0, 0.64, 0.30];
+pub const SELECTED_FACE_AMOUNT: f32 = 0.40;
+/// Bright edges (selected and sharp ones) are drawn again on top, as Blender does: a
+/// wide faint glow, then a thicker bright core. Each is a width in pixels and a
+/// strength. Where glowing edges meet, the glow adds up, so corners stand out.
+pub const EDGE_GLOW: [(f32, f32); 2] = [(7.0, 0.28), (2.5, 1.0)];
+
 const POSITION_ATTRIBUTE: u32 = 0;
 const COLOR_ATTRIBUTE: u32 = 1;
 const SELECTED_ATTRIBUTE: u32 = 2;
-const BACKGROUND_TOP: [f32; 3] = [0.235, 0.245, 0.265];
-const BACKGROUND_BOTTOM: [f32; 3] = [0.135, 0.14, 0.15];
+pub const BACKGROUND_TOP: [f32; 3] = [0.235, 0.245, 0.265];
+pub const BACKGROUND_BOTTOM: [f32; 3] = [0.135, 0.14, 0.15];
 const IDENTITY: Mat4 = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
@@ -93,6 +117,7 @@ pub struct Renderer {
     depth_bias: Option<glow::UniformLocation>,
     fade_center: Option<glow::UniformLocation>,
     fade_radius: Option<glow::UniformLocation>,
+    glow: Option<glow::UniformLocation>,
     background_buffer: glow::Buffer,
     grid_buffer: glow::Buffer,
     /// Vertices in one plane of the grid.
@@ -141,7 +166,7 @@ pub struct View {
 }
 
 /// The color of View mode's plain edge lines.
-const PLAIN_EDGE_COLOR: [f32; 3] = [0.30, 0.31, 0.34];
+pub const PLAIN_EDGE_COLOR: [f32; 3] = [0.30, 0.31, 0.34];
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
@@ -213,7 +238,7 @@ impl Renderer {
             let mesh_program = create_program(
                 &gl,
                 MESH_VERTEX_SHADER,
-                MESH_FRAGMENT_SHADER,
+                &mesh_fragment_shader(),
                 &[
                     (POSITION_ATTRIBUTE, "a_position"),
                     (COLOR_ATTRIBUTE, "a_normal"),
@@ -242,6 +267,7 @@ impl Renderer {
                 depth_bias: gl.get_uniform_location(program, "u_depth_bias"),
                 fade_center: gl.get_uniform_location(program, "u_fade_center"),
                 fade_radius: gl.get_uniform_location(program, "u_fade_radius"),
+                glow: gl.get_uniform_location(program, "u_glow"),
                 background_buffer: {
                     let [t, b] = [BACKGROUND_TOP, BACKGROUND_BOTTOM];
                     let corners = [
@@ -573,6 +599,23 @@ impl Renderer {
                         };
                         gl.uniform_1_f32(self.depth_bias.as_ref(), bias);
                         gl.draw_arrays(mode, 0, count);
+                        if mode == glow::LINES {
+                            // The glow on bright edges: the same lines, wider and faint.
+                            gl.enable(glow::BLEND);
+                            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                            gl.depth_mask(false);
+                            gl.depth_func(glow::LEQUAL);
+                            for (width, strength) in EDGE_GLOW {
+                                gl.line_width(width);
+                                gl.uniform_1_f32(self.glow.as_ref(), strength);
+                                gl.draw_arrays(mode, 0, count);
+                            }
+                            gl.uniform_1_f32(self.glow.as_ref(), 0.0);
+                            gl.line_width(1.0);
+                            gl.depth_func(glow::LESS);
+                            gl.depth_mask(true);
+                            gl.disable(glow::BLEND);
+                        }
                     }
                 }
             }

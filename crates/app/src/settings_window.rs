@@ -3,12 +3,14 @@
 
 use imgui::{Condition, Drag, SliderFlags, StyleColor, StyleVar, Ui, WindowFlags};
 
+use crate::engines::Report;
 use crate::export::ExportFormat;
 use crate::settings::{
     AUTOSAVE_CHOICES, FASTEST_TURN, FEWEST_RECENT, FEWEST_UNDO_STEPS, INTERFACE_SIZES, MOST_RECENT,
     MOST_UNDO_STEPS, RENDERERS, SLOWEST_TURN, Settings,
 };
 use crate::theme::{Fonts, color, icon};
+use crate::wgpu_renderer::{Engine, Support};
 
 /// The pages, in order.
 pub const PAGES: [(char, &str); 4] = [
@@ -26,7 +28,12 @@ pub struct SettingsState {
     /// What this run of Mixer started with, for "changes next time" notes.
     pub antialiasing_now: bool,
     pub antialiasing_refused: bool,
+    /// The engine this run uses...
     pub renderer_now: String,
+    /// ...and the one the settings asked for when Mixer started.
+    pub renderer_wanted: String,
+    /// Which engines this computer offers, once Mixer has checked.
+    pub engines: Option<Report>,
 }
 
 /// What happened this frame.
@@ -179,27 +186,64 @@ pub fn build_settings(ui: &Ui, state: &mut SettingsState, fonts: &Fonts) -> Opti
 fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
     let values = &mut state.values;
     heading(ui, fonts, "RENDERING ENGINE");
+    let recommended = state
+        .engines
+        .as_ref()
+        .map_or("opengl2.1", Report::recommended);
     for (key, name, description) in RENDERERS {
-        let built = key == "opengl2.1";
-        let disabled = ui.begin_disabled(!built);
         if ui.radio_button_bool(format!("{name}##renderer"), values.renderer == key) {
             values.renderer = key.to_string();
         }
-        drop(disabled);
-        if ui.is_item_hovered_with_flags(imgui::ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+        if ui.is_item_hovered() {
             ui.tooltip_text(description);
         }
-        ui.same_line_with_spacing(0.0, 10.0);
-        if built {
-            ui.text_colored(color::SUCCESS, "Recommended");
+        let support =
+            Engine::from_key(key).and_then(|engine| state.engines.as_ref()?.support(engine));
+        let badge = |tint, text: &str| {
             ui.same_line_with_spacing(0.0, 10.0);
-            ui.text_colored(color::FAINT, description);
-        } else {
-            ui.text_colored(color::FAINT, "Coming in a later update");
+            ui.text_colored(tint, text);
+        };
+        if key == recommended {
+            badge(color::SUCCESS, "Recommended");
+        }
+        if key == state.renderer_now {
+            badge(color::ACCENT, "In use");
+        }
+        // Every engine may be picked, even one that seems missing (owner's choice).
+        match support {
+            Some(Support::No) => badge(color::WARNING, "May be unsupported"),
+            Some(Support::Software) => badge(color::WARNING, "Software only, slow"),
+            // The description, when there is room for it; it is in the tooltip too.
+            _ => {
+                let room =
+                    ui.window_pos()[0] + ui.window_content_region_max()[0] - ui.item_rect_max()[0];
+                if ui.calc_text_size(description)[0] + 12.0 < room {
+                    badge(color::FAINT, description);
+                }
+            }
         }
     }
-    if values.renderer != state.renderer_now {
+    if state.renderer_wanted != state.renderer_now && values.renderer == state.renderer_wanted {
+        let name = RENDERERS
+            .iter()
+            .find(|r| r.0 == state.renderer_wanted)
+            .map_or("That engine", |r| r.1);
+        note(
+            ui,
+            color::WARNING,
+            &format!(
+                "{name} could not start this time, so Mixer uses OpenGL 2.1. \
+                 mixer.log, beside Mixer, says why."
+            ),
+        );
+    } else if values.renderer != state.renderer_now {
         note(ui, color::WARNING, "Changes the next time Mixer starts.");
+    } else if state.engines.is_none() {
+        note(
+            ui,
+            color::FAINT,
+            "Mixer is checking which engines this computer offers; see again next time.",
+        );
     }
     ui.dummy([0.0, 8.0]);
     heading(ui, fonts, "PICTURE");
@@ -415,6 +459,10 @@ mod tests {
             antialiasing_now: true,
             antialiasing_refused: false,
             renderer_now: "opengl2.1".into(),
+            renderer_wanted: "opengl2.1".into(),
+            engines: Some(Report::parse(
+                "version 1\nvulkan no\ndirectx12 software x\n",
+            )),
         };
         let mut seen = std::collections::HashSet::new();
         let mut pages = std::collections::HashSet::new();
@@ -460,9 +508,6 @@ mod tests {
         assert!((FEWEST_UNDO_STEPS..=MOST_UNDO_STEPS).contains(&v.undo_steps));
         assert!((FEWEST_RECENT..=MOST_RECENT as u32).contains(&v.recent));
         assert!(v.export_scale > 0.0);
-        assert_eq!(
-            v.renderer, "opengl2.1",
-            "engines not built yet cannot be picked"
-        );
+        assert!(RENDERERS.iter().any(|r| r.0 == v.renderer));
     }
 }
