@@ -1,9 +1,8 @@
-Mixer 0.12.0
+Mixer 0.13.0
 
-- Bevel: Width type (Offset, Width, Depth, Percent, Absolute)
-- Bevel: Custom profile with presets (Support Loops, Steps, Cornice and Crown Molding) and a point editor
-- Bevel: More options for miters, Cutoff corners, loop slide and Mark sharp
-- Sharp edges: Mark sharp and Clear sharp in Edge mode; smooth shading stops at them
-- Settings > Display > Shadows on shapes, to turn the shading off
+- Pick the rendering engine: OpenGL 2.1, Vulkan, DirectX 12 or OpenGL 3.3 (Settings > Display or the launcher's Advanced page)
+- Selected and sharp edges glow, like in Blender, so corners and borders stand out
+- With shadows off, an option to show edge lines in View mode
+- The leftover mixer-launcher.old.exe is now deleted right after an update
 
-If you have Mixer 0.10 or 0.11, the Mixer Launcher offers this update by itself: press Update now.
+Mixer recommends an engine for your PC. If one does not start, Mixer uses OpenGL 2.1 and tells you.

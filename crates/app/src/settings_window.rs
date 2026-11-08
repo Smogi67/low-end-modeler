@@ -224,15 +224,14 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
         }
     }
     if state.renderer_wanted != state.renderer_now && values.renderer == state.renderer_wanted {
-        let name = RENDERERS
-            .iter()
-            .find(|r| r.0 == state.renderer_wanted)
-            .map_or("That engine", |r| r.1);
+        let name_of = |key: &str| RENDERERS.iter().find(|r| r.0 == key).map_or("?", |r| r.1);
+        let name = name_of(&state.renderer_wanted);
+        let now = name_of(&state.renderer_now);
         note(
             ui,
             color::WARNING,
             &format!(
-                "{name} could not start this time, so Mixer uses OpenGL 2.1. \
+                "{name} could not start this time, so Mixer uses {now}. \
                  mixer.log, beside Mixer, says why."
             ),
         );

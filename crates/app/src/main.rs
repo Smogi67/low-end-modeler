@@ -173,33 +173,64 @@ fn run() -> Result<(), String> {
         env!("CARGO_PKG_VERSION")
     ));
 
-    // The engine picked in the settings. If a newer one cannot start, Mixer uses
-    // OpenGL 2.1 and says so, rather than not opening.
-    let mut engine_note = None;
+    // The engine picked in the settings. If it cannot start, Mixer uses OpenGL 2.1, and
+    // if even that fails, any newer engine that works, rather than not opening. It says
+    // so in the start window and the status bar.
+    let chosen = Engine::from_key(&settings.renderer);
     let mut started = None;
-    if let Some(engine) = Engine::from_key(&settings.renderer) {
+    if let Some(engine) = chosen {
         match start_wgpu(&video, engine, wanted) {
             Ok(engine_start) => started = Some(engine_start),
-            Err(reason) => {
-                log.line(&format!("{} could not start: {reason}", engine.name()));
-                engine_note = Some(format!(
-                    "{} could not start, so Mixer uses OpenGL 2.1 this time. mixer.log \
-                     says why; Settings > Display has the other engines.",
-                    engine.name()
-                ));
-            }
+            Err(reason) => log.line(&format!("{} could not start: {reason}", engine.name())),
         }
     }
+    let started = match started {
+        Some(engine_start) => engine_start,
+        None => match start_gl(&video, wanted) {
+            Ok(engine_start) => engine_start,
+            Err(gl_error) => {
+                log.line(&format!("OpenGL 2.1 could not start: {gl_error}"));
+                let mut found = None;
+                for engine in [Engine::DirectX12, Engine::Vulkan, Engine::OpenGl33] {
+                    if Some(engine) == chosen {
+                        continue;
+                    }
+                    match start_wgpu(&video, engine, wanted) {
+                        Ok(engine_start) => {
+                            found = Some(engine_start);
+                            break;
+                        }
+                        Err(reason) => {
+                            log.line(&format!("{} could not start: {reason}", engine.name()));
+                        }
+                    }
+                }
+                // Nothing works: the OpenGL message says best what to do.
+                found.ok_or(gl_error)?
+            }
+        },
+    };
+    let name_of = |key: &str| {
+        settings::RENDERERS
+            .iter()
+            .find(|r| r.0 == key)
+            .map_or("The chosen engine", |r| r.1)
+    };
+    let engine_note = (started.gpu.key() != settings.renderer).then(|| {
+        format!(
+            "{} could not start, so Mixer uses {} this time. mixer.log says why; \
+             Settings > Display has the other engines.",
+            name_of(&settings.renderer),
+            name_of(started.gpu.key())
+        )
+    });
     let Started {
         mut window,
         _context,
         gpu,
         antialiasing,
         report,
-    } = match started {
-        Some(engine_start) => engine_start,
-        None => start_gl(&video, wanted)?,
-    };
+    } = started;
     for line in &report {
         log.line(line);
     }
