@@ -379,6 +379,8 @@ impl App {
             mode: self.editor.mode_choice(),
             selected_vertices: mesh.vertices().filter(|(_, v)| v.is_selected()).count(),
             transform_help,
+            transform_waiting: self.bevel_waiting(),
+            transform_dragging: self.dragging_handle(),
             loop_cut: match &self.mouse_state {
                 Mouse::LoopCut(choice) => Some(choice.cuts),
                 _ => None,
@@ -1500,6 +1502,10 @@ impl App {
         }
         transform.keep_on_cancel = cutting;
         transform.plain = prepare == Prepare::Nothing;
+        if kind == Kind::Bevel {
+            transform.waiting = true;
+            transform.release_confirms = true;
+        }
         self.mouse_state = Mouse::Transforming {
             transform: Box::new(transform),
             parts,
@@ -1512,6 +1518,9 @@ impl App {
         let Mouse::Transforming { transform, .. } = &self.mouse_state else {
             return;
         };
+        if transform.waiting {
+            return;
+        }
         let input = Input {
             mouse: self.pointer,
             snap,
@@ -2028,7 +2037,12 @@ impl App {
     }
 
     fn dragging_handle(&self) -> bool {
-        matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.release_confirms)
+        matches!(&self.mouse_state, Mouse::Transforming { transform, .. }
+            if transform.release_confirms && !transform.waiting)
+    }
+
+    fn bevel_waiting(&self) -> bool {
+        matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.waiting)
     }
 
     fn bevelling(&self) -> bool {
@@ -2040,7 +2054,7 @@ impl App {
         let Mouse::Transforming { transform, .. } = &self.mouse_state else {
             return;
         };
-        let start = transform.start_mouse;
+        let (start, waiting) = (transform.start_mouse, transform.waiting);
         let segments =
             (self.state.bevel.segments as i32 + by).clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
         if segments == self.state.bevel.segments {
@@ -2051,6 +2065,7 @@ impl App {
         self.start_transform(Kind::Bevel, Prepare::Bevel(Box::new(self.state.bevel)));
         if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
             transform.start_mouse = start;
+            transform.waiting = waiting;
         }
         self.update_transform(snap);
         self.request_frames();
@@ -2374,6 +2389,18 @@ impl App {
                 mouse_btn: MouseButton::Left,
                 ..
             } if self.dragging_handle() => self.finish_transform(true),
+            // A waiting bevel starts following the mouse from where the button went down.
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                ..
+            } if self.bevel_waiting() => {
+                let pointer = self.pointer;
+                if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
+                    transform.waiting = false;
+                    transform.start_mouse = pointer;
+                }
+                self.request_frames();
+            }
             Event::MouseButtonDown {
                 mouse_btn: MouseButton::Left,
                 ..
@@ -2399,8 +2426,10 @@ impl App {
                 keycode: Some(key), ..
             } => match key {
                 Keycode::Escape => self.finish_transform(false),
+                // A bevel not dragged yet has no width: Enter leaves it undone.
                 Keycode::Return | Keycode::KpEnter | Keycode::Space => {
-                    self.finish_transform(true);
+                    let confirm = !self.bevel_waiting();
+                    self.finish_transform(confirm);
                 }
                 Keycode::X | Keycode::Y | Keycode::Z => {
                     let axis = match key {

@@ -319,6 +319,10 @@ pub struct PanelInfo<'a> {
     pub mode: ModeChoice,
     pub selected_vertices: usize,
     pub transform_help: Option<(Kind, Option<usize>)>,
+    /// A bevel waiting for the left button to be held and dragged.
+    pub transform_waiting: bool,
+    /// A drag that ends when the left button comes up.
+    pub transform_dragging: bool,
     /// While choosing where to loop cut: how many cuts.
     pub loop_cut: Option<usize>,
     /// While bevelling: the width, as its type measures it, the number of segments,
@@ -894,23 +898,23 @@ fn top_bar(
     ui.same_line_with_spacing(0.0, 24.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1]]);
 
-    let looks = [
-        (
-            icon::EDIT,
-            "",
-            !info.view_only,
-            "Edit mode: lines, points and selection (Tab)",
-        ),
-        (
+    // One button that shows the current look and switches to the other.
+    let look = if info.view_only {
+        [(
             icon::VIEW,
-            "",
-            info.view_only,
-            "View mode: just the shape (Tab)",
-        ),
-    ];
-    if let Some(i) = segmented(ui, "look", &looks, height)
-        && (i == 1) != info.view_only
-    {
+            "View",
+            true,
+            "View mode: just the shape. Click for Edit mode (Tab)",
+        )]
+    } else {
+        [(
+            icon::EDIT,
+            "Edit",
+            true,
+            "Edit mode: lines, points and selection. Click for View mode (Tab)",
+        )]
+    };
+    if segmented(ui, "look", &look, height).is_some() {
         *action = Some(Action::ToggleView);
     }
     ui.same_line_with_spacing(0.0, 12.0);
@@ -2197,8 +2201,20 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
             }
             parts.push(("lock axis".to_string(), color::FAINT));
         }
-        parts.push(("Ctrl snap".to_string(), color::FAINT));
-        parts.push(("Click confirm".to_string(), color::FAINT));
+        if info.transform_waiting {
+            parts.push(("Hold left click and drag".to_string(), color::TEXT));
+        } else {
+            parts.push(("Ctrl snap".to_string(), color::FAINT));
+            parts.push((
+                if info.transform_dragging {
+                    "Release to confirm"
+                } else {
+                    "Click confirm"
+                }
+                .to_string(),
+                color::FAINT,
+            ));
+        }
         parts.push(("Esc cancel".to_string(), color::FAINT));
     }
     if !parts.is_empty() {
@@ -2882,6 +2898,8 @@ mod tests {
     fn info<'a>(target: Target, warnings: &'a [String], transform: bool) -> PanelInfo<'a> {
         PanelInfo {
             triangles: 12,
+            transform_waiting: false,
+            transform_dragging: false,
             triangle_limit: Some(20_000),
             vertices: 8,
             faces: 6,

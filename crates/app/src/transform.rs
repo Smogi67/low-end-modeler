@@ -109,6 +109,9 @@ pub struct Transform {
     pub plain: bool,
     /// Started by dragging a handle: releasing the mouse confirms.
     pub release_confirms: bool,
+    /// A bevel waits for the left button to go down, then follows a drag; moving the
+    /// mouse alone does nothing (owner's request).
+    pub waiting: bool,
 }
 
 impl Transform {
@@ -133,6 +136,7 @@ impl Transform {
             keep_on_cancel: false,
             plain: true,
             release_confirms: false,
+            waiting: false,
         }
     }
 
@@ -201,6 +205,9 @@ impl Transform {
     /// The bevel width: how far the mouse has moved from where it started, in model
     /// units at the selection's distance, up to the widest allowed.
     pub fn bevel_width(&self, input: &Input) -> f32 {
+        if self.waiting {
+            return 0.0;
+        }
         let dx = input.mouse[0] - self.start_mouse[0];
         let dy = input.mouse[1] - self.start_mouse[1];
         let per_pixel = input.camera.world_per_pixel_at(self.pivot, input.height);
