@@ -4,8 +4,8 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 9, part 2 code written: the rename to Mixer, the start window, and anti-aliasing. Part 1 added knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
-Next step: **Smooth shading after bevels (owner's request, see "Later"), then the owner's feedback. Then the next later feature; ask the owner which.**
+Status: **Stage 9, part 3 code written: smooth shading. Part 2 renamed the project to Mixer and added the start window and anti-aliasing; part 1 added knife, bisect, join, union, subtract, intersect, and View mode. The app runs on Linux with OpenGL limited to 2.1, and the setup program's real download and install ran on Windows in GitHub Actions. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Next step: **The owner's feedback on Stage 9. Then the next later feature; ask the owner which.**
 
 ## 1. Goal
 
@@ -88,7 +88,7 @@ The code is in `crates/mesh`. The top of `crates/mesh/src/lib.rs` explains the d
 
 ### Decisions made in Stage 2
 
-The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/low-end-modeler. Each push to `main` builds the .exe with GitHub Actions.
+The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/mixer (called low-end-modeler until 2026-11-08; the old address forwards). Each push to `main` builds the .exe with GitHub Actions.
 
 - **Rendering:** GLSL 1.20 shaders and vertex buffers only, which are both part of OpenGL 2.1. All OpenGL calls are in `renderer.rs`.
 - **Idle use:** the main loop sleeps until an event arrives, and draws only if that event changed something.
@@ -173,9 +173,17 @@ The owner asked for a free cut, for joining shapes ("merging"), and for a mode t
 - **View mode (Tab or the eye button at the top):** hides edges, points, selection color and handles; clicking does not select. Any editing action switches back to Edit mode.
 - **Tool strip:** buttons shrink on short screens so all tools fit, down to 24 pixels.
 
+### Decisions made in Stage 9, part 3: smooth shading (owner's request)
+
+- **Flat, Smooth, Auto smooth** buttons under Selection set the shading of the selected faces. Each face stores 0 (flat) or an angle up to 180: it is lit smooth across edges gentler than that. Smooth is 180; Auto smooth is 30, as in Blender. Saved in project files as `s` lines; an OBJ file's smoothing groups (`s 1`) open as smooth.
+- **Normals:** a smooth corner averages the faces around its point that are within the angle, weighted by face area and by the angle at that corner, so a big flat face next to a bevel stays nearly flat and the bevel looks round. Blender's Harden Normals and custom normals are not built.
+- **Keeping it:** faces a tool makes take the shading of the faces they replace or touch, so bevelling, extruding or combining a smooth shape keeps it smooth.
+- **Exports:** OBJ writes each different normal once (`vn`) and glTF one normal per corner, so Roblox shows the same shading.
+- **Anti-aliasing check:** confirmed on Linux with an off-screen display limited to OpenGL 2.1: 4 samples, visibly smoother edges, and no OpenGL errors from Mixer's own calls.
+
 ### Decisions made in Stage 9, part 2 (owner's choices)
 
-- **Name:** the owner renamed the project **Mixer**: the programs are `mixer.exe` and `mixer-setup.exe`, the download is `mixer`, the crates are `mixer`, `mixer-setup` and `mixer-mesh`. The GitHub repository is still `Smogi67/low-end-modeler`: renaming it is a setting only the owner can change on GitHub.
+- **Name:** the owner renamed the project **Mixer**: the programs are `mixer.exe` and `mixer-setup.exe`, the download is `mixer`, the crates are `mixer`, `mixer-setup` and `mixer-mesh`. The owner renamed the GitHub repository to `Smogi67/mixer`; the old address forwards.
 - **Project files:** now `.mix`, starting `mixer 1`. Older `.lem` files still open. Projects also remember their export format, scale and file name (`export`, `scale` and `exportname` lines).
 - **Start window:** shows every time Mixer starts, unless it was started with a file. Quick Project starts at once with a cube, saved as "Quick" plus the date and time in Documents > Mixer > Quick Projects. New Project asks for a name, a starting shape, and the export format and scale, and saves to Documents > Mixer > Projects > name > name.mix. A taken name is refused, not overwritten. Recent lists the last 8 projects opened or saved, with how long ago. Open other file, and Mixer folder (opens it in Explorer), are there too. File > Start window goes back to it.
 - **Exports:** go to an Exports folder beside the project. Before a project is saved, to Documents > Mixer > Exports.
@@ -224,7 +232,6 @@ The owner decided this on 2026-11-05.
 
 ### Later
 
-- **Next, at the owner's request:** smooth shading after bevels, as Blender's Shade Smooth and Shade Auto Smooth: faces meeting at a gentle angle are lit as one curve, sharp corners stay crisp, and the smoothing goes into OBJ and glTF exports
 - Spin, screw, solidify, shrink/fatten, grid fill, convex hull
 - Modifiers: mirror and array first, then solidify, bevel, decimate, weld, triangulate, and boolean (the one-time boolean tools are done)
 - UV seams, unwrapping, and UV editing
@@ -314,6 +321,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-08 | 7 | At the owner's request: Blender-style handles (move arrows, rotate rings, scale handles), turned on and off with the Move, Rotate and Scale buttons, while G, R and S still work with the mouse alone. A Bevel panel after each bevel, like Blender's, with Affect (vertices or edges), Width, Segments, Shape and Clamp overlap; any change redoes the bevel. Vertex bevel added (Ctrl+Shift+B). Left out on purpose: material index, seams, sharp edges, normals options, width type, miter, intersection, custom profile and loop slide, which do not matter for a Roblox mesh. 7 new mesh tests, including an exact cube-corner volume. Run on Linux with OpenGL limited to 2.1 using simulated input: all three handles, axis drags, the view ring, every panel control, and undo worked, and idle CPU with handles showing measured 0.00%. Also fixed: after Ctrl+B, the interface thought Ctrl was still held, so clicking a slider started typing in it | Not yet |
 | 2026-11-08 | 9 | Owner's choices: knife, bisect, join and separate, union, subtract and intersect, View mode, and M no longer squashing shapes in Part mode. 24 new mesh tests and 3 app tests, including exact volumes of combined cubes, a hole through a cube, and 150 random combinations that must stay closed (2,000 more ran while writing it). Run on Linux with OpenGL limited to 2.1 using simulated input: knife preview and cut, bisect, union, subtract, join, the M message, and View mode all worked | Not yet |
 | 2026-11-08 | 9 | Renamed to Mixer at the owner's request. Start window with Quick Project, New Project, recent projects and settings. Anti-aliasing with a fallback when the driver refuses it. Projects remember their export settings. New tests for project settings, dates, ages, setting files and clicking through the start window. Run on Linux with OpenGL limited to 2.1 using simulated input: quick project, new project with a cylinder and glTF, the File menu's Start window, reopening from Recent, and picking through the off-screen depth buffer all worked. Anti-aliasing itself could not be seen there, because the test display offers no multisampled window; the fallback ran instead | Not yet |
+| 2026-11-08 | 9 | Smooth shading at the owner's request: Flat, Smooth and Auto smooth, kept through tools, saved, and exported. 8 new tests, including a cylinder whose side normals point straight out and a smooth bevel whose big faces stay flat. Run on Linux with OpenGL limited to 2.1 using simulated input: a 10-segment bevel looked faceted flat and round with Auto smooth | Not yet |
 
 ## 12. Open questions
 

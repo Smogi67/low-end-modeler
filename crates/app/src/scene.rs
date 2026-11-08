@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, VertexId};
+use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, ShadingNormals, VertexId};
 
 use crate::picking::face_dot;
 
@@ -55,21 +55,16 @@ fn color(selected: bool) -> [f32; 3] {
     }
 }
 
-fn write_face(mesh: &Mesh, face: FaceId, out: &mut [f32]) {
-    let normal = mesh
-        .face_normal(face)
-        .ok()
-        .flatten()
-        .unwrap_or([0.0, 0.0, 1.0]);
+fn write_face(mesh: &Mesh, normals: &ShadingNormals, face: FaceId, out: &mut [f32]) {
     let selected = f32::from(u8::from(mesh.face(face).is_some_and(|f| f.is_selected())));
     let mut chunks = out.chunks_exact_mut(FLOATS_PER_TRIANGLE_VERTEX);
     for triangle in mesh.face_triangles(face).unwrap_or_default() {
-        for vertex in triangle {
-            let (Some(chunk), Some(vertex)) = (chunks.next(), mesh.vertex(vertex)) else {
+        for id in triangle {
+            let (Some(chunk), Some(vertex)) = (chunks.next(), mesh.vertex(id)) else {
                 return;
             };
             chunk[..3].copy_from_slice(&vertex.position());
-            chunk[3..6].copy_from_slice(&normal);
+            chunk[3..6].copy_from_slice(&normals.at(face, id));
             chunk[6] = selected;
         }
     }
@@ -120,10 +115,11 @@ impl Scene {
 
         self.triangles
             .resize(mesh.triangle_count() * 3 * FLOATS_PER_TRIANGLE_VERTEX, 0.0);
+        let normals = mesh.shading_normals();
         let mut start = 0;
         for (face, data) in mesh.faces() {
             let end = start + (data.corner_count() - 2) * 3 * FLOATS_PER_TRIANGLE_VERTEX;
-            write_face(mesh, face, &mut self.triangles[start..end]);
+            write_face(mesh, &normals, face, &mut self.triangles[start..end]);
             self.face_spans.insert(face, start..end);
             start = end;
         }
@@ -171,6 +167,22 @@ impl Scene {
                 edges.extend(found);
             }
         }
+        // A smooth face's light depends on the faces around its points, so faces next
+        // to the moving ones change too.
+        let smooth: Vec<FaceId> = faces
+            .iter()
+            .copied()
+            .filter(|&f| mesh.face(f).is_some_and(|f| f.smooth() > 0))
+            .collect();
+        for face in smooth {
+            for corner in mesh.face_corners(face).into_iter().flatten() {
+                if let Some(vertex) = mesh.corner(corner).map(|c| c.vertex())
+                    && let Ok(found) = mesh.vertex_faces(vertex)
+                {
+                    faces.extend(found);
+                }
+            }
+        }
         MovedParts {
             faces: faces.into_iter().collect(),
             edges: edges.into_iter().collect(),
@@ -181,9 +193,10 @@ impl Scene {
     /// Rewrites only the given parts, and returns the ranges to send to the card.
     pub fn update_moved(&mut self, mesh: &Mesh, parts: &MovedParts) -> Changed {
         let mut triangles = Vec::with_capacity(parts.faces.len());
+        let normals = mesh.shading_normals_of(&parts.faces);
         for face in &parts.faces {
             if let Some(span) = self.face_spans.get(face) {
-                write_face(mesh, *face, &mut self.triangles[span.clone()]);
+                write_face(mesh, &normals, *face, &mut self.triangles[span.clone()]);
                 triangles.push(span.clone());
             }
         }

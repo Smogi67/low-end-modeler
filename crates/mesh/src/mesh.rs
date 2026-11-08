@@ -143,6 +143,9 @@ pub struct Face {
     pub(crate) selected: bool,
     /// The group of joined parts this face belongs to, or 0 for none.
     pub(crate) group: u16,
+    /// Shading: 0 is flat; otherwise smooth across edges up to this many degrees.
+    /// See [`Mesh::shading_normals`].
+    pub(crate) smooth: u8,
 }
 
 impl Face {
@@ -158,6 +161,11 @@ impl Face {
     /// [`Mesh::join_selected_parts`].
     pub fn group(&self) -> u16 {
         self.group
+    }
+    /// 0 for flat shading; otherwise how sharp an edge, in degrees, is still shaded
+    /// smooth. 180 smooths everything.
+    pub fn smooth(&self) -> u8 {
+        self.smooth
     }
     /// How many corners, and therefore vertices and edges, the face has.
     pub fn corner_count(&self) -> usize {

@@ -126,11 +126,15 @@ impl Mesh {
             let _ = writeln!(out, "v {x} {y} {z}");
         }
         let number = |v: VertexId| numbers[v.index() as usize];
-        let mut group = 0;
+        let (mut group, mut smooth) = (0, 0);
         for (face, f) in self.faces() {
             if f.group != group {
                 group = f.group;
                 let _ = writeln!(out, "g {group}");
+            }
+            if f.smooth != smooth {
+                smooth = f.smooth;
+                let _ = writeln!(out, "s {smooth}");
             }
             out.push('f');
             for corner in self.face_walk(face) {
@@ -155,6 +159,7 @@ impl Mesh {
         let mut seen_header = false;
         let mut seen_faces: HashSet<Vec<VertexId>> = HashSet::new();
         let mut group: u16 = 0;
+        let mut smooth: u8 = 0;
 
         // OBJ numbers from 1, and negative numbers count back from the latest vertex.
         let index = |token: &str, line: usize, count: usize| -> Result<usize, ParseError> {
@@ -233,7 +238,10 @@ impl Mesh {
                         continue;
                     }
                     match mesh.add_face(&corners) {
-                        Ok(face) => mesh.faces[face].group = group,
+                        Ok(face) => {
+                            mesh.faces[face].group = group;
+                            mesh.faces[face].smooth = smooth;
+                        }
                         Err(MeshError::FaceExists(_) | MeshError::RepeatedVertex(_)) => {
                             report.skipped_faces += 1;
                         }
@@ -266,6 +274,20 @@ impl Mesh {
                     let name = rest.join(" ");
                     report.settings.export_name = (!name.is_empty()).then_some(name);
                 }
+                // Smoothing: a project gives the angle; an OBJ file's smoothing
+                // groups just mean smooth.
+                "s" => {
+                    let value = rest.first().copied().unwrap_or("off");
+                    smooth = match (kind, value) {
+                        (_, "off" | "0") => 0,
+                        (FileKind::Project, angle) => angle
+                            .parse::<u8>()
+                            .ok()
+                            .filter(|a| *a <= 180)
+                            .ok_or_else(|| bad(line, "smoothing needs an angle from 0 to 180"))?,
+                        (FileKind::Obj, _) => 180,
+                    };
+                }
                 "g" if kind == FileKind::Project => {
                     group = rest
                         .first()
@@ -273,7 +295,7 @@ impl Mesh {
                         .ok_or_else(|| bad(line, "a group needs a number from 0 to 65535"))?;
                 }
                 // Parts of OBJ files the modeler does not use.
-                "vt" | "vn" | "vp" | "o" | "g" | "s" | "usemtl" | "mtllib" => {}
+                "vt" | "vn" | "vp" | "o" | "g" | "usemtl" | "mtllib" => {}
                 other if kind == FileKind::Obj => {
                     // Other programs write more kinds of line; they hold nothing needed.
                     let _ = other;

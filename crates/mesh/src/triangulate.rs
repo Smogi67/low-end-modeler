@@ -9,7 +9,7 @@ type V3 = [f32; 3];
 
 /// Normal of a polygon by Newell's method, which also handles concave and slightly
 /// bent polygons. Not normalized: its length is twice the polygon's area.
-fn newell(points: &[V3]) -> [f64; 3] {
+pub(crate) fn newell(points: &[V3]) -> [f64; 3] {
     let mut n = [0.0f64; 3];
     for (i, p) in points.iter().enumerate() {
         let q = points[(i + 1) % points.len()];

@@ -249,6 +249,9 @@ fn run() -> Result<(), String> {
                 // The panel only takes its final shape after a first frame.
                 app.draw(&window);
                 let (width, height, pixels) = app.read_pixels(&window);
+                if let Some(code) = app.gl_error() {
+                    log.line(&format!("OpenGL error code: {code:#x}"));
+                }
                 save_ppm(path, width, height, &pixels)?;
                 log.line(&format!("Screenshot saved to {path}"));
                 break 'main;

@@ -93,6 +93,8 @@ pub enum MeshError {
     /// An edge to bevel needs a face on each side, and its ends need simple fans of
     /// faces that wind the same way.
     CannotBevel,
+    /// Smooth shading's angle runs from 0 (flat) to 180.
+    InvalidSmoothAngle,
     /// A cut must cross a face from one edge or corner to another.
     NothingToCut,
     /// Union, subtract and intersect need closed parts.
@@ -172,6 +174,7 @@ impl fmt::Display for MeshError {
                 f,
                 "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"
             ),
+            Self::InvalidSmoothAngle => write!(f, "a smoothing angle runs from 0 to 180 degrees"),
             Self::NothingToCut => write!(
                 f,
                 "nothing was cut: a cut must cross a face from one edge to another"

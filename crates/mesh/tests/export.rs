@@ -318,8 +318,13 @@ fn obj_has_the_right_counts_for_every_primitive() {
         let obj = parse(&mesh.to_obj("Test", 1.0).unwrap());
         assert_eq!(obj.name, "Test");
         assert_eq!(obj.positions.len(), mesh.vertex_count());
-        assert_eq!(obj.normals.len(), mesh.face_count());
+        // Flat shading: one normal per face at most, shared by faces facing the same
+        // way, and the same at all three corners of a triangle.
+        assert!(obj.normals.len() <= mesh.face_count());
         assert_eq!(obj.triangles.len(), mesh.triangle_count());
+        for t in &obj.triangles {
+            assert!(t.iter().all(|&(_, n)| n == t[0].1));
+        }
         for t in &obj.triangles {
             for &(v, n) in t {
                 assert!(v >= 1 && v <= obj.positions.len());

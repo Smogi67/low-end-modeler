@@ -367,6 +367,7 @@ mod tests {
             corner_count: corners.len() as u32,
             selected: false,
             group: 0,
+            smooth: 0,
         });
         let ids: Vec<CornerId> = corners
             .iter()

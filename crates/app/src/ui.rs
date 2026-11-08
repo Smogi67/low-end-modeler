@@ -10,7 +10,8 @@ use imgui::{
     WindowFlags,
 };
 use mixer_mesh::{
-    BevelSettings, BooleanOp, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive, ROBLOX_MAX_TRIANGLES,
+    AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Primitive,
+    ROBLOX_MAX_TRIANGLES,
 };
 
 use crate::editor::Target;
@@ -418,6 +419,8 @@ pub enum Action {
     ToggleView,
     /// Back to the start window, asking about unsaved changes first.
     StartWindow,
+    /// Shading for the selected faces: 0 flat, otherwise smooth up to that angle.
+    Shade(u8),
     /// Grows the selected edges to their whole loops.
     SelectLoops,
     /// Grows the selected edges to their whole rings.
@@ -1627,6 +1630,28 @@ fn panel(
         *action = Some(Action::MergeByDistance);
     }
     disabled.end();
+    button_row(
+        ui,
+        action,
+        &[
+            (
+                "Flat##shade",
+                Action::Shade(0),
+                "Light each face on its own, showing every edge",
+            ),
+            (
+                "Smooth##shade",
+                Action::Shade(180),
+                "Light the selected faces as one smooth surface",
+            ),
+            (
+                "Auto smooth##shade",
+                Action::Shade(AUTO_SMOOTH_ANGLE),
+                "Smooth where faces meet gently (under 30\u{b0}), keep sharp corners sharp. Good after a bevel.",
+            ),
+        ],
+        info.selected_vertices > 0,
+    );
     if info.mode != ModeChoice::Part {
         return;
     }
@@ -2476,6 +2501,9 @@ mod tests {
             "Boolean(Intersect)",
             "ToggleView",
             "StartWindow",
+            "Shade(0)",
+            "Shade(180)",
+            "Shade(30)",
             "New",
             "Open",
             "Save",

@@ -314,13 +314,13 @@ impl Mesh {
             .filter(|(_, e)| e.selected)
             .map(|(_, e)| e.vertices)
             .collect();
-        let faces: Vec<(Vec<VertexId>, u16)> = self
+        let faces: Vec<(Vec<VertexId>, u16, u8)> = self
             .faces
             .iter()
             .filter(|(_, f)| f.selected)
             .map(|(id, f)| {
                 let cycle = self.face_walk(id).map(|c| self.corners[c].vertex).collect();
-                (cycle, f.group)
+                (cycle, f.group, f.smooth)
             })
             .collect();
         // Copies of joined parts are joined to each other, not to the originals.
@@ -338,10 +338,11 @@ impl Mesh {
         for edge in new_edges {
             self.set_edge_flag(edge, true);
         }
-        for (face, group) in faces {
+        for (face, group, smooth) in faces {
             let cycle: Vec<VertexId> = face.iter().map(|v| map[v]).collect();
             let new_face = self.add_face(&cycle)?;
             self.set_face_flag(new_face, true);
+            self.faces[new_face].smooth = smooth;
             if group != 0 {
                 let copy = match groups.get(&group) {
                     Some(&copy) => copy,

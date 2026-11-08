@@ -876,7 +876,13 @@ impl Mesh {
             }
         }
 
-        // Out with the old.
+        // Out with the old, keeping each face's shading and group for its new outline;
+        // the bevel's own faces take the smoothest shading around them.
+        let kept: Vec<(u8, u16)> = affected
+            .iter()
+            .map(|&f| (self.faces[f].smooth, self.faces[f].group))
+            .collect();
+        let bevel_smooth = kept.iter().map(|k| k.0).max().unwrap_or(0);
         for &face in &affected {
             self.remove_face(face)?;
         }
@@ -912,12 +918,16 @@ impl Mesh {
             | MeshError::FaceTooSmall { .. } => MeshError::CannotBevel,
             other => other,
         };
-        for outline in new_faces {
-            self.add_face(&outline).map_err(refused)?;
+        for (outline, (smooth, group)) in new_faces.into_iter().zip(kept) {
+            let face = self.add_face(&outline).map_err(refused)?;
+            self.faces[face].smooth = smooth;
+            self.faces[face].group = group;
         }
         let mut selected = Vec::with_capacity(bevel_faces.len());
         for outline in bevel_faces {
-            selected.push(Element::Face(self.add_face(&outline).map_err(refused)?));
+            let face = self.add_face(&outline).map_err(refused)?;
+            self.faces[face].smooth = bevel_smooth;
+            selected.push(Element::Face(face));
         }
         self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
         self.flush_selection(mode);
@@ -1077,6 +1087,11 @@ impl Mesh {
             }
         }
 
+        let kept: Vec<(u8, u16)> = affected
+            .iter()
+            .map(|&f| (self.faces[f].smooth, self.faces[f].group))
+            .collect();
+        let bevel_smooth = kept.iter().map(|k| k.0).max().unwrap_or(0);
         for &face in &affected {
             self.remove_face(face)?;
         }
@@ -1089,12 +1104,16 @@ impl Mesh {
             | MeshError::FaceTooSmall { .. } => MeshError::CannotBevel,
             other => other,
         };
-        for outline in new_faces {
-            self.add_face(&outline).map_err(refused)?;
+        for (outline, (smooth, group)) in new_faces.into_iter().zip(kept) {
+            let face = self.add_face(&outline).map_err(refused)?;
+            self.faces[face].smooth = smooth;
+            self.faces[face].group = group;
         }
         let mut selected = Vec::with_capacity(cap_faces.len());
         for outline in cap_faces {
-            selected.push(Element::Face(self.add_face(&outline).map_err(refused)?));
+            let face = self.add_face(&outline).map_err(refused)?;
+            self.faces[face].smooth = bevel_smooth;
+            selected.push(Element::Face(face));
         }
         self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
         self.flush_selection(mode);

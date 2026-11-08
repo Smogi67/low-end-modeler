@@ -66,6 +66,9 @@ pub struct Document {
     /// Where joined groups were when the open edit began. See
     /// [`Mesh::restore_groups`].
     group_marks: Vec<(FaceId, VertexId, u16)>,
+    /// The faces there were when the open edit began, if any was smooth, so that new
+    /// faces can take their neighbors' shading. See [`Mesh::inherit_shading`].
+    faces_before: Option<std::collections::HashSet<FaceId>>,
 }
 
 impl Document {
@@ -86,6 +89,7 @@ impl Document {
             next_id: 1,
             dropped_id: 0,
             group_marks: Vec::new(),
+            faces_before: None,
         }
     }
 
@@ -126,6 +130,11 @@ impl Document {
         self.mesh.begin_journal();
         self.active_edit = Some(label);
         self.group_marks = self.mesh.group_marks();
+        self.faces_before = self
+            .mesh
+            .faces()
+            .any(|(_, f)| f.smooth() > 0)
+            .then(|| self.mesh.faces().map(|(id, _)| id).collect());
         Ok(())
     }
 
@@ -149,6 +158,9 @@ impl Document {
         // A tool that rebuilt every face of a joined part gave the new faces no group.
         let marks = std::mem::take(&mut self.group_marks);
         self.mesh.restore_groups(&marks);
+        if let Some(before) = self.faces_before.take() {
+            self.mesh.inherit_shading(&before);
+        }
         let delta = self.mesh.finish_journal();
         debug_assert_eq!(
             self.mesh.validate(),

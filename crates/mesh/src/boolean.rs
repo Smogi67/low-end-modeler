@@ -21,7 +21,7 @@ use crate::selection::SelectMode;
 
 type P = [f64; 3];
 /// Numbered points, and faces as lists of their numbers.
-type Built = (Vec<P>, Vec<Vec<usize>>);
+type Built = (Vec<P>, Vec<(Vec<usize>, u8)>);
 
 /// Points closer than this to a plane count as on it.
 const PLANE_EPS: f64 = 1e-5;
@@ -122,12 +122,18 @@ impl Plane {
 struct Polygon {
     points: Vec<P>,
     plane: Plane,
+    /// The shading of the face it came from.
+    smooth: u8,
 }
 
 impl Polygon {
     fn new(points: Vec<P>) -> Option<Polygon> {
         let plane = Plane::of(&points)?;
-        Some(Polygon { points, plane })
+        Some(Polygon {
+            points,
+            plane,
+            smooth: 0,
+        })
     }
 
     fn flip(&mut self) {
@@ -200,12 +206,14 @@ fn split(
                 front.push(Polygon {
                     points: f,
                     plane: polygon.plane,
+                    smooth: polygon.smooth,
                 });
             }
             if b.len() >= 3 {
                 back.push(Polygon {
                     points: b,
                     plane: polygon.plane,
+                    smooth: polygon.smooth,
                 });
             }
         }
@@ -444,7 +452,7 @@ fn weld_points(all: &[P], tol: f64) -> (Vec<P>, Vec<usize>) {
 
 /// Turns polygons into faces of shared, numbered points, with every point that lies
 /// on an edge added to that edge, so that neighbors meet exactly.
-fn weld(polygons: &[Polygon]) -> (Vec<P>, Vec<Vec<usize>>) {
+fn weld(polygons: &[Polygon]) -> Built {
     let mut best: Option<(usize, Built)> = None;
     for tol in WELDS {
         let made = weld_with(polygons, tol);
@@ -460,9 +468,9 @@ fn weld(polygons: &[Polygon]) -> (Vec<P>, Vec<Vec<usize>>) {
 }
 
 /// How many edges of these faces are not matched by a neighbor running the other way.
-fn open_edge_count(faces: &[Vec<usize>]) -> usize {
+fn open_edge_count(faces: &[(Vec<usize>, u8)]) -> usize {
     let mut directed: HashMap<(usize, usize), i32> = HashMap::new();
-    for face in faces {
+    for (face, _) in faces {
         for k in 0..face.len() {
             let (a, b) = (face[k], face[(k + 1) % face.len()]);
             *directed.entry((a, b)).or_default() += 1;
@@ -474,22 +482,23 @@ fn open_edge_count(faces: &[Vec<usize>]) -> usize {
         .count()
 }
 
-fn weld_with(polygons: &[Polygon], tol: f64) -> (Vec<P>, Vec<Vec<usize>>) {
+fn weld_with(polygons: &[Polygon], tol: f64) -> Built {
     let all: Vec<P> = polygons
         .iter()
         .flat_map(|p| p.points.iter().copied())
         .collect();
     let (points, index) = weld_points(&all, tol);
-    let mut faces: Vec<Vec<usize>> = Vec::new();
+    let mut faces: Vec<(Vec<usize>, u8)> = Vec::new();
     let mut at = 0;
     for polygon in polygons {
         let count = polygon.points.len();
-        faces.extend(split_repeats(index[at..at + count].to_vec()));
+        let pieces = split_repeats(index[at..at + count].to_vec());
+        faces.extend(pieces.into_iter().map(|face| (face, polygon.smooth)));
         at += count;
     }
-    let faces: Vec<Vec<usize>> = faces
+    let faces: Vec<(Vec<usize>, u8)> = faces
         .into_iter()
-        .filter(|face| {
+        .filter(|(face, _)| {
             let corners: Vec<P> = face.iter().map(|&i| points[i]).collect();
             length(newell(&corners)) > 1e-9
         })
@@ -532,16 +541,15 @@ fn weld_with(polygons: &[Polygon], tol: f64) -> (Vec<P>, Vec<Vec<usize>>) {
     };
     let faces = faces
         .into_iter()
-        .map(|face| {
+        .flat_map(|(face, smooth)| {
             let mut out = Vec::with_capacity(face.len());
             for k in 0..face.len() {
                 let (a, b) = (face[k], face[(k + 1) % face.len()]);
                 out.push(a);
                 out.extend(on_edge(a, b));
             }
-            out
+            split_repeats(out).into_iter().map(move |f| (f, smooth))
         })
-        .flat_map(split_repeats)
         .collect();
     (points, faces)
 }
@@ -616,11 +624,16 @@ impl Mesh {
                 let [a, b, c] = t.map(|v| self.point(v));
                 volume += dot(a, cross(b, c)) / 6.0;
             }
+            let smooth = self.faces[face].smooth;
             match Polygon::new(points.clone()) {
-                Some(polygon) if is_flat_and_convex(&polygon) => polygons.push(polygon),
+                Some(mut polygon) if is_flat_and_convex(&polygon) => {
+                    polygon.smooth = smooth;
+                    polygons.push(polygon);
+                }
                 _ => {
                     for t in self.face_triangles(face)? {
-                        if let Some(polygon) = Polygon::new(t.map(|v| self.point(v)).to_vec()) {
+                        if let Some(mut polygon) = Polygon::new(t.map(|v| self.point(v)).to_vec()) {
+                            polygon.smooth = smooth;
                             polygons.push(polygon);
                         }
                     }
@@ -686,7 +699,7 @@ impl Mesh {
                 results
             }
         };
-        let built: Vec<(Vec<P>, Vec<Vec<usize>>)> = results.iter().map(|r| weld(r)).collect();
+        let built: Vec<Built> = results.iter().map(|r| weld(r)).collect();
         if built.iter().all(|(_, faces)| faces.is_empty()) {
             return Err(MeshError::EmptyResult);
         }
@@ -700,7 +713,7 @@ impl Mesh {
     fn replace_parts(
         &mut self,
         parts: &[Vec<FaceId>],
-        built: &[(Vec<P>, Vec<Vec<usize>>)],
+        built: &[Built],
         mode: SelectMode,
     ) -> Result<usize, MeshError> {
         let mut doomed: HashSet<VertexId> = HashSet::new();
@@ -720,7 +733,7 @@ impl Mesh {
         for (points, faces) in built {
             let mut ids: HashMap<usize, VertexId> = HashMap::new();
             let mut made: Vec<FaceId> = Vec::new();
-            for face in faces {
+            for (face, smooth) in faces {
                 let mut cycle = Vec::with_capacity(face.len());
                 for &i in face {
                     let id = match ids.get(&i) {
@@ -735,7 +748,10 @@ impl Mesh {
                     cycle.push(id);
                 }
                 match self.add_face(&cycle) {
-                    Ok(face) => made.push(face),
+                    Ok(face) => {
+                        self.faces[face].smooth = *smooth;
+                        made.push(face);
+                    }
                     Err(MeshError::FaceExists(_) | MeshError::RepeatedVertex(_)) => {}
                     Err(error) => return Err(error),
                 }
@@ -900,7 +916,11 @@ impl Mesh {
         if self.find_face(&outline).is_some() {
             return None;
         }
-        let (selected, group) = (self.faces[fa].selected, self.faces[fa].group);
+        let (selected, group, smooth) = (
+            self.faces[fa].selected,
+            self.faces[fa].group,
+            self.faces[fa].smooth,
+        );
         self.remove_face(fa).ok()?;
         self.remove_face(fb).ok()?;
         for v in inner {
@@ -920,6 +940,7 @@ impl Mesh {
         let merged = self.add_face(&outline).ok()?;
         self.faces[merged].selected = selected;
         self.faces[merged].group = group;
+        self.faces[merged].smooth = smooth;
         Some(merged)
     }
 
@@ -977,14 +998,15 @@ impl Mesh {
                 if cycle.len() < 3 {
                     ok = false;
                 }
-                cycles.push((cycle, self.faces[face].selected, self.faces[face].group));
+                let f = &self.faces[face];
+                cycles.push((cycle, f.selected, f.group, f.smooth));
             }
             if !ok {
                 continue;
             }
             // Rebuilt faces must not repeat each other or anything else.
             let mut keys = HashSet::new();
-            for (cycle, _, _) in &cycles {
+            for (cycle, _, _, _) in &cycles {
                 let mut key = cycle.clone();
                 key.sort_unstable();
                 if !keys.insert(key) || self.find_face(cycle).is_some() {
@@ -998,10 +1020,11 @@ impl Mesh {
             for face in &around {
                 faces.remove(face);
             }
-            for (cycle, selected, group) in cycles {
+            for (cycle, selected, group, smooth) in cycles {
                 if let Ok(face) = self.add_face(&cycle) {
                     self.faces[face].selected = selected;
                     self.faces[face].group = group;
+                    self.faces[face].smooth = smooth;
                     faces.insert(face);
                 }
             }

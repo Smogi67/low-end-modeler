@@ -1,9 +1,11 @@
 //! Wavefront OBJ export, for Roblox Studio and other tools.
 //!
-//! Faces are triangulated, with one normal per face to match flat shading. The
+//! Faces are triangulated. Flat faces get one normal each, and smooth ones a normal
+//! per point (see `shading.rs`), to match what Mixer shows. The
 //! modeler is Z up and OBJ is conventionally Y up, so (x, y, z) is written as
 //! (x, z, -y). That is a pure rotation, so winding and outward normals stay correct.
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::error::MeshError;
@@ -56,13 +58,12 @@ impl Mesh {
         };
 
         let mut body = String::with_capacity(self.corner_count() * 24);
-        let mut normal_number = 0u32;
         let mut normals = String::with_capacity(self.face_count() * 24);
+        // Each different normal is written once: one per flat face, and one per
+        // point of a smooth surface.
+        let shading = self.shading_normals();
+        let mut normal_numbers: HashMap<[u32; 3], u32> = HashMap::new();
         for (face, _) in self.faces() {
-            let [nx, ny, nz] = self.face_normal(face)?.unwrap_or([0.0, 0.0, 1.0]);
-            let n = to_y_up([nx, ny, nz], 1.0);
-            let _ = writeln!(normals, "vn {} {} {}", n[0], n[1], n[2]);
-            normal_number += 1;
             for triangle in self.face_triangles(face)? {
                 let _ = write!(body, "f");
                 for vertex in triangle {
@@ -71,6 +72,13 @@ impl Mesh {
                         let p = to_y_up(self.vertices[vertex].position, scale);
                         let _ = writeln!(out, "v {} {} {}", p[0], p[1], p[2]);
                     }
+                    let n = to_y_up(shading.at(face, vertex), 1.0);
+                    let key = n.map(|c| (c + 0.0).to_bits());
+                    let count = normal_numbers.len() as u32;
+                    let normal_number = *normal_numbers.entry(key).or_insert_with(|| {
+                        let _ = writeln!(normals, "vn {} {} {}", n[0], n[1], n[2]);
+                        count + 1
+                    });
                     let _ = write!(body, " {index}//{normal_number}");
                 }
                 let _ = writeln!(body);

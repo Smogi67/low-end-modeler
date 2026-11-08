@@ -763,6 +763,23 @@ impl App {
                 self.finish_edit(result);
             }
             Action::Boolean(op) => self.boolean(op),
+            Action::Shade(angle) => {
+                let mut changed = 0;
+                let result = self.editor.run("Shading", |mesh, _| {
+                    changed = mesh.set_shading_selected(angle)?;
+                    Ok(())
+                });
+                if result.is_ok() {
+                    let how = match angle {
+                        0 => "Flat",
+                        180 => "Smooth",
+                        _ => "Auto smooth",
+                    };
+                    self.state.message = format!("{how} shading on {changed} faces.");
+                }
+                self.finish_edit(result);
+                self.stale = Stale::Everything;
+            }
             Action::Knife => self.start_knife(),
             Action::Bisect => self.start_bisect(),
             Action::ToggleView => {

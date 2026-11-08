@@ -65,12 +65,12 @@ impl Mesh {
             view_count - 1
         };
 
+        let shading = self.shading_normals();
         for (n, faces) in parts.iter().enumerate() {
             let mut positions: Vec<[f32; 3]> = Vec::new();
             let mut normals: Vec<[f32; 3]> = Vec::new();
             let mut indices: Vec<u32> = Vec::new();
             for &face in faces {
-                let normal = to_y_up(self.face_normal(face)?.unwrap_or([0.0, 0.0, 1.0]), 1.0);
                 let base = positions.len() as u32;
                 let corners: Vec<VertexId> = self
                     .face_walk(face)
@@ -78,7 +78,7 @@ impl Mesh {
                     .collect();
                 for &v in &corners {
                     positions.push(to_y_up(self.vertices[v].position, scale));
-                    normals.push(normal);
+                    normals.push(to_y_up(shading.at(face, v), 1.0));
                 }
                 for triangle in self.face_triangles(face)? {
                     for v in triangle {
