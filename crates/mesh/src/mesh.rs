@@ -47,6 +47,8 @@ pub struct Edge {
     /// Any one corner from the radial cycle, or `None` for a wire edge.
     pub(crate) first_corner: Option<CornerId>,
     pub(crate) selected: bool,
+    /// Smooth shading stops at this edge, as at Blender's sharp edges.
+    pub(crate) sharp: bool,
 }
 
 impl Edge {
@@ -63,6 +65,11 @@ impl Edge {
     /// True if the edge is selected.
     pub fn is_selected(&self) -> bool {
         self.selected
+    }
+
+    /// True if smooth shading stops at this edge.
+    pub fn is_sharp(&self) -> bool {
+        self.sharp
     }
 
     /// True if `vertex` is one of the two ends.

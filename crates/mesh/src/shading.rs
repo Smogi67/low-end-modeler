@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::error::MeshError;
-use crate::id::{FaceId, VertexId};
+use crate::id::{EdgeId, FaceId, VertexId};
 use crate::mesh::Mesh;
 
 type V3 = [f32; 3];
@@ -85,8 +85,15 @@ impl Mesh {
             for corner in self.face_walk(face) {
                 let vertex = self.corners[corner].vertex;
                 let mut sum = [0.0f32; 3];
+                // Faces past a sharp edge, going around the vertex, are left out.
+                let reachable = self.reachable_without_sharp(corner);
                 for around in self.corners_at(vertex) {
                     let other = self.corners[around].face;
+                    if let Some(reachable) = &reachable
+                        && !reachable.contains(&other)
+                    {
+                        continue;
+                    }
                     let limit = self.faces[other].smooth.min(smooth);
                     if limit == 0 {
                         continue;
@@ -108,6 +115,63 @@ impl Mesh {
             }
         }
         normals
+    }
+
+    /// The faces around this corner's vertex that can be reached from its face by
+    /// crossing edges that are not sharp, or `None` if no edge at the vertex is sharp.
+    fn reachable_without_sharp(
+        &self,
+        corner: crate::id::CornerId,
+    ) -> Option<std::collections::HashSet<FaceId>> {
+        let vertex = self.corners[corner].vertex;
+        if !self.disk_walk(vertex).any(|e| self.edges[e].sharp) {
+            return None;
+        }
+        let mut reached = std::collections::HashSet::new();
+        let mut waiting = vec![corner];
+        reached.insert(self.corners[corner].face);
+        while let Some(c) = waiting.pop() {
+            // The two edges of this face at the vertex, and the faces across them.
+            let data = self.corners[c];
+            for edge in [data.edge, self.corners[data.prev].edge] {
+                if self.edges[edge].sharp {
+                    continue;
+                }
+                for across in self.radial_walk(edge) {
+                    let face = self.corners[across].face;
+                    if reached.contains(&face) {
+                        continue;
+                    }
+                    // That face's corner at this vertex.
+                    let Some(at) = self
+                        .face_walk(face)
+                        .find(|&k| self.corners[k].vertex == vertex)
+                    else {
+                        continue;
+                    };
+                    reached.insert(face);
+                    waiting.push(at);
+                }
+            }
+        }
+        Some(reached)
+    }
+
+    /// Marks the selected edges sharp, or clears them. Returns how many changed.
+    pub fn set_sharp_selected(&mut self, sharp: bool) -> Result<usize, MeshError> {
+        let edges: Vec<EdgeId> = self
+            .edges
+            .iter()
+            .filter(|(_, e)| e.selected && e.sharp != sharp)
+            .map(|(id, _)| id)
+            .collect();
+        if edges.is_empty() && !self.edges.iter().any(|(_, e)| e.selected) {
+            return Err(MeshError::NothingSelected);
+        }
+        for &edge in &edges {
+            self.edges[edge].sharp = sharp;
+        }
+        Ok(edges.len())
     }
 
     /// The angle a face makes at one of its corners, in radians.

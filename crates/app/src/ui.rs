@@ -10,8 +10,9 @@ use imgui::{
     WindowFlags,
 };
 use mixer_mesh::{
-    AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, DEFAULT_MERGE_DISTANCE, MAX_ARRAY_COUNT,
-    MAX_BEVEL_SEGMENTS, MAX_SUBDIVISIONS, Modifier, ModifierId, Primitive, ROBLOX_MAX_TRIANGLES,
+    AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, CustomProfile, DEFAULT_MERGE_DISTANCE,
+    Intersection, MAX_ARRAY_COUNT, MAX_BEVEL_SEGMENTS, MAX_SPREAD, MAX_SUBDIVISIONS, Miter,
+    Modifier, ModifierId, Primitive, ProfilePreset, ProfileType, ROBLOX_MAX_TRIANGLES, WidthType,
 };
 
 use crate::editor::Target;
@@ -40,7 +41,7 @@ pub fn tool_button_size(display_height: f32) -> f32 {
 }
 const GIZMO: f32 = 104.0;
 const LABEL_COLUMN: f32 = 96.0;
-const BEVEL_PANEL: f32 = 300.0;
+const BEVEL_PANEL: f32 = 320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -167,6 +168,10 @@ pub struct PanelState {
     pub bevel: BevelSettings,
     /// Whether the bevel panel is folded down to its title.
     pub bevel_folded: bool,
+    /// Whether the bevel panel's less common options show.
+    pub bevel_more: bool,
+    /// The custom profile point being dragged, if any.
+    pub profile_drag: Option<usize>,
     /// A modifier's new settings, for [`Action::ChangeModifier`].
     pub modifier_edit: Option<(ModifierId, Modifier)>,
 }
@@ -207,6 +212,8 @@ impl Default for PanelState {
                 ..BevelSettings::default()
             },
             bevel_folded: false,
+            bevel_more: false,
+            profile_drag: None,
             modifier_edit: None,
         }
     }
@@ -312,8 +319,9 @@ pub struct PanelInfo<'a> {
     pub transform_help: Option<(Kind, Option<usize>)>,
     /// While choosing where to loop cut: how many cuts.
     pub loop_cut: Option<usize>,
-    /// While bevelling: the width and the number of segments.
-    pub bevel: Option<(f32, usize)>,
+    /// While bevelling: the width, as its type measures it, the number of segments,
+    /// and the type.
+    pub bevel: Option<(f32, usize, WidthType)>,
     pub undo_label: Option<&'static str>,
     pub redo_label: Option<&'static str>,
     pub export_folder: &'a str,
@@ -428,6 +436,8 @@ pub enum Action {
     Settings,
     /// Shading for the selected faces: 0 flat, otherwise smooth up to that angle.
     Shade(u8),
+    /// Marks the selected edges sharp, or clears them.
+    MarkSharp(bool),
     /// Adds a modifier to the selected part.
     AddModifier(ModifierKind),
     /// Sets the modifier in `PanelState::modifier_edit`.
@@ -809,12 +819,14 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
             .window("##bevel")
             .position([area[0], area[1] + area[3] - MARGIN], Condition::Always)
             .position_pivot([0.0, 1.0])
-            .size_constraints([BEVEL_PANEL, 0.0], [BEVEL_PANEL, 1000.0])
+            .size_constraints(
+                [BEVEL_PANEL, 0.0],
+                [BEVEL_PANEL, (area[3] - 2.0 * MARGIN).max(120.0)],
+            )
             .flags(
                 WindowFlags::NO_TITLE_BAR
                     | WindowFlags::NO_RESIZE
                     | WindowFlags::NO_MOVE
-                    | WindowFlags::NO_SCROLLBAR
                     | WindowFlags::NO_SAVED_SETTINGS
                     | WindowFlags::ALWAYS_AUTO_RESIZE,
             )
@@ -1702,6 +1714,25 @@ fn panel(
         ],
         info.selected_vertices > 0,
     );
+    if info.mode == ModeChoice::Edge {
+        button_row(
+            ui,
+            action,
+            &[
+                (
+                    "Mark sharp##sharp",
+                    Action::MarkSharp(true),
+                    "Smooth shading stops at the selected edges",
+                ),
+                (
+                    "Clear sharp##sharp",
+                    Action::MarkSharp(false),
+                    "Smooth shading crosses the selected edges again",
+                ),
+            ],
+            info.selected_vertices > 0,
+        );
+    }
     if info.mode != ModeChoice::Part {
         return;
     }
@@ -2132,9 +2163,14 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
     }
     if let Some((kind, axis)) = info.transform_help {
         parts.push((kind.name().to_string(), color::ACCENT));
-        if let Some((width, segments)) = info.bevel {
+        if let Some((width, segments, width_type)) = info.bevel {
             let plural = if segments == 1 { "segment" } else { "segments" };
-            parts.push((format!("Width {width:.2}"), color::TEXT));
+            let shown = if width_type == WidthType::Percent {
+                format!("{} {width:.1}%", width_type.name())
+            } else {
+                format!("{} {width:.2}", width_type.name())
+            };
+            parts.push((shown, color::TEXT));
             parts.push((format!("{segments} {plural}"), color::TEXT));
             parts.push(("Scroll for more".to_string(), color::FAINT));
         }
@@ -2232,11 +2268,42 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
     if let Some(i) = segmented(ui, "affect", &items, 26.0) {
         settings.vertices = i == 0;
     }
-    row(ui, "Width");
+    row(ui, "Width type");
+    let names: Vec<&str> = WidthType::ALL.iter().map(|t| t.name()).collect();
+    let mut chosen = WidthType::ALL
+        .iter()
+        .position(|&t| t == settings.width_type)
+        .unwrap_or(0);
+    if ui.combo_simple_string("##bevel_width_type", &mut chosen, &names) {
+        // Keeps the bevel about the same size: percent of the edges, or a distance.
+        let was_percent = settings.width_type == WidthType::Percent;
+        settings.width_type = WidthType::ALL[chosen];
+        let is_percent = settings.width_type == WidthType::Percent;
+        if was_percent != is_percent {
+            settings.width = if is_percent {
+                (settings.width * 100.0).min(50.0)
+            } else {
+                settings.width / 100.0
+            };
+        }
+    }
+    tooltip(
+        ui,
+        match settings.width_type {
+            WidthType::Offset => "From the old edge to each new edge, across the faces",
+            WidthType::Width => "Straight across the bevel, between its two new edges",
+            WidthType::Depth => "From the old edge straight in to the new face",
+            WidthType::Percent => "A percentage of the edges the new points move along",
+            WidthType::Absolute => "How far the new points move along the edges next to it",
+        },
+        "",
+    );
+    row(ui, settings.width_type.name());
+    let percent = settings.width_type == WidthType::Percent;
     Drag::new("##bevel_width")
-        .range(0.0, 1000.0)
-        .speed(0.005)
-        .display_format("%.3f")
+        .range(0.0, if percent { 100.0 } else { 1000.0 })
+        .speed(if percent { 0.2 } else { 0.005 })
+        .display_format(if percent { "%.1f%%" } else { "%.3f" })
         .flags(SliderFlags::ALWAYS_CLAMP)
         .build(ui, &mut settings.width);
     tooltip(ui, "Drag sideways, or double-click to type", "");
@@ -2249,27 +2316,344 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
     {
         settings.segments = segments.clamp(1, MAX_BEVEL_SEGMENTS as i32) as usize;
     }
-    row(ui, "Shape");
-    ui.slider_config("##bevel_shape", 0.0, 1.0)
-        .display_format("%.2f")
-        .flags(SliderFlags::ALWAYS_CLAMP)
-        .build(&mut settings.shape);
-    tooltip(ui, "0.5 is round, lower is flatter, higher is sharper", "");
-    ui.align_text_to_frame_padding();
-    ui.text_colored(color::MUTED, "Clamp");
-    ui.same_line_with_pos(LABEL_COLUMN);
-    ui.checkbox("Clamp overlap##bevel_clamp", &mut settings.clamp);
-    tooltip(
-        ui,
-        "Stop the width where bevels would run into each other",
-        "",
-    );
+
+    // The profile.
+    row(ui, "Profile");
+    let kinds = [
+        (
+            icon::BEVEL,
+            "Superellipse",
+            settings.profile_type == ProfileType::Superellipse,
+            "Round, flat or pointed, set by Shape",
+        ),
+        (
+            icon::EDIT,
+            "Custom",
+            settings.profile_type == ProfileType::Custom,
+            "Any shape: pick a preset or drag the points",
+        ),
+    ];
+    if let Some(i) = segmented(ui, "profile_type", &kinds, 26.0) {
+        settings.profile_type = if i == 0 {
+            ProfileType::Superellipse
+        } else {
+            ProfileType::Custom
+        };
+    }
+    match settings.profile_type {
+        ProfileType::Superellipse => {
+            row(ui, "Shape");
+            ui.slider_config("##bevel_shape", 0.0, 1.0)
+                .display_format("%.2f")
+                .flags(SliderFlags::ALWAYS_CLAMP)
+                .build(&mut settings.shape);
+            tooltip(ui, "0.5 is round, lower is flatter, higher is sharper", "");
+        }
+        ProfileType::Custom => {
+            row(ui, "Preset");
+            let names: Vec<&str> = ProfilePreset::ALL.iter().map(|p| p.name()).collect();
+            let current = settings.custom.matching_preset();
+            let preview = current.map_or("Edited", |p| p.name());
+            if let Some(_combo) = ui.begin_combo("##bevel_preset", preview) {
+                for (k, preset) in ProfilePreset::ALL.into_iter().enumerate() {
+                    if ui
+                        .selectable_config(names[k])
+                        .selected(current == Some(preset))
+                        .build()
+                    {
+                        let keep = (
+                            settings.custom.sample_straight,
+                            settings.custom.even_lengths,
+                        );
+                        settings.custom = CustomProfile::preset(preset);
+                        (
+                            settings.custom.sample_straight,
+                            settings.custom.even_lengths,
+                        ) = keep;
+                    }
+                }
+            }
+            let segments = settings.segments;
+            profile_editor(ui, &mut settings.custom, segments, &mut state.profile_drag);
+            let settings = &mut state.bevel;
+            ui.checkbox(
+                "Sample straight edges##bevel",
+                &mut settings.custom.sample_straight,
+            );
+            tooltip(
+                ui,
+                "Put segments on straight parts too, not only on curves",
+                "",
+            );
+            ui.checkbox(
+                "Sample even lengths##bevel",
+                &mut settings.custom.even_lengths,
+            );
+            tooltip(
+                ui,
+                "Spread the segments evenly along the profile, even if that skips points",
+                "",
+            );
+        }
+    }
+    let settings = &mut state.bevel;
+
+    // Less common options, folded away by default to keep the panel short.
+    ui.dummy([0.0, 2.0]);
+    let label = if state.bevel_more {
+        "Fewer options##bevel_more"
+    } else {
+        "More options##bevel_more"
+    };
+    if ui.small_button(label) {
+        state.bevel_more = !state.bevel_more;
+    }
+    if state.bevel_more {
+        let check = |ui: &Ui, label: &str, name: &str, value: &mut bool, help: &str| {
+            ui.align_text_to_frame_padding();
+            ui.text_colored(color::MUTED, label);
+            ui.same_line_with_pos(LABEL_COLUMN);
+            ui.checkbox(name, value);
+            tooltip(ui, help, "");
+        };
+        check(
+            ui,
+            "Clamp",
+            "Clamp overlap##bevel_clamp",
+            &mut settings.clamp,
+            "Stop the width where bevels would run into each other",
+        );
+        check(
+            ui,
+            "Slide",
+            "Loop slide##bevel_slide",
+            &mut settings.loop_slide,
+            "New points slide along the edges next to the bevel. Off: an even width instead",
+        );
+        check(
+            ui,
+            "Shading",
+            "Mark sharp##bevel_sharp",
+            &mut settings.mark_sharp,
+            "The bevel's borders become sharp edges, so smooth shading stops there",
+        );
+        row(ui, "Miter outer");
+        let outer = [Miter::Sharp, Miter::Patch, Miter::Arc];
+        let mut chosen = outer
+            .iter()
+            .position(|&m| m == settings.miter_outer)
+            .unwrap_or(0);
+        if ui.combo_simple_string("##miter_outer", &mut chosen, &["Sharp", "Patch", "Arc"]) {
+            settings.miter_outer = outer[chosen];
+        }
+        tooltip(
+            ui,
+            "Where two beveled edges turn a corner: the outside of the turn",
+            "",
+        );
+        row(ui, "Miter inner");
+        let mut chosen = usize::from(settings.miter_inner == Miter::Arc);
+        if ui.combo_simple_string("##miter_inner", &mut chosen, &["Sharp", "Arc"]) {
+            settings.miter_inner = if chosen == 1 {
+                Miter::Arc
+            } else {
+                Miter::Sharp
+            };
+        }
+        tooltip(ui, "The inside of the turn", "");
+        let mitered = settings.miter_outer != Miter::Sharp || settings.miter_inner != Miter::Sharp;
+        let disabled = ui.begin_disabled(!mitered);
+        row(ui, "Spread");
+        ui.slider_config("##bevel_spread", 0.0, MAX_SPREAD)
+            .display_format("%.2f")
+            .flags(SliderFlags::ALWAYS_CLAMP)
+            .build(&mut settings.spread);
+        tooltip(
+            ui,
+            "How far a patch or arc spreads along the edges, as a share of the width",
+            "",
+        );
+        drop(disabled);
+        row(ui, "Intersection");
+        let mut chosen = usize::from(settings.intersection == Intersection::Cutoff);
+        if ui.combo_simple_string(
+            "##bevel_intersection",
+            &mut chosen,
+            &["Grid Fill", "Cutoff"],
+        ) {
+            settings.intersection = if chosen == 1 {
+                Intersection::Cutoff
+            } else {
+                Intersection::GridFill
+            };
+        }
+        tooltip(
+            ui,
+            "Where three or more beveled edges meet: a rounded patch, or each end cut off flat",
+            "",
+        );
+    }
 
     settings.width = settings.width.max(0.0);
     settings.shape = settings.shape.clamp(0.0, 1.0);
+    settings.spread = settings.spread.clamp(0.0, MAX_SPREAD);
     if *settings != before {
         *action = Some(Action::AdjustBevel);
     }
+}
+
+/// The custom profile, drawn in its square: the old sharp edge at the bottom left, the
+/// shape's inside toward the top right. Drag a point to move it; click the line to add
+/// one; right-click a point to remove it; double-click it to make it sharp or smooth.
+fn profile_editor(
+    ui: &Ui,
+    profile: &mut CustomProfile,
+    segments: usize,
+    dragging: &mut Option<usize>,
+) {
+    let side = ui.content_region_avail()[0].min(190.0);
+    let pad = 10.0;
+    let start = ui.cursor_screen_pos();
+    let origin = [
+        start[0] + (ui.content_region_avail()[0] - side) / 2.0,
+        start[1],
+    ];
+    let inner = side - 2.0 * pad;
+    let to_screen = |p: [f32; 2]| {
+        [
+            origin[0] + pad + p[0] * inner,
+            origin[1] + pad + (1.0 - p[1]) * inner,
+        ]
+    };
+    let from_screen = |q: [f32; 2]| {
+        [
+            (q[0] - origin[0] - pad) / inner,
+            1.0 - (q[1] - origin[1] - pad) / inner,
+        ]
+    };
+    ui.set_cursor_screen_pos(origin);
+    ui.invisible_button("##profile_editor", [side, side]);
+    let hovered = ui.is_item_hovered();
+    let active = ui.is_item_active();
+    let mouse = ui.io().mouse_pos;
+    let points: Vec<[f32; 2]> = profile.points().iter().map(|p| [p.x, p.y]).collect();
+    let near_point = |q: [f32; 2]| {
+        points
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let s = to_screen(p);
+                (i, (s[0] - q[0]).hypot(s[1] - q[1]))
+            })
+            .filter(|&(_, d)| d < 9.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    };
+    if hovered && ui.is_mouse_clicked(imgui::MouseButton::Left) {
+        *dragging = near_point(mouse).or_else(|| {
+            // A click on the line adds a point there.
+            let (line, starts) = profile.line(16);
+            let mut best: Option<(usize, f32)> = None;
+            for (piece, &from) in starts.iter().enumerate() {
+                let to = starts.get(piece + 1).copied().unwrap_or(line.len() - 1);
+                for k in from..to {
+                    let (a, b) = (to_screen(line[k]), to_screen(line[k + 1]));
+                    let d = distance_to_segment(mouse, a, b);
+                    if d < 7.0 && best.is_none_or(|(_, bd)| d < bd) {
+                        best = Some((piece, d));
+                    }
+                }
+            }
+            best.and_then(|(piece, _)| {
+                let p = from_screen(mouse);
+                profile.insert_after(piece, p[0], p[1])
+            })
+        });
+    }
+    if hovered
+        && ui.is_mouse_double_clicked(imgui::MouseButton::Left)
+        && let Some(i) = near_point(mouse)
+    {
+        profile.toggle_sharp(i);
+        *dragging = None;
+    }
+    if hovered
+        && ui.is_mouse_clicked(imgui::MouseButton::Right)
+        && let Some(i) = near_point(mouse)
+    {
+        profile.remove(i);
+        *dragging = None;
+    }
+    if active && let Some(i) = *dragging {
+        let p = from_screen(mouse);
+        profile.move_point(i, p[0], p[1]);
+    } else if !active {
+        *dragging = None;
+    }
+
+    let list = ui.get_window_draw_list();
+    let (a, b) = ([origin[0], origin[1]], [origin[0] + side, origin[1] + side]);
+    list.add_rect(a, b, color::FRAME)
+        .filled(true)
+        .rounding(6.0)
+        .build();
+    // The shape's inside, and the two faces meeting at the old sharp edge.
+    let corner = to_screen([0.0, 0.0]);
+    let (right, top) = (to_screen([1.0, 0.0]), to_screen([0.0, 1.0]));
+    list.add_line(corner, right, color::MUTED)
+        .thickness(2.0)
+        .build();
+    list.add_line(corner, top, color::MUTED)
+        .thickness(2.0)
+        .build();
+    list.add_line(right, top, with_alpha(color::MUTED, 0.25))
+        .build();
+    let (line, _) = profile.line(16);
+    let screen: Vec<[f32; 2]> = line.iter().map(|&p| to_screen(p)).collect();
+    list.add_polyline(screen, color::ACCENT)
+        .thickness(2.0)
+        .build();
+    // Where the bevel's new edges will run.
+    for p in profile.sample(segments) {
+        list.add_circle(to_screen(p), 3.0, color::ACCENT_HOVER)
+            .thickness(1.5)
+            .build();
+    }
+    for (i, point) in profile.points().iter().enumerate() {
+        let s = to_screen([point.x, point.y]);
+        let lit = *dragging == Some(i) || (hovered && near_point(mouse) == Some(i));
+        let tint = if lit {
+            color::ACCENT_HOVER
+        } else {
+            color::TEXT
+        };
+        if point.sharp {
+            list.add_rect([s[0] - 4.0, s[1] - 4.0], [s[0] + 4.0, s[1] + 4.0], tint)
+                .filled(true)
+                .build();
+        } else {
+            list.add_circle(s, 4.5, tint).filled(true).build();
+        }
+    }
+    drop(list);
+    if hovered && dragging.is_none() {
+        ui.tooltip_text(
+            "Drag a point to move it. Click the line to add a point.\nRight-click a point to \
+             remove it, double-click it for sharp or smooth.\nRings show where the new edges go.",
+        );
+    }
+}
+
+fn distance_to_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let length = ab[0] * ab[0] + ab[1] * ab[1];
+    let t = if length > 0.0 {
+        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t];
+    (p[0] - q[0]).hypot(p[1] - q[1])
 }
 
 /// Draws the move, rotate or scale handles over the 3D view.
@@ -2583,7 +2967,7 @@ mod tests {
             }
             if target == Target::Edited(Shape::Icosphere) {
                 info.transform_help = Some((Kind::Bevel, None));
-                info.bevel = Some((0.25, 3));
+                info.bevel = Some((0.25, 3, WidthType::Percent));
             }
             // The bevel panel and a lit handle tool.
             if target == Target::Nothing && case == 0 {
@@ -2625,6 +3009,8 @@ mod tests {
             for y in (0..height as i32).step_by(9) {
                 for x in (0..1280).step_by(23) {
                     let (x, y) = (x as f32, y as f32);
+                    // Folding the bevel panel would hide its controls from the rest of the sweep.
+                    state.bevel_folded = false;
                     context.io_mut().add_mouse_pos_event([x, y]);
                     frame(&mut context, &mut state);
                     context
@@ -2719,6 +3105,8 @@ mod tests {
             "Shade(0)",
             "Shade(180)",
             "Shade(30)",
+            "MarkSharp(true)",
+            "MarkSharp(false)",
             "New",
             "Open",
             "Save",

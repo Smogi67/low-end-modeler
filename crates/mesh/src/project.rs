@@ -149,6 +149,13 @@ impl Mesh {
                 let _ = writeln!(out, "l {} {}", number(a), number(b));
             }
         }
+        // Sharp edges, after the faces and lines that make them.
+        for (_, edge) in self.edges() {
+            if edge.sharp {
+                let [a, b] = edge.vertices;
+                let _ = writeln!(out, "sharp {} {}", number(a), number(b));
+            }
+        }
         // Modifiers, by part and in the order each part runs them.
         let mut groups: Vec<u16> = self.modifiers().map(|(_, m)| m.group).collect();
         groups.sort_unstable();
@@ -292,6 +299,15 @@ impl Mesh {
                         }
                         previous = Some(v);
                     }
+                }
+                "sharp" if kind == FileKind::Project => {
+                    let [a, b] = [0, 1].map(|k| rest.get(k).copied().unwrap_or(""));
+                    let a = vertices[index(a, line, vertices.len())?];
+                    let b = vertices[index(b, line, vertices.len())?];
+                    let edge = mesh
+                        .find_edge(a, b)
+                        .ok_or_else(|| bad(line, "a sharp edge that is not there"))?;
+                    mesh.edges[edge].sharp = true;
                 }
                 "export" if kind == FileKind::Project => {
                     report.settings.export_format = rest.first().map(|f| f.to_string());

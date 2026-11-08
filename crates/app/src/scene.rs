@@ -15,6 +15,8 @@ pub const FLOATS_PER_LINE_VERTEX: usize = 6;
 
 const NORMAL_COLOR: [f32; 3] = [0.11, 0.115, 0.13];
 const SELECTED_COLOR: [f32; 3] = [1.0, 0.55, 0.10];
+/// Sharp edges, in Blender's cyan.
+const SHARP_COLOR: [f32; 3] = [0.15, 0.72, 0.95];
 
 /// A range of floats that changed, to send to the graphics card.
 pub type Range = std::ops::Range<usize>;
@@ -74,7 +76,11 @@ fn write_edge(mesh: &Mesh, edge: EdgeId, out: &mut [f32]) {
     let Some(data) = mesh.edge(edge) else {
         return;
     };
-    let tint = color(data.is_selected());
+    let tint = if data.is_sharp() && !data.is_selected() {
+        SHARP_COLOR
+    } else {
+        color(data.is_selected())
+    };
     for (chunk, vertex) in out
         .chunks_exact_mut(FLOATS_PER_LINE_VERTEX)
         .zip(data.vertices())

@@ -257,3 +257,55 @@ fn exports_carry_smooth_normals() {
     assert_eq!(flat_glb.len(), smooth_glb.len());
     assert_ne!(flat_glb, smooth_glb);
 }
+
+#[test]
+fn sharp_edges_split_smooth_shading_and_are_saved() {
+    let (mut mesh, v, _) = cube();
+    select_all_faces(&mut mesh);
+    mesh.set_shading_selected(180).unwrap();
+    // Mark one edge sharp: a single sharp edge at a corner changes nothing there.
+    let edge = mesh
+        .edges()
+        .find(|(_, e)| {
+            let ends = e.vertices();
+            ends.contains(&v[0]) && ends.contains(&v[1])
+        })
+        .unwrap()
+        .0;
+    mesh.select_elements(SelectMode::Edge, &[Element::Edge(edge)], SelectOp::Replace)
+        .unwrap();
+    assert_eq!(mesh.set_sharp_selected(true), Ok(1));
+    assert!(mesh.edge(edge).unwrap().is_sharp());
+    let one = mesh.shading_normals();
+    let third = (1.0f32 / 3.0).sqrt();
+    let corner_face = mesh.vertex_faces(v[0]).unwrap().next().unwrap();
+    assert!(close(one.at(corner_face, v[0]), [-third; 3]));
+
+    // Every edge sharp: each face is lit flat again.
+    let edges: Vec<Element> = mesh.edges().map(|(e, _)| Element::Edge(e)).collect();
+    mesh.select_elements(SelectMode::Edge, &edges, SelectOp::Replace)
+        .unwrap();
+    assert_eq!(mesh.set_sharp_selected(true), Ok(11));
+    let all = mesh.shading_normals();
+    for (face, _) in mesh.faces() {
+        let n = mesh.face_normal(face).unwrap().unwrap();
+        for corner in mesh.face_corners(face).unwrap() {
+            let vertex = mesh.corner(corner).unwrap().vertex();
+            assert!(close(all.at(face, vertex), n));
+        }
+    }
+
+    // Saved and read back.
+    let text = mesh.to_project();
+    assert_eq!(text.matches("\nsharp ").count(), 12);
+    let (back, _) = Mesh::from_text(&text, FileKind::Project).unwrap();
+    assert_eq!(back.edges().filter(|(_, e)| e.is_sharp()).count(), 12);
+    // Clearing them.
+    assert_eq!(mesh.set_sharp_selected(false), Ok(12));
+    assert_eq!(mesh.edges().filter(|(_, e)| e.is_sharp()).count(), 0);
+    let mut empty = Mesh::new();
+    assert_eq!(
+        empty.set_sharp_selected(true),
+        Err(MeshError::NothingSelected)
+    );
+}

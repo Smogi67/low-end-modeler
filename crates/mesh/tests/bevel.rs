@@ -776,6 +776,7 @@ fn random_vertex_bevels_stay_valid_and_undo_exactly() {
             segments: 1 + next(4),
             shape: [0.2, 0.5, 0.9][next(3)],
             clamp: true,
+            ..Default::default()
         };
         let holes = hole_count(&start);
         let result = doc.edit("bevel", |m| {

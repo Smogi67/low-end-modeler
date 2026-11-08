@@ -405,6 +405,7 @@ impl Mesh {
             disk: [DiskLink { next: id, prev: id }; 2],
             first_corner: None,
             selected: false,
+            sharp: false,
         });
         self.disk_insert(edge, a);
         self.disk_insert(edge, b);

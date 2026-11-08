@@ -78,7 +78,7 @@ enum Picked {
 }
 
 /// What must happen to the selection before a drag starts.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Prepare {
     Nothing,
     Duplicate,
@@ -87,7 +87,7 @@ enum Prepare {
     /// Cut this many loops across the ring through this edge.
     LoopCut(EdgeId, usize),
     /// Bevel with these settings, starting at no width.
-    Bevel(BevelSettings),
+    Bevel(Box<BevelSettings>),
 }
 
 /// The view and a depth image of it, for telling whether a point is hidden.
@@ -196,6 +196,8 @@ pub struct App {
     /// The history version right after the last bevel, while its panel may still
     /// change it.
     last_bevel: Option<u64>,
+    /// How far the bevel being dragged moves points per unit of its width type.
+    bevel_per_unit: f32,
     /// The version after the last modifier change, and which modifier, so that a
     /// slider drag makes one undo step instead of one per frame.
     last_modifier_edit: Option<(u64, ModifierId)>,
@@ -284,6 +286,7 @@ impl App {
             view_only: false,
             gizmo_hover: None,
             last_bevel: None,
+            bevel_per_unit: 1.0,
             last_modifier_edit: None,
             snapping: false,
             project_path: None,
@@ -374,7 +377,11 @@ impl App {
                         width: size[0].max(1.0),
                         height: size[1].max(1.0),
                     };
-                    Some((transform.bevel_width(&input), self.state.bevel.segments))
+                    Some((
+                        transform.bevel_width(&input) / self.bevel_per_unit.max(1e-9),
+                        self.state.bevel.segments,
+                        self.state.bevel.width_type,
+                    ))
                 }
                 _ => None,
             },
@@ -499,6 +506,7 @@ impl App {
             point_depth_bias: self.camera.point_depth_bias(),
             overlays: !self.view_only,
             grid: self.settings.grid,
+            shadows: self.settings.shadows,
         };
         self.renderer.render(width, height, &view);
         self.imgui_gl.render(self.renderer.gl(), draw_data, height);
@@ -917,7 +925,7 @@ impl App {
             Action::LoopCut => self.start_loop_cut(),
             Action::Bevel | Action::BevelVertices => {
                 self.state.bevel.vertices = action == Action::BevelVertices;
-                self.start_transform(Kind::Bevel, Prepare::Bevel(self.state.bevel));
+                self.start_transform(Kind::Bevel, Prepare::Bevel(Box::new(self.state.bevel)));
             }
             Action::AdjustBevel => self.adjust_bevel(),
             Action::GizmoTool(kind) => {
@@ -1004,6 +1012,18 @@ impl App {
                 });
                 if result.is_ok() {
                     self.state.message = format!("Applied: the shape now has {faces} real faces.");
+                }
+                self.finish_edit(result);
+            }
+            Action::MarkSharp(sharp) => {
+                let mut changed = 0;
+                let result = self.editor.run("Sharp edges", |mesh, _| {
+                    changed = mesh.set_sharp_selected(sharp)?;
+                    Ok(())
+                });
+                if result.is_ok() {
+                    let what = if sharp { "Marked" } else { "Cleared" };
+                    self.state.message = format!("{what} {changed} sharp edges.");
                 }
                 self.finish_edit(result);
             }
@@ -1366,11 +1386,11 @@ impl App {
                 Prepare::LoopCut(edge, cuts) => mesh
                     .loop_cut(edge, cuts, mode)
                     .map(|made| cut_edges = Some(made)),
-                Prepare::Bevel(settings) => mesh
+                Prepare::Bevel(ref settings) => mesh
                     .bevel_selected(
                         &BevelSettings {
                             width: 0.0,
-                            ..settings
+                            ..**settings
                         },
                         mode,
                     )
@@ -1450,6 +1470,7 @@ impl App {
         );
         if let Some(made) = bevel {
             transform.bevel_steps = made.moving.iter().map(|m| m.2).collect();
+            self.bevel_per_unit = made.per_unit;
             transform.max_width = made.max_width;
         }
         transform.keep_on_cancel = cutting;
@@ -1519,7 +1540,8 @@ impl App {
         self.finish_edit(result);
         // The bevel panel can change this bevel, until something else changes.
         if let (Some(width), true) = (bevel_width, worked) {
-            self.state.bevel.width = width;
+            // The panel shows the width as its type measures it.
+            self.state.bevel.width = width / self.bevel_per_unit.max(1e-9);
             self.last_bevel = Some(self.editor.document().version());
         }
         self.request_frames();
@@ -1539,13 +1561,15 @@ impl App {
         let mut made_width = None;
         let result = self.editor.run("Bevel", |mesh, mode| {
             mesh.bevel_selected(&settings, mode)
-                .map(|made| made_width = Some(made.width))
+                .map(|made| made_width = Some((made.width, made.per_unit)))
         });
         match result {
             Ok(()) => {
                 // Shows the width actually used, if the clamp held it back.
-                if let Some(width) = made_width {
-                    self.state.bevel.width = width;
+                if let Some((width, per_unit)) = made_width
+                    && width < settings.width * per_unit - 1e-6
+                {
+                    self.state.bevel.width = width / per_unit.max(1e-9);
                 }
                 self.last_bevel = Some(self.editor.document().version());
             }
@@ -2001,7 +2025,7 @@ impl App {
         }
         self.state.bevel.segments = segments;
         self.finish_transform(false);
-        self.start_transform(Kind::Bevel, Prepare::Bevel(self.state.bevel));
+        self.start_transform(Kind::Bevel, Prepare::Bevel(Box::new(self.state.bevel)));
         if let Mouse::Transforming { transform, .. } = &mut self.mouse_state {
             transform.start_mouse = start;
         }

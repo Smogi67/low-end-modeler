@@ -216,6 +216,14 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
         note(ui, color::FAINT, "Turn off if Mixer feels slow.");
     }
     ui.checkbox("Show the grid", &mut values.grid);
+    ui.checkbox("Shadows on shapes", &mut values.shadows);
+    if !values.shadows {
+        note(
+            ui,
+            color::FAINT,
+            "Every side is lit the same, so in View mode a shape looks flat.",
+        );
+    }
     ui.dummy([0.0, 4.0]);
     label(ui, "Interface size");
     let names: Vec<String> = INTERFACE_SIZES.iter().map(|s| format!("{s}%")).collect();

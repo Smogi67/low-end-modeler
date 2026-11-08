@@ -57,6 +57,8 @@ void main() {
 
 const MESH_FRAGMENT_SHADER: &str = r#"#version 120
 uniform vec3 u_light;
+// 1 lights faces by which way they face, with darker sides; 0 lights them all evenly.
+uniform float u_shadows;
 varying vec3 v_normal;
 varying float v_selected;
 void main() {
@@ -69,7 +71,8 @@ void main() {
     // A key light near the camera, plus soft light from the sky above.
     float key = max(dot(n, u_light), 0.0);
     float sky = 0.5 + 0.5 * n.z;
-    gl_FragColor = vec4(color * (0.20 + 0.55 * key + 0.30 * sky), 1.0);
+    float lit = mix(0.92, 0.20 + 0.55 * key + 0.30 * sky, u_shadows);
+    gl_FragColor = vec4(color * lit, 1.0);
 }
 "#;
 
@@ -97,6 +100,7 @@ pub struct Renderer {
     mesh_program: glow::Program,
     mesh_view_projection: Option<glow::UniformLocation>,
     mesh_light: Option<glow::UniformLocation>,
+    mesh_shadows: Option<glow::UniformLocation>,
     triangle_buffer: glow::Buffer,
     triangle_vertex_count: i32,
     edge_buffer: glow::Buffer,
@@ -130,6 +134,8 @@ pub struct View {
     pub overlays: bool,
     /// The grid, which the settings can turn off.
     pub grid: bool,
+    /// Darker sides on shapes, which the settings can turn off.
+    pub shadows: bool,
 }
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
@@ -248,6 +254,7 @@ impl Renderer {
                 },
                 mesh_view_projection: gl.get_uniform_location(mesh_program, "u_view_projection"),
                 mesh_light: gl.get_uniform_location(mesh_program, "u_light"),
+                mesh_shadows: gl.get_uniform_location(mesh_program, "u_shadows"),
                 triangle_buffer: gl.create_buffer()?,
                 triangle_vertex_count: 0,
                 edge_buffer: gl.create_buffer()?,
@@ -475,6 +482,10 @@ impl Renderer {
                 );
                 let [x, y, z] = view.light;
                 gl.uniform_3_f32(self.mesh_light.as_ref(), x, y, z);
+                gl.uniform_1_f32(
+                    self.mesh_shadows.as_ref(),
+                    if view.shadows { 1.0 } else { 0.0 },
+                );
                 let stride = FLOATS_PER_TRIANGLE_VERTEX as i32 * size;
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.triangle_buffer));
                 gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);

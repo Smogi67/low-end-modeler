@@ -87,6 +87,7 @@ mod obj;
 mod ops;
 mod pool;
 mod primitives;
+mod profile;
 mod project;
 mod selection;
 mod shading;
@@ -94,7 +95,10 @@ mod tools;
 mod triangulate;
 pub mod validate;
 
-pub use bevel::{Bevel, BevelSettings, MAX_BEVEL_SEGMENTS};
+pub use bevel::{
+    Bevel, BevelSettings, Intersection, MAX_BEVEL_SEGMENTS, MAX_SPREAD, Miter, ProfileType,
+    WidthType,
+};
 pub use boolean::BooleanOp;
 pub use cut::CutPoint;
 pub use error::MeshError;
@@ -108,6 +112,7 @@ pub use modifiers::{
 };
 pub use obj::ROBLOX_MAX_TRIANGLES;
 pub use primitives::{MAX_SEGMENTS, MAX_SUBDIVISIONS, Primitive};
+pub use profile::{CustomProfile, MAX_PROFILE_POINTS, ProfilePoint, ProfilePreset};
 pub use project::{FileKind, LoadReport, PROJECT_VERSION, ParseError, ProjectSettings};
 pub use selection::{Element, SelectMode, SelectOp};
 pub use shading::{AUTO_SMOOTH_ANGLE, ShadingNormals};

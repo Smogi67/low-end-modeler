@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet};
 use crate::error::MeshError;
 use crate::id::{CornerId, EdgeId, FaceId, VertexId};
 use crate::mesh::Mesh;
+use crate::profile::CustomProfile;
 use crate::selection::{Element, SelectMode, SelectOp};
 
 type V3 = [f32; 3];
@@ -48,20 +49,110 @@ const CAP_CENTER_SHARE: f32 = 0.634;
 /// The width limit when overlap is not clamped: in effect none.
 const UNCLAMPED: f32 = 1.0e6;
 
+/// The most spread a miter can have, as a share of the width.
+pub const MAX_SPREAD: f32 = 1.0;
+
+/// What the width measures, as in Blender.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidthType {
+    /// From the original edge to each new edge, across the faces.
+    Offset,
+    /// Between the two new edges, straight across the bevel.
+    Width,
+    /// From the original edge straight in to the new flat face.
+    Depth,
+    /// A percentage of the length of the edges the new points move along.
+    Percent,
+    /// How far the new points move along the edges next to the bevel.
+    Absolute,
+}
+
+impl WidthType {
+    /// Every kind, in Blender's order.
+    pub const ALL: [WidthType; 5] = [
+        WidthType::Offset,
+        WidthType::Width,
+        WidthType::Depth,
+        WidthType::Percent,
+        WidthType::Absolute,
+    ];
+
+    /// Its name in the panel.
+    pub fn name(self) -> &'static str {
+        match self {
+            WidthType::Offset => "Offset",
+            WidthType::Width => "Width",
+            WidthType::Depth => "Depth",
+            WidthType::Percent => "Percent",
+            WidthType::Absolute => "Absolute",
+        }
+    }
+}
+
+/// The profile kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileType {
+    /// Round, flat or pointed, set by `shape`.
+    Superellipse,
+    /// Any shape, drawn as a line through points; see `CustomProfile`.
+    Custom,
+}
+
+/// How bands meet where two beveled edges turn a corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Miter {
+    /// In one line.
+    Sharp,
+    /// With a small patch between them.
+    Patch,
+    /// With a rounded arc between them.
+    Arc,
+}
+
+/// How bands meet where three or more beveled edges meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intersection {
+    /// A corner patch following the bands' profiles.
+    GridFill,
+    /// Each band's end cut off flat, with a flat face between the cuts.
+    Cutoff,
+}
+
 /// The choices for a bevel, as in Blender's bevel panel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BevelSettings {
     /// Bevel the selected vertices on their own, instead of the selected edges.
     pub vertices: bool,
-    /// How far the new points move from the original vertices or edges.
+    /// How far the new points move, measured as `width_type` says.
     pub width: f32,
+    /// What `width` measures.
+    pub width_type: WidthType,
     /// From 1 to `MAX_BEVEL_SEGMENTS`.
     pub segments: usize,
-    /// The profile's shape, from 0 to 1: 0.5 is round, 0.25 straight, 1 a sharp
+    /// Superellipse or custom.
+    pub profile_type: ProfileType,
+    /// The superellipse's shape, from 0 to 1: 0.5 is round, 0.25 straight, 1 a sharp
     /// corner, and below 0.25 it curves inward. Matters only with more than one segment.
     pub shape: f32,
+    /// The custom profile, used when `profile_type` is `Custom`.
+    pub custom: CustomProfile,
     /// Stop the width before new points pass each other.
     pub clamp: bool,
+    /// New points slide along the edges next to the bevel, rather than keeping an even
+    /// width, so those edges keep their direction.
+    pub loop_slide: bool,
+    /// The edges between the bevel and the faces around it become sharp, so smooth
+    /// shading stops there.
+    pub mark_sharp: bool,
+    /// Where two beveled edges turn a corner: the outer side, then the inner side.
+    /// The inner side takes `Sharp` or `Arc`.
+    pub miter_outer: Miter,
+    /// See `miter_outer`.
+    pub miter_inner: Miter,
+    /// How far a patch or arc spreads along the edges, as a share of the width.
+    pub spread: f32,
+    /// Where three or more beveled edges meet.
+    pub intersection: Intersection,
 }
 
 impl Default for BevelSettings {
@@ -69,42 +160,101 @@ impl Default for BevelSettings {
         Self {
             vertices: false,
             width: 0.0,
+            width_type: WidthType::Offset,
             segments: 1,
+            profile_type: ProfileType::Superellipse,
             shape: 0.5,
+            custom: CustomProfile::default(),
             clamp: true,
+            loop_slide: true,
+            mark_sharp: false,
+            miter_outer: Miter::Sharp,
+            miter_inner: Miter::Sharp,
+            spread: 0.1,
+            intersection: Intersection::GridFill,
         }
     }
+}
+
+/// The profile used by one bevel: its inner points, each as `[x, y]` in the frame
+/// where `[1, 0]` and `[0, 1]` are the ends and `[1, 1]` the original sharp edge.
+struct ProfileShape {
+    inner: Vec<[f32; 2]>,
+    /// A round superellipse, whose corners lie on spheres.
+    round: bool,
+    /// Where the profile crosses the frame's diagonal, from 0 at the center to 1 at the
+    /// sharp edge: 0.71 for a round, 0.5 for a chamfer.
+    diagonal: f32,
+}
+
+impl ProfileShape {
+    fn new(settings: &BevelSettings) -> Self {
+        let segments = settings.segments;
+        match settings.profile_type {
+            ProfileType::Superellipse => {
+                let r = exponent(settings.shape);
+                Self {
+                    inner: (1..segments)
+                        .map(|j| {
+                            let angle = j as f32 / segments as f32 * std::f32::consts::FRAC_PI_2;
+                            [
+                                angle.cos().max(0.0).powf(2.0 / r),
+                                angle.sin().max(0.0).powf(2.0 / r),
+                            ]
+                        })
+                        .collect(),
+                    round: is_round(settings.shape),
+                    diagonal: 0.5f32.powf(1.0 / r),
+                }
+            }
+            ProfileType::Custom => {
+                let samples = settings.custom.sample(segments);
+                // The profile's square has the sharp edge at its (0, 0).
+                let frame = |p: [f32; 2]| [1.0 - p[1], 1.0 - p[0]];
+                Self {
+                    inner: samples[1..segments].iter().map(|&p| frame(p)).collect(),
+                    round: false,
+                    diagonal: 1.0 - settings.custom.diagonal(),
+                }
+            }
+        }
+    }
+
+    /// How far a corner's center sits toward the middle of its points: on the sphere
+    /// when round, flat when straight, at the vertex when sharp.
+    fn center_share(&self) -> f32 {
+        (1.0 - self.diagonal) / (1.0 - 0.5f32.sqrt()) * CAP_CENTER_SHARE
+    }
+
+    /// The inner points of a profile from `a` to `c` around the corner point `k`, all
+    /// as steps per unit of width: the frame runs from `o = a + c - k` to `a` and `c`.
+    /// With the round shape, an exact quarter circle when `k` is a right angle.
+    fn steps(&self, a: V3, c: V3, k: V3) -> Vec<V3> {
+        let o = sub(add(a, c), k);
+        let (oa, oc) = (sub(a, o), sub(c, o));
+        self.inner
+            .iter()
+            .map(|&[x, y]| add(o, add(scale(oa, x), scale(oc, y))))
+            .collect()
+    }
+}
+
+/// Which end a one-sided profile starts from: the one on the face turned more
+/// upward, judged by how its point moves, so molding presets come out the same way
+/// on every edge. True if `a` goes first.
+fn first_is_a(a: V3, c: V3) -> bool {
+    for axis in [2, 0, 1] {
+        if (a[axis] - c[axis]).abs() > 1e-5 {
+            return a[axis] > c[axis];
+        }
+    }
+    true
 }
 
 /// The superellipse exponent for a shape: 2 (a circle) at 0.5, 1 (a straight line)
 /// at 0.25, growing toward a sharp corner at 1.
 fn exponent(shape: f32) -> f32 {
     2f32.powf(4.0 * shape - 1.0).clamp(0.25, 64.0)
-}
-
-/// The inner points of a profile from `a` to `c` around the corner point `k`, all as
-/// steps per unit of width. A superellipse in the frame running from `o = a + c - k`
-/// to `a` and to `c`: with the round shape, an exact quarter circle when `k` is a
-/// right angle, and evenly spaced by angle.
-fn profile_steps(a: V3, c: V3, k: V3, segments: usize, shape: f32) -> Vec<V3> {
-    let o = sub(add(a, c), k);
-    let (oa, oc) = (sub(a, o), sub(c, o));
-    let r = exponent(shape);
-    (1..segments)
-        .map(|j| {
-            let angle = j as f32 / segments as f32 * std::f32::consts::FRAC_PI_2;
-            let x = angle.cos().max(0.0).powf(2.0 / r);
-            let y = angle.sin().max(0.0).powf(2.0 / r);
-            add(o, add(scale(oa, x), scale(oc, y)))
-        })
-        .collect()
-}
-
-/// How far a corner's center sits toward the middle of its points, for this shape:
-/// on the sphere when round, flat when straight, at the vertex when sharp.
-fn center_share(shape: f32) -> f32 {
-    let diagonal = 0.5f32.powf(1.0 / exponent(shape));
-    (1.0 - diagonal) / (1.0 - 0.5f32.sqrt()) * CAP_CENTER_SHARE
 }
 
 fn is_round(shape: f32) -> bool {
@@ -121,6 +271,9 @@ pub struct Bevel {
     pub width: f32,
     /// The widest bevel that keeps the new points from passing each other.
     pub max_width: f32,
+    /// How far points move per unit of the width as its type measures it, so that
+    /// `width` here is the setting's width times this.
+    pub per_unit: f32,
 }
 
 impl Bevel {
@@ -169,6 +322,22 @@ enum Spot {
     OnEdge(VertexId, EdgeId),
     /// The original vertex, kept.
     Keep(VertexId),
+    /// Where a band ends at a patch or arc miter: its vertex, the beveled edge, and
+    /// whether on the outer side.
+    Miter(VertexId, EdgeId, bool),
+}
+
+/// A vertex where two beveled edges turn a corner, with a patch or arc on a side.
+struct MiterAt {
+    /// For each fan face: whether it is on the outer side.
+    outer_faces: Vec<bool>,
+    /// The point on each side before mitering.
+    inner_point: Spot,
+    outer_point: Spot,
+    /// The two beveled edges, and the directions along them away from the vertex.
+    edges: [EdgeId; 2],
+    outer: Miter,
+    inner_arc: bool,
 }
 
 /// The faces around a vertex, in order. Face `i` lies between `edges[i]`, where it
@@ -371,13 +540,15 @@ impl Mesh {
         mode: SelectMode,
     ) -> Result<Bevel, MeshError> {
         let BevelSettings {
-            width,
+            width: value,
             segments,
             shape,
             clamp,
             vertices,
+            spread,
+            ..
         } = *settings;
-        if !width.is_finite() || width < 0.0 {
+        if !value.is_finite() || value < 0.0 {
             return Err(MeshError::InvalidDistance);
         }
         if !(1..=MAX_BEVEL_SEGMENTS).contains(&segments) {
@@ -386,8 +557,21 @@ impl Mesh {
         if !shape.is_finite() || !(0.0..=1.0).contains(&shape) {
             return Err(MeshError::InvalidShape);
         }
+        if !spread.is_finite() || !(0.0..=MAX_SPREAD).contains(&spread) {
+            return Err(MeshError::InvalidShape);
+        }
+        if settings.profile_type == ProfileType::Custom
+            && settings
+                .custom
+                .points()
+                .iter()
+                .any(|p| !p.x.is_finite() || !p.y.is_finite())
+        {
+            return Err(MeshError::InvalidShape);
+        }
+        let profile_shape = ProfileShape::new(settings);
         if vertices {
-            return self.bevel_vertices(settings, mode);
+            return self.bevel_vertices(settings, &profile_shape, mode);
         }
         let beveled: HashSet<EdgeId> = self
             .edges()
@@ -455,13 +639,24 @@ impl Mesh {
                         ring.push(Around::Point(Spot::Keep(v)));
                     } else {
                         let dir = distances[0].0;
-                        let share = distances
-                            .iter()
-                            .map(|&(u, inward)| 1.0 / dot(u, inward).max(0.2))
-                            .sum::<f32>()
-                            / distances.len() as f32;
+                        let step = if settings.loop_slide {
+                            // Along the edge, as far as gives the width across the face.
+                            let share = distances
+                                .iter()
+                                .map(|&(u, inward)| 1.0 / dot(u, inward).max(0.2))
+                                .sum::<f32>()
+                                / distances.len() as f32;
+                            scale(dir, share)
+                        } else {
+                            // Straight across from the beveled edge, for an even width.
+                            let mut sum = [0.0; 3];
+                            for &(_, inward) in &distances {
+                                sum = add(sum, inward);
+                            }
+                            scale(sum, 1.0 / distances.len() as f32)
+                        };
                         let spot = Spot::OnEdge(v, edge);
-                        steps.insert(spot, scale(dir, share));
+                        steps.insert(spot, step);
                         ring.push(Around::Point(spot));
                     }
                 }
@@ -480,6 +675,112 @@ impl Mesh {
             rings.insert(v, ring);
         }
 
+        // Where two beveled edges turn a corner, with a patch or arc on a side.
+        let mut miters: HashMap<VertexId, MiterAt> = HashMap::new();
+        let mut extra_spots: HashMap<VertexId, Vec<Spot>> = HashMap::new();
+        let wants_miter =
+            settings.miter_outer != Miter::Sharp || settings.miter_inner == Miter::Arc;
+        for &v in &hubs {
+            if !wants_miter {
+                break;
+            }
+            let fan = &fans[&v];
+            let ring = &rings[&v];
+            let beveled_at: Vec<usize> = (0..fan.edges.len())
+                .filter(|&i| beveled.contains(&fan.edges[i]))
+                .collect();
+            let points: Vec<Spot> = ring
+                .iter()
+                .filter_map(|r| match r {
+                    Around::Point(spot) => Some(*spot),
+                    Around::Beveled(_) => None,
+                })
+                .collect();
+            let ([i1, i2], true, 2) = (
+                <[usize; 2]>::try_from(beveled_at).unwrap_or([0, 0]),
+                fan.closed,
+                points.len(),
+            ) else {
+                continue;
+            };
+            if i1 == i2 {
+                continue;
+            }
+            // Faces i1 .. i2 lie on one side, the rest on the other.
+            let n = fan.corners.len();
+            let side_a: Vec<bool> = (0..n).map(|f| f >= i1 && f < i2).collect();
+            let angle = |f: usize| {
+                dot(fan.along[f][0], fan.along[f][1])
+                    .clamp(-1.0, 1.0)
+                    .acos()
+            };
+            let (mut sum_a, mut sum_b) = (0.0, 0.0);
+            for (f, &on_a) in side_a.iter().enumerate() {
+                if on_a {
+                    sum_a += angle(f);
+                } else {
+                    sum_b += angle(f);
+                }
+            }
+            // A real turn only; a straight run of edges needs no miter.
+            if (sum_a - sum_b).abs() < 0.1 {
+                continue;
+            }
+            let a_is_outer = sum_a > sum_b;
+            let outer_faces: Vec<bool> = side_a.iter().map(|&a| a == a_is_outer).collect();
+            // The point on each side: the one some face of that side uses.
+            let side_point = |outer: bool| {
+                (0..n)
+                    .filter(|&f| outer_faces[f] == outer)
+                    .flat_map(|f| [fan.edges[f], fan.next_edge(f)].map(|e| (f, e)))
+                    .map(|(f, e)| base_spot(fan, v, f, e, &beveled, &steps))
+                    .find(|spot| points.contains(spot))
+            };
+            let (Some(inner_point), Some(outer_point)) = (side_point(false), side_point(true))
+            else {
+                continue;
+            };
+            if inner_point == outer_point {
+                continue;
+            }
+            let edges = [fan.edges[i1], fan.edges[i2]];
+            let here = self.vertices[v].position;
+            let mut extra = Vec::new();
+            for (k, &edge) in edges.iter().enumerate() {
+                let other = self.edges[edge].other_vertex(v).unwrap_or(v);
+                let u = unit(sub(self.vertices[other].position, here)).unwrap_or([0.0; 3]);
+                let _ = k;
+                for (outer, point, on) in [
+                    (true, outer_point, settings.miter_outer != Miter::Sharp),
+                    (false, inner_point, settings.miter_inner == Miter::Arc),
+                ] {
+                    if on {
+                        let spot = Spot::Miter(v, edge, outer);
+                        let base = steps.get(&point).copied().unwrap_or([0.0; 3]);
+                        steps.insert(spot, add(base, scale(u, spread)));
+                        extra.push(spot);
+                    }
+                }
+            }
+            extra_spots.insert(v, extra);
+            miters.insert(
+                v,
+                MiterAt {
+                    outer_faces,
+                    inner_point,
+                    outer_point,
+                    edges,
+                    outer: settings.miter_outer,
+                    inner_arc: settings.miter_inner == Miter::Arc,
+                },
+            );
+        }
+
+        // How far points move per unit of the width, as its type measures it.
+        let per_unit =
+            self.width_per_unit(settings.width_type, &beveled, &sides, &fans, &rings, &steps);
+        let width = value * per_unit;
+
         // The width must not push points past the middle of an edge they move along.
         let mut max_width = f32::MAX;
         for &v in &hubs {
@@ -488,10 +789,13 @@ impl Mesh {
                 let [a, b] = self.edges[e].vertices;
                 length(sub(self.vertices[a].position, self.vertices[b].position)) / 2.0
             };
-            for around in &rings[&v] {
-                let Around::Point(spot) = around else {
-                    continue;
-                };
+            let miter_spots = extra_spots.get(&v).cloned().unwrap_or_default();
+            let ring_spots = rings[&v].iter().filter_map(|r| match r {
+                Around::Point(spot) => Some(*spot),
+                Around::Beveled(_) => None,
+            });
+            for spot in ring_spots.chain(miter_spots) {
+                let spot = &spot;
                 let Some(&step) = steps.get(spot) else {
                     continue;
                 };
@@ -521,7 +825,13 @@ impl Mesh {
         let mut step_of: HashMap<VertexId, V3> = HashMap::new();
         for &v in &hubs {
             let here = self.vertices[v].position;
-            for around in &rings[&v] {
+            let miter_spots = extra_spots.get(&v).cloned().unwrap_or_default();
+            let around_points: Vec<Around> = rings[&v]
+                .iter()
+                .copied()
+                .chain(miter_spots.into_iter().map(Around::Point))
+                .collect();
+            for around in &around_points {
                 if let Around::Point(spot) = *around {
                     if let Spot::Keep(kept) = spot {
                         made.insert(spot, kept);
@@ -557,8 +867,16 @@ impl Mesh {
                 // face is made, that is on the beveled edge, level with the ends.
                 // Otherwise it is the vertex itself, as where two bands meet in a mitre.
                 let k = along.map_or([0.0; 3], |u| scale(u, (dot(a, u) + dot(c, u)) / 2.0));
-                let mut inner = Vec::with_capacity(segments.saturating_sub(1));
-                for step in profile_steps(a, c, k, segments, shape) {
+                // One-sided custom profiles start from the end on the upper face.
+                let mut points = if first_is_a(a, c) {
+                    profile_shape.steps(a, c, k)
+                } else {
+                    let mut back = profile_shape.steps(c, a, k);
+                    back.reverse();
+                    back
+                };
+                let mut inner = Vec::with_capacity(points.len());
+                for step in points.drain(..) {
                     let id = mesh.add_vertex(add(here, scale(step, width)))?;
                     moving.push((id, here, step));
                     inner_steps.insert(id, step);
@@ -573,21 +891,55 @@ impl Mesh {
             Ok(inner)
         };
 
-        // Where an edge of a face meets a fan vertex, as a point.
+        // Where an edge of a face meets a fan vertex, as a point. At a miter, a band
+        // ends at its own point on a patched or arced side.
         let spot_for = |fan: &Fan, v: VertexId, face: usize, edge: EdgeId| {
-            let (into, out_of) = (fan.edges[face], fan.next_edge(face));
-            if beveled.contains(&edge) {
-                let other = if edge == into { out_of } else { into };
-                if beveled.contains(&other) {
-                    Spot::Corner(v, face)
-                } else {
-                    Spot::OnEdge(v, other)
+            let spot = base_spot(fan, v, face, edge, &beveled, &steps);
+            match miters.get(&v) {
+                Some(m) if beveled.contains(&edge) => {
+                    let outer = m.outer_faces[face];
+                    let miter = Spot::Miter(v, edge, outer);
+                    if made.contains_key(&miter) {
+                        miter
+                    } else {
+                        spot
+                    }
                 }
-            } else if steps.contains_key(&Spot::OnEdge(v, edge)) {
-                Spot::OnEdge(v, edge)
-            } else {
-                Spot::Keep(v)
+                _ => spot,
             }
+        };
+        // Arcs for arc miters: a round curve from `from` to `to` bending toward the
+        // point the miter replaces.
+        let arc_shape = ProfileShape::new(&BevelSettings {
+            segments,
+            ..BevelSettings::default()
+        });
+        let mut arcs: HashMap<(VertexId, VertexId, VertexId), Vec<VertexId>> = HashMap::new();
+        let mut arc = |mesh: &mut Mesh,
+                       moving: &mut Vec<(VertexId, V3, V3)>,
+                       inner_steps: &mut HashMap<VertexId, V3>,
+                       v: VertexId,
+                       from: VertexId,
+                       to: VertexId,
+                       toward: V3|
+         -> Result<Vec<VertexId>, MeshError> {
+            let key = (v, from.min(to), from.max(to));
+            if let Entry::Vacant(slot) = arcs.entry(key) {
+                let here = mesh.vertices[v].position;
+                let mut inner = Vec::new();
+                for step in arc_shape.steps(step_of[&key.1], step_of[&key.2], toward) {
+                    let id = mesh.add_vertex(add(here, scale(step, width)))?;
+                    moving.push((id, here, step));
+                    inner_steps.insert(id, step);
+                    inner.push(id);
+                }
+                slot.insert(inner);
+            }
+            let mut inner = arcs[&key].clone();
+            if from > to {
+                inner.reverse();
+            }
+            Ok(inner)
         };
 
         // New outlines for every face touching a beveled vertex.
@@ -619,6 +971,23 @@ impl Mesh {
                 let b = made[&spot_for(fan, v, i, data.edge)];
                 outline.push(a);
                 if a != b {
+                    // The inner side of an arc miter: the face's corner becomes an arc.
+                    if let Some(m) = miters.get(&v) {
+                        if m.inner_arc && !m.outer_faces[i] && segments > 1 {
+                            let toward = steps[&m.inner_point];
+                            outline.extend(arc(
+                                self,
+                                &mut moving,
+                                &mut inner_steps,
+                                v,
+                                a,
+                                b,
+                                toward,
+                            )?);
+                        }
+                        outline.push(b);
+                        continue;
+                    }
                     // With only two points around the vertex, a band's profile joins the
                     // same two points as this face's edge does, so the face follows the
                     // profile. This is where a single beveled edge ends at a corner
@@ -693,6 +1062,9 @@ impl Mesh {
             }
         }
 
+        // Faces whose winding is settled at the end, by the faces they share edges with.
+        let mut pending: Vec<Vec<VertexId>> = Vec::new();
+
         // Corner faces where three or more points surround a vertex.
         for &v in &hubs {
             let ring = &rings[&v];
@@ -706,6 +1078,8 @@ impl Mesh {
             let count = ring.len();
             let mut outline: Vec<VertexId> = Vec::new();
             let mut curved = false;
+            // Each band's end, as a flat face, for the cutoff kind of corner.
+            let mut cuts: Vec<Vec<VertexId>> = Vec::new();
             for (k, around) in ring.iter().enumerate() {
                 match *around {
                     Around::Point(spot) => outline.push(made[&spot]),
@@ -729,6 +1103,12 @@ impl Mesh {
                                 along,
                             )?;
                             curved |= !inner.is_empty();
+                            if !inner.is_empty() {
+                                let mut cut = vec![made[&a]];
+                                cut.extend(inner.iter().copied());
+                                cut.push(made[&b]);
+                                cuts.push(cut);
+                            }
                             outline.extend(inner);
                         }
                     }
@@ -740,6 +1120,21 @@ impl Mesh {
             }
             // Faces run the other way round the vertex from the fan's order.
             outline.reverse();
+            if curved && settings.intersection == Intersection::Cutoff {
+                // A flat face across the corner points, and each band's end cut off flat.
+                let mut center: Vec<VertexId> = ring
+                    .iter()
+                    .filter_map(|r| match r {
+                        Around::Point(spot) => Some(made[spot]),
+                        Around::Beveled(_) => None,
+                    })
+                    .collect();
+                center.dedup();
+                center.reverse();
+                pending.push(center);
+                pending.extend(cuts);
+                continue;
+            }
             if curved {
                 let here = self.vertices[v].position;
                 let corner_points: Vec<VertexId> = ring
@@ -750,7 +1145,7 @@ impl Mesh {
                     })
                     .collect();
                 // Only a round profile lies on a sphere.
-                let sphere = if is_round(shape) {
+                let sphere = if profile_shape.round {
                     self.corner_sphere(v, &fans[&v], ring, &steps, &made, &step_of)
                 } else {
                     None
@@ -861,7 +1256,7 @@ impl Mesh {
                                 middle,
                                 scale(unit(sub(average, middle)).unwrap_or([0.0; 3]), radius),
                             ),
-                            None => scale(average, center_share(shape)),
+                            None => scale(average, profile_shape.center_share()),
                         };
                         let center = new_point(self, step)?;
                         let n = outline.len();
@@ -875,6 +1270,96 @@ impl Mesh {
                 bevel_faces.push(outline);
             }
         }
+
+        // Miters: the patch between two bands where they turn a corner, and the arcs.
+        let mut miter_list: Vec<VertexId> = miters.keys().copied().collect();
+        miter_list.sort_unstable();
+        for v in miter_list {
+            let m = &miters[&v];
+            let end = |edge: EdgeId, outer: bool| {
+                let spot = Spot::Miter(v, edge, outer);
+                if made.contains_key(&spot) {
+                    made[&spot]
+                } else if outer {
+                    made[&m.outer_point]
+                } else {
+                    made[&m.inner_point]
+                }
+            };
+            let [e0, e1] = m.edges;
+            let (x0, y0, x1, y1) = (end(e0, false), end(e0, true), end(e1, false), end(e1, true));
+            let col0 = profile(self, &mut moving, &mut inner_steps, v, x0, y0, None)?;
+            let col1 = profile(self, &mut moving, &mut inner_steps, v, x1, y1, None)?;
+            let mut ring: Vec<VertexId> = vec![x0];
+            ring.extend(col0);
+            ring.push(y0);
+            let y = made[&m.outer_point];
+            match m.outer {
+                Miter::Sharp => {}
+                Miter::Patch => ring.push(y),
+                Miter::Arc => {
+                    let points = arc(
+                        self,
+                        &mut moving,
+                        &mut inner_steps,
+                        v,
+                        y0,
+                        y1,
+                        steps[&m.outer_point],
+                    )?;
+                    // A fan from the old corner point fills in behind the arc.
+                    let mut line = vec![y0];
+                    line.extend(points.iter().copied());
+                    line.push(y1);
+                    for w in line.windows(2) {
+                        pending.push(vec![y, w[0], w[1]]);
+                    }
+                    ring.extend(points);
+                }
+            }
+            ring.push(y1);
+            let mut back = col1;
+            back.reverse();
+            ring.extend(back);
+            ring.push(x1);
+            if m.inner_arc && segments > 1 {
+                ring.extend(arc(
+                    self,
+                    &mut moving,
+                    &mut inner_steps,
+                    v,
+                    x1,
+                    x0,
+                    steps[&m.inner_point],
+                )?);
+            }
+            ring.dedup();
+            if ring.len() > 1 && ring.first() == ring.last() {
+                ring.pop();
+            }
+            if ring.len() < 3 {
+                continue;
+            }
+            if ring.len() <= 4 {
+                pending.push(ring);
+            } else {
+                // A fan of triangles around a point in the middle.
+                let here = self.vertices[v].position;
+                let mut sum = [0.0; 3];
+                for &p in &ring {
+                    sum = add(sum, step_of_point(&step_of, &inner_steps, p));
+                }
+                let step = scale(sum, 1.0 / ring.len() as f32);
+                let center = self.add_vertex(add(here, scale(step, width)))?;
+                moving.push((center, here, step));
+                let count = ring.len();
+                for k in 0..count {
+                    pending.push(vec![center, ring[k], ring[(k + 1) % count]]);
+                }
+            }
+        }
+        let fixed: Vec<&Vec<VertexId>> = new_faces.iter().chain(bevel_faces.iter()).collect();
+        bevel_faces.extend(orient_by_neighbors(&fixed, pending));
 
         // Out with the old, keeping each face's shading and group for its new outline;
         // the bevel's own faces take the smoothest shading around them.
@@ -929,14 +1414,240 @@ impl Mesh {
             self.faces[face].smooth = bevel_smooth;
             selected.push(Element::Face(face));
         }
+        if settings.mark_sharp {
+            self.mark_bevel_border_sharp(&selected);
+        }
+        self.drop_unused(&mut moving)?;
         self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
         self.flush_selection(mode);
         Ok(Bevel {
             moving,
             width,
             max_width,
+            per_unit,
         })
     }
+
+    /// The edges between the bevel's faces and the faces around it become sharp.
+    fn mark_bevel_border_sharp(&mut self, bevel: &[Element]) {
+        let faces: HashSet<FaceId> = bevel
+            .iter()
+            .filter_map(|e| match e {
+                Element::Face(f) => Some(*f),
+                _ => None,
+            })
+            .collect();
+        let mut border = Vec::new();
+        for &face in &faces {
+            for corner in self.face_walk(face) {
+                let edge = self.corners[corner].edge;
+                if self
+                    .radial_walk(edge)
+                    .any(|c| !faces.contains(&self.corners[c].face))
+                {
+                    border.push(edge);
+                }
+            }
+        }
+        for edge in border {
+            self.edges[edge].sharp = true;
+        }
+    }
+
+    /// Removes new points that no face ended up using, such as the corner point an
+    /// arc miter replaced.
+    fn drop_unused(&mut self, moving: &mut Vec<(VertexId, V3, V3)>) -> Result<(), MeshError> {
+        let unused: HashSet<VertexId> = moving
+            .iter()
+            .map(|m| m.0)
+            .filter(|&v| self.disk_walk(v).next().is_none())
+            .collect();
+        for &v in &unused {
+            self.remove_vertex(v)?;
+        }
+        moving.retain(|m| !unused.contains(&m.0));
+        Ok(())
+    }
+
+    /// How far points move per unit of the width, as its type measures it.
+    fn width_per_unit(
+        &self,
+        width_type: WidthType,
+        beveled: &HashSet<EdgeId>,
+        sides: &HashMap<EdgeId, [CornerId; 2]>,
+        fans: &HashMap<VertexId, Fan>,
+        rings: &HashMap<VertexId, Vec<Around>>,
+        steps: &HashMap<Spot, V3>,
+    ) -> f32 {
+        let mean = |values: &[f32]| {
+            let good: Vec<f32> = values
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite() && *v > 1e-6)
+                .collect();
+            (!good.is_empty()).then(|| good.iter().sum::<f32>() / good.len() as f32)
+        };
+        let mut sorted: Vec<EdgeId> = beveled.iter().copied().collect();
+        sorted.sort_unstable();
+        match width_type {
+            WidthType::Offset => 1.0,
+            WidthType::Width | WidthType::Depth => {
+                let mut across = Vec::new();
+                for &edge in &sorted {
+                    for v in self.edges[edge].vertices {
+                        let fan = &fans[&v];
+                        let [s0, s1] = sides[&edge].map(|corner| {
+                            let i = fan
+                                .corners
+                                .iter()
+                                .position(|&c| self.corners[c].face == self.corners[corner].face)
+                                .unwrap_or(0);
+                            steps
+                                .get(&base_spot(fan, v, i, edge, beveled, steps))
+                                .copied()
+                                .unwrap_or([0.0; 3])
+                        });
+                        if width_type == WidthType::Width {
+                            across.push(length(sub(s0, s1)));
+                        } else {
+                            let other = self.edges[edge].other_vertex(v).unwrap_or(v);
+                            let u = unit(sub(
+                                self.vertices[other].position,
+                                self.vertices[v].position,
+                            ))
+                            .unwrap_or([0.0; 3]);
+                            let flat = |p: V3| sub(p, scale(u, dot(p, u)));
+                            let (p0, p1) = (flat(s0), flat(s1));
+                            let chord = sub(p1, p0);
+                            let l = length(chord);
+                            if l > 1e-9 {
+                                across.push(length(cross(p0, chord)) / l);
+                            }
+                        }
+                    }
+                }
+                mean(&across).map_or(1.0, |m| 1.0 / m)
+            }
+            WidthType::Percent | WidthType::Absolute => {
+                // How far each point travels along the edges next to it, per unit.
+                let mut per = Vec::new();
+                let mut hubs: Vec<VertexId> = rings.keys().copied().collect();
+                hubs.sort_unstable();
+                for v in hubs {
+                    let fan = &fans[&v];
+                    let here = self.vertices[v].position;
+                    for around in &rings[&v] {
+                        let Around::Point(spot) = around else {
+                            continue;
+                        };
+                        let Some(&step) = steps.get(spot) else {
+                            continue;
+                        };
+                        let edges: Vec<EdgeId> = match *spot {
+                            Spot::OnEdge(_, e) => vec![e],
+                            Spot::Corner(_, i) => vec![fan.edges[i], fan.next_edge(i)],
+                            _ => Vec::new(),
+                        };
+                        for e in edges {
+                            let other = self.edges[e].other_vertex(v).unwrap_or(v);
+                            let along = sub(self.vertices[other].position, here);
+                            let Some(u) = unit(along) else {
+                                continue;
+                            };
+                            let travel = dot(step, u);
+                            if travel > 1e-6 {
+                                per.push(if width_type == WidthType::Percent {
+                                    length(along) / 100.0 / travel
+                                } else {
+                                    1.0 / travel
+                                });
+                            }
+                        }
+                    }
+                }
+                mean(&per).unwrap_or(1.0)
+            }
+        }
+    }
+}
+
+/// The point where an edge of fan face `face` meets the fan's vertex, before miters.
+fn base_spot(
+    fan: &Fan,
+    v: VertexId,
+    face: usize,
+    edge: EdgeId,
+    beveled: &HashSet<EdgeId>,
+    steps: &HashMap<Spot, V3>,
+) -> Spot {
+    let (into, out_of) = (fan.edges[face], fan.next_edge(face));
+    if beveled.contains(&edge) {
+        let other = if edge == into { out_of } else { into };
+        if beveled.contains(&other) {
+            Spot::Corner(v, face)
+        } else {
+            Spot::OnEdge(v, other)
+        }
+    } else if steps.contains_key(&Spot::OnEdge(v, edge)) {
+        Spot::OnEdge(v, edge)
+    } else {
+        Spot::Keep(v)
+    }
+}
+
+/// Winds each pending face to match the faces it shares an edge with: a shared edge
+/// must run opposite ways in the two faces. Faces are settled one after another, so a
+/// face can follow one settled just before it.
+fn orient_by_neighbors(
+    fixed: &[&Vec<VertexId>],
+    pending: Vec<Vec<VertexId>>,
+) -> Vec<Vec<VertexId>> {
+    let mut directed: HashSet<(VertexId, VertexId)> = HashSet::new();
+    let add_edges = |directed: &mut HashSet<(VertexId, VertexId)>, face: &[VertexId]| {
+        for k in 0..face.len() {
+            directed.insert((face[k], face[(k + 1) % face.len()]));
+        }
+    };
+    for face in fixed {
+        add_edges(&mut directed, face);
+    }
+    let mut left = pending;
+    let mut done = Vec::with_capacity(left.len());
+    loop {
+        let before = left.len();
+        let mut still = Vec::new();
+        for mut face in left {
+            let n = face.len();
+            let mut verdict = None;
+            for k in 0..n {
+                let (p, q) = (face[k], face[(k + 1) % n]);
+                if directed.contains(&(p, q)) {
+                    verdict = Some(true);
+                    break;
+                }
+                if directed.contains(&(q, p)) {
+                    verdict = Some(false);
+                    break;
+                }
+            }
+            match verdict {
+                Some(flip) => {
+                    if flip {
+                        face.reverse();
+                    }
+                    add_edges(&mut directed, &face);
+                    done.push(face);
+                }
+                None => still.push(face),
+            }
+        }
+        left = still;
+        if left.is_empty() || left.len() == before {
+            break;
+        }
+    }
+    done.extend(left);
+    done
 }
 
 impl Mesh {
@@ -947,12 +1658,12 @@ impl Mesh {
     fn bevel_vertices(
         &mut self,
         settings: &BevelSettings,
+        profile_shape: &ProfileShape,
         mode: SelectMode,
     ) -> Result<Bevel, MeshError> {
         let BevelSettings {
-            width,
+            width: value,
             segments,
-            shape,
             clamp,
             ..
         } = *settings;
@@ -984,7 +1695,45 @@ impl Mesh {
             }
         }
         let max_width = if clamp { max_width * 0.999 } else { UNCLAMPED };
-        let width = width.min(max_width);
+        // How far points move per unit of the width, as its type measures it. Each
+        // point moves straight along its edge.
+        let mean = |values: Vec<f32>| {
+            let good: Vec<f32> = values
+                .into_iter()
+                .filter(|v| v.is_finite() && *v > 1e-6)
+                .collect();
+            (!good.is_empty()).then(|| good.iter().sum::<f32>() / good.len() as f32)
+        };
+        let mut lengths = Vec::new();
+        let mut across = Vec::new();
+        let mut depths = Vec::new();
+        for &v in &hubs {
+            let fan = &fans[&v];
+            let here = self.vertices[v].position;
+            for &e in &fan.edges {
+                if let Some(other) = self.edges[e].other_vertex(v) {
+                    lengths.push(length(sub(self.vertices[other].position, here)));
+                }
+            }
+            for i in 0..fan.corners.len() {
+                let (a, b) = (
+                    directions[&(v, fan.edges[i])],
+                    directions[&(v, fan.next_edge(i))],
+                );
+                let chord = sub(b, a);
+                across.push(length(chord));
+                if length(chord) > 1e-9 {
+                    depths.push(length(cross(a, chord)) / length(chord));
+                }
+            }
+        }
+        let per_unit = match settings.width_type {
+            WidthType::Offset | WidthType::Absolute => 1.0,
+            WidthType::Percent => mean(lengths).map_or(1.0, |l| l / 100.0),
+            WidthType::Width => mean(across).map_or(1.0, |w| 1.0 / w),
+            WidthType::Depth => mean(depths).map_or(1.0, |d| 1.0 / d),
+        };
+        let width = (value * per_unit).min(max_width);
 
         let mut moving: Vec<(VertexId, V3, V3)> = Vec::new();
         let mut made: HashMap<(VertexId, EdgeId), VertexId> = HashMap::new();
@@ -1012,9 +1761,15 @@ impl Mesh {
             if let Entry::Vacant(slot) = profiles.entry(key) {
                 let here = mesh.vertices[v].position;
                 let mut inner = Vec::new();
-                for step in
-                    profile_steps(step_of[&key.1], step_of[&key.2], [0.0; 3], segments, shape)
-                {
+                let (a, c) = (step_of[&key.1], step_of[&key.2]);
+                let points = if first_is_a(a, c) {
+                    profile_shape.steps(a, c, [0.0; 3])
+                } else {
+                    let mut back = profile_shape.steps(c, a, [0.0; 3]);
+                    back.reverse();
+                    back
+                };
+                for step in points {
                     let id = mesh.add_vertex(add(here, scale(step, width)))?;
                     moving.push((id, here, step));
                     inner.push(id);
@@ -1075,7 +1830,7 @@ impl Mesh {
             // Faces run the other way round the vertex from the fan's order.
             outline.reverse();
             if segments > 1 {
-                let step = scale(sum, center_share(shape) / n as f32);
+                let step = scale(sum, profile_shape.center_share() / n as f32);
                 let center = self.add_vertex(add(here, scale(step, width)))?;
                 moving.push((center, here, step));
                 let count = outline.len();
@@ -1115,12 +1870,16 @@ impl Mesh {
             self.faces[face].smooth = bevel_smooth;
             selected.push(Element::Face(face));
         }
+        if settings.mark_sharp {
+            self.mark_bevel_border_sharp(&selected);
+        }
         self.select_elements(SelectMode::Face, &selected, SelectOp::Replace)?;
         self.flush_selection(mode);
         Ok(Bevel {
             moving,
             width,
             max_width,
+            per_unit,
         })
     }
 }

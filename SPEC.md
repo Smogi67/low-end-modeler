@@ -4,7 +4,7 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 10, steps 1 to 3 done: small fixes, the Mixer Launcher with updates from GitHub Releases, and the settings page (version 0.11.0). Stage 9 added knife, bisect, join, booleans, View mode, the start window, anti-aliasing, smooth shading, and mirror and array modifiers. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Status: **Stage 10, steps 1 to 3 done: small fixes, the Mixer Launcher with updates from GitHub Releases, and the settings page. Then, at the owner's request before step 4, Blender's bevel options and a shadows setting (version 0.12.0). Stage 9 added knife, bisect, join, booleans, View mode, the start window, anti-aliasing, smooth shading, and mirror and array modifiers. The owner has started trying the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
 Next step: **Stage 10 step 4: rendering engines (Vulkan, DirectX 12, OpenGL 3.3 through wgpu, beside OpenGL 2.1). Then step 5, feature search.**
 
 ## 1. Goal
@@ -191,6 +191,19 @@ Asked to consult first, the owner chose this order:
 4. **Rendering engine choice:** the owner wants it to work on PCs generally, not only the laptop, including Vulkan. Plan: keep today's OpenGL 2.1 renderer (the laptop supports nothing newer that wgpu can use) and add a second renderer built on wgpu offering Vulkan, DirectX 12 and OpenGL 3.3. Every engine is listed, even ones the PC seems not to support; those say "may be unsupported" beside them, and people may still pick them (owner's choice: freedom over safety). The launcher recommends one, and an advanced view lets people pick. If a picked engine fails to start, Mixer must fall back to OpenGL 2.1 and say so, never just fail to open. The same choice is in Mixer's settings. The owner accepted that the download grows by several MB. No software (Mesa) fallback.
 5. **Feature search.**
 
+### Decisions made in Stage 10: Blender's bevel options (owner's request, before step 4)
+
+The owner sent the Blender 5.2 manual page for Bevel and asked for what is on it. This replaces the Stage 7 decision that left these options out.
+
+- **Width type:** Offset, Width, Depth, Percent and Absolute, as in Blender. Inside, every bevel is still worked out in Offset; each type gives a factor from its own unit to offset (Percent: the mean length of the edges the points slide along, over 100; Width and Depth: from the bevel's chord). Switching to or from Percent converts the number so the bevel stays about the same size.
+- **Custom profile:** an editor in the panel. Drag points, click the line to add one (up to 24), right-click to remove, double-click for sharp or smooth. Curves through smooth points are Catmull-Rom; between two sharp points the line is straight. Small rings on the line show where the new edges go. Presets: Round, Chamfer, Support Loops, Steps, Cornice Molding, Crown Molding. Sample straight edges and Sample even lengths work as in Blender.
+- **Miter outer** (Sharp, Patch, Arc), **Miter inner** (Sharp, Arc) and **Spread**, where two beveled edges meet at a corner whose two sides differ in angle. **Intersection:** Grid Fill (the rounded patch, as before) or Cutoff (each end cut off flat, with a flat face in the middle).
+- **Loop slide** (on by default): off gives an even width instead of sliding along the edges.
+- **Sharp edges:** edges can be marked sharp (Mark sharp and Clear sharp in Edge mode, or the bevel's Mark sharp option, which marks the bevel's borders). Smooth shading stops at them; they are saved in project files (`sharp a b` lines) and carried into exports through the normals. Sharp edges are drawn blue.
+- The less common options are behind "More options" in the Bevel panel, so it stays short on the laptop's screen; the panel scrolls when it is taller than the 3D view.
+- **Left for later**, because Mixer has nothing for them yet: Material Index (needs materials), Mark Seams (needs UVs), Harden Normals and Face Strength (need custom normals).
+- **Shadows setting** (Settings > Display > Shadows on shapes, on by default): off lights every side the same. In View mode a shape then shows only its outline, because there are no edge lines there; this is what was asked for, and the note under the checkbox says so.
+
 ### Decisions made in Stage 10, step 3: the settings page (owner chose all four groups)
 
 - **Where:** a Settings window over everything, from the gear button in the top bar, File > Settings, Ctrl+comma, or the Settings button in the start window (which replaces the anti-aliasing checkbox there). Four pages on the left. Every change is saved to settings.txt straight away; Esc or Close closes it.
@@ -274,8 +287,9 @@ The owner decided this on 2026-11-05.
 
 - Spin, screw, solidify, shrink/fatten, grid fill, convex hull
 - Modifiers: solidify, bevel, decimate, weld, triangulate, and boolean (mirror and array are done, and the one-time boolean tools are done)
-- UV seams, unwrapping, and UV editing
-- Simple materials
+- UV seams, unwrapping, and UV editing, then the bevel's Mark Seams option
+- Custom normals, then the bevel's Harden Normals and Face Strength options
+- Simple materials, then the bevel's Material Index option
 - Mesh checks for bad geometry before export
 - Feature search (owner's request, Stage 10 step 5): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
 
@@ -368,6 +382,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-08 | 10 | Step 2, Mixer Launcher: the owner approved the design picture; the setup program became the launcher with four custom-drawn pages and updates from GitHub Releases; version 0.10.0. 17 new launcher tests: JSON reading, versions, release parsing, refusing downloads off github.com, fingerprints and sizes, refusing paths outside the folder, replacing files with the launcher moved aside, a failed replace changing nothing, settings lines kept, job steps with stand-in downloads, and the layout of every page fitting the window with nothing overlapping. On GitHub's Windows machine: screenshots of the Welcome, Home (with an update card) and Advanced pages match the design; the Working page finished too fast to catch, so it has only been checked in the Linux preview; a real SDL2 install; release v0.10.0 published; and a real update of a copy pretending to be 0.0.1 from it, which replaced every file, moved the running launcher aside and kept SDL2.dll | Not yet |
 | 2026-11-08 | 10 | Version 0.10.1, at the owner's request: Repair install also puts Mixer's own files back from the release of its version. 1 new test repairs a damaged Mixer with stand-in downloads; GitHub Actions repairs a damaged copy for real. Published as an update, so the owner's 0.10.0 launcher offers it | Not yet |
 | 2026-11-08 | 10 | Step 3, settings page, version 0.11.0: the Settings window with Display, Mouse, Saving, and Export and updates; interface size; touchpad mode; zoom toward the pointer; auto-save; undo steps; start window off. 5 new tests: settings read back exactly, odd values brought into range with other lines kept, zooming at the pointer keeping the point under it, and clicking all over every settings page. Run on Linux with OpenGL limited to 2.1 using simulated input: every page, switching to 125 % (sharp letters, clicks and the 3D view still lined up, the top bar fitting), and an auto-save two minutes after adding a cone. Touchpad scrolling could not be tried without a touchpad | Not yet |
+| 2026-11-08 | 10 | Before step 4, at the owner's request, version 0.12.0: Blender's bevel options (width types, custom profile with six presets and sampling options, miters with spread, Cutoff intersection, loop slide, mark sharp), sharp edges in general, and a shadows setting. 16 new tests: 11 for the bevel options (each width type's measured size, loop slide, the bevel's sharp borders, chamfer and round custom profiles matching the plain ones, every preset closed, both sides of a one-sided profile matching, miters, a cube cut off at all eight corners with every face flat, refusing a bad spread, and 540 combinations of options with exact undo), 4 for custom profiles, and 1 for sharp edges splitting smooth shading and being saved. The interface test now keeps the Bevel panel open so it clicks its controls. Run on Linux with OpenGL limited to 2.1 using simulated input: the panel with each profile type, typing a width and segments, the Steps and Cornice Molding presets, More options, Mark sharp, Cutoff, smooth shading with blue sharp borders, and shadows off (saved as `shadows off`). Miters were checked by tests only | Not yet |
 
 ## 12. Open questions
 
@@ -381,3 +396,4 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] List the real dependencies of the .exe for the installer: done in Stage 8, see section 6
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
 - [x] Approve the picture of the new Mixer Launcher before it is built (Stage 10 step 2): approved 2026-11-08
+- [ ] With shadows off, should View mode keep a faint shading so shapes do not look flat? (Built literally for now: every side the same)
