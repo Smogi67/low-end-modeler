@@ -102,7 +102,7 @@ fn options() -> Options {
             "--pretend-version" => {
                 options.pretend_version = args.next().and_then(|v| Version::parse(&v));
             }
-            "--no-window" | "--update" => {}
+            "--no-window" | "--update" | "--repair" => {}
             _ => options.for_mixer.push(arg),
         }
     }
@@ -222,14 +222,17 @@ fn start_mixer(folder: &Path, args: &[String]) -> Result<(), String> {
 }
 
 /// Runs without a window, printing each step, for automated checks on GitHub. With
-/// `--update`, updates Mixer from the newest release; otherwise installs SDL2 if it is
-/// needed. Returns the exit code.
+/// `--update`, updates Mixer from the newest release; with `--repair`, puts every file
+/// back; otherwise installs SDL2 if it is needed. Returns the exit code.
 pub fn run_without_window() -> i32 {
     let folder = own_folder();
     let options = options();
     let updating = std::env::args().any(|a| a == "--update");
+    let repairing = std::env::args().any(|a| a == "--repair");
     println!("Graphics: {}", graphics().text);
-    let plan = if updating {
+    let plan = if repairing {
+        Plan::repair(update::installed_version(&folder))
+    } else if updating {
         let installed = options
             .pretend_version
             .unwrap_or_else(|| update::installed_version(&folder));
@@ -1046,7 +1049,7 @@ impl App {
                     _ => {}
                 }
             }
-            Action::Repair => self.start_job(Plan::repair()),
+            Action::Repair => self.start_job(Plan::repair(self.model.installed)),
             Action::Pick(renderer) => {
                 if renderer.built() {
                     self.model.draft.renderer = renderer;

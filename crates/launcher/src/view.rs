@@ -1389,11 +1389,15 @@ pub mod tests {
         let mut done = model(Page::Working);
         done.job.title = "Repairing the install".into();
         done.job.steps = vec![
+            "Find Mixer 0.10.0 on GitHub".into(),
+            "Download Mixer 0.10.0".into(),
+            "Check the download's fingerprint".into(),
+            "Put Mixer's files back (your projects are not touched)".into(),
             "Download SDL2 2.32.10 (595 KB)".into(),
             "Check and install SDL2".into(),
             "Check that Windows can load it".into(),
         ];
-        done.job.current = 3;
+        done.job.current = 7;
         done.job.finished = true;
         done.job.offer_start = true;
         done.show_log = false;

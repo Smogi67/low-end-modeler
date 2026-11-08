@@ -131,6 +131,23 @@ jobs:
             if (-not (Test-Path updating/SDL2.dll)) { throw "the update removed SDL2.dll" }
           }
 
+      # Repair puts Mixer's own files back from the release of its version.
+      - name: Repair a damaged copy
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse trial repairing
+          Set-Content -NoNewline -Encoding ascii repairing/mixer.exe "damaged"
+          Remove-Item repairing/README.txt
+          $process = Start-Process -FilePath repairing/mixer-launcher.exe -ArgumentList "--no-window","--repair" -Wait -PassThru -NoNewWindow -RedirectStandardOutput repair-output.txt
+          Get-Content repair-output.txt
+          if (Select-String -Path repair-output.txt -Pattern "nothing at that address" -Quiet) {
+            Write-Output "No release to repair from yet."
+          } else {
+            if ($process.ExitCode -ne 0) { throw "repair failed with code $($process.ExitCode)" }
+            if ((Get-Item repairing/mixer.exe).Length -lt 100000) { throw "repair did not put mixer.exe back" }
+            if (-not (Test-Path repairing/README.txt)) { throw "repair did not put README.txt back" }
+          }
+
       # Screenshots of the real windows, printed into this log as text so they can be
       # checked without downloading anything: the launcher's pages, and the app's
       # message when SDL2.dll is missing.

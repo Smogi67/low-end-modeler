@@ -17,6 +17,8 @@ use crate::json::{self, Value};
 /// Where the releases are.
 pub const API_HOST: &str = "api.github.com";
 pub const LATEST_PATH: &str = "/repos/Smogi67/mixer/releases/latest";
+/// Followed by a tag such as v0.10.0.
+pub const TAG_PATH: &str = "/repos/Smogi67/mixer/releases/tags/";
 
 /// The program files a release contains, besides the license texts.
 pub const APP_EXE: &str = "mixer.exe";

@@ -6,13 +6,15 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::{self, Event, Found, SDL2};
-use crate::update::{self, Release};
+use crate::update::{self, Release, Version};
 
 /// One part of a job.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Task {
     /// Download, check and put in place a newer Mixer.
     Update(Box<Release>),
+    /// Find this version's release on GitHub, then put its files in place again.
+    Reinstall(Version),
     /// Download, check and install SDL2, even if it is there.
     InstallSdl,
     /// SDL2 only if it is missing or different.
@@ -41,6 +43,12 @@ fn steps_of(task: &Task) -> Vec<String> {
             "Check the download's fingerprint".into(),
             "Replace Mixer (your projects are not touched)".into(),
         ],
+        Task::Reinstall(version) => vec![
+            format!("Find Mixer {version} on GitHub"),
+            format!("Download Mixer {version}"),
+            "Check the download's fingerprint".into(),
+            "Put Mixer's files back (your projects are not touched)".into(),
+        ],
         Task::InstallSdl | Task::EnsureSdl => vec![
             format!(
                 "Download SDL2 {} ({})",
@@ -63,6 +71,8 @@ impl Plan {
             if let Task::Update(_) = task {
                 // Up to and including the fingerprint check.
                 cancellable_until = steps.len() + 2;
+            } else if let Task::Reinstall(_) = task {
+                cancellable_until = steps.len() + 3;
             } else if cancellable_until == 0 {
                 cancellable_until = steps.len() + 1;
             }
@@ -97,9 +107,12 @@ impl Plan {
         )
     }
 
-    /// Repair install: SDL2 again.
-    pub fn repair() -> Self {
-        Self::new("Repairing the install".into(), vec![Task::InstallSdl])
+    /// Repair install: every file of this version of Mixer, and SDL2, again.
+    pub fn repair(installed: Version) -> Self {
+        Self::new(
+            "Repairing the install".into(),
+            vec![Task::Reinstall(installed), Task::InstallSdl],
+        )
     }
 
     /// Whether the job ends by starting Mixer.
@@ -147,6 +160,12 @@ pub fn run(
             Task::Update(release) => {
                 update_task(release, folder, io, send, cancel, step)?;
                 step += 3;
+            }
+            Task::Reinstall(version) => {
+                send(Event::Step(step));
+                let release = find_release(*version, io, send)?;
+                update_task(&release, folder, io, send, cancel, step + 1)?;
+                step += 4;
             }
             Task::InstallSdl | Task::EnsureSdl => {
                 sdl_task(*task == Task::EnsureSdl, folder, io, send, cancel, step)?;
@@ -196,6 +215,31 @@ fn download(
     bytes
 }
 
+/// The release of this version, or the newest one if GitHub has none for it (an
+/// unreleased version, such as a test build).
+fn find_release(
+    version: Version,
+    io: &mut dyn Io,
+    send: &mut dyn FnMut(Event),
+) -> Result<Release, String> {
+    let url = format!("https://{}{}v{version}", update::API_HOST, update::TAG_PATH);
+    send(Event::Line(format!("Asking GitHub for {url}")));
+    let answer = match io.get(&url, &mut |_, _| true) {
+        Ok(answer) => answer,
+        Err(error) if error.contains("code 404") => {
+            send(Event::Line(format!(
+                "  there is no release of {version}, so the newest one is used"
+            )));
+            let latest = format!("https://{}{}", update::API_HOST, update::LATEST_PATH);
+            io.get(&latest, &mut |_, _| true)?
+        }
+        Err(error) => return Err(error),
+    };
+    let release = update::parse_release(&String::from_utf8_lossy(&answer))?;
+    send(Event::Line(format!("  found Mixer {}", release.version)));
+    Ok(release)
+}
+
 fn update_task(
     release: &Release,
     folder: &Path,
@@ -205,7 +249,7 @@ fn update_task(
     first: usize,
 ) -> Result<(), String> {
     send(Event::Step(first));
-    send(Event::Line(format!("Newest release: {}", release.version)));
+    send(Event::Line(format!("Release: {}", release.version)));
     let fingerprint = io.get(&release.fingerprint.url, &mut |_, _| true)?;
     let zip = download(io, &release.zip.url, send, cancel)?;
     send(Event::Line(format!(
@@ -423,11 +467,70 @@ mod tests {
         assert_eq!(install.steps.len(), 4);
         assert_eq!(install.cancellable_until, 1);
         assert!(install.starts_mixer());
-        let repair = Plan::repair();
+        let repair = Plan::repair(Version(0, 10, 0));
         assert!(!repair.starts_mixer());
-        assert!(repair.steps[0].contains("SDL2"));
+        assert_eq!(repair.steps.len(), 7);
+        assert_eq!(repair.cancellable_until, 3);
+        assert!(repair.steps[0].contains("0.10.0"));
+        assert!(repair.steps[4].contains("SDL2"));
         let with_sdl = Plan::update(release(b"zip"), Found::Missing, true);
         assert_eq!(with_sdl.steps.len(), 7);
         assert_eq!(with_sdl.cancellable_until, 2);
+    }
+
+    #[test]
+    fn repair_puts_mixers_own_files_back() {
+        let folder = temp_folder("job-repair");
+        // A damaged install: Mixer's .exe broken, the version file kept.
+        std::fs::write(folder.join("mixer.exe"), b"damaged").unwrap();
+        std::fs::write(folder.join("version.txt"), b"0.11.0").unwrap();
+        let zip = make_zip(&[
+            ("mixer.exe", b"good app"),
+            ("mixer-launcher.exe", b"launcher"),
+            ("version.txt", b"0.11.0"),
+        ]);
+        let answer = format!(
+            r#"{{"tag_name":"v0.11.0","body":"","assets":[
+              {{"name":"mixer-0.11.0-windows.zip","size":{},"browser_download_url":"https://github.com/zip"}},
+              {{"name":"mixer-0.11.0-windows.zip.sha256","size":90,"browser_download_url":"https://github.com/sha"}}]}}"#,
+            zip.len()
+        );
+        let sdl_zip = b"not the real SDL".to_vec();
+        let mut fake = Fake {
+            files: vec![
+                (
+                    "https://api.github.com/repos/Smogi67/mixer/releases/tags/v0.11.0".into(),
+                    answer.into_bytes(),
+                ),
+                ("https://github.com/zip".into(), zip.clone()),
+                (
+                    "https://github.com/sha".into(),
+                    format!("{}  x.zip\n", core::sha256_hex(&zip)).into_bytes(),
+                ),
+                (SDL2.url(), sdl_zip),
+            ],
+            started: false,
+        };
+        let plan = Plan::repair(update::installed_version(&folder));
+        let mut steps = Vec::new();
+        let result = run(
+            &plan,
+            &folder,
+            &mut fake,
+            &mut |e| {
+                if let Event::Step(s) = e {
+                    steps.push(s);
+                }
+            },
+            &AtomicBool::new(false),
+        );
+        // Mixer is back; then the stand-in SDL2 zip fails its pinned fingerprint.
+        assert_eq!(
+            std::fs::read(folder.join("mixer.exe")).unwrap(),
+            b"good app"
+        );
+        assert_eq!(steps, [0, 1, 2, 3, 4, 5]);
+        assert!(result.unwrap_err().contains("fingerprint"));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }

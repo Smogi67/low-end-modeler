@@ -1,7 +1,5 @@
-Mixer 0.10.0
+Mixer 0.10.1
 
-- New Mixer Launcher: starts Mixer and offers updates from GitHub
-- Mirror and array modifiers in Part mode
-- Quick projects get their own folders; Recent can show or delete a project
+- Repair install (in the launcher's Advanced page) now puts all of Mixer's own files back too, not only SDL2
 
-Download `mixer-0.10.0-windows.zip`, unzip it, and start `mixer-launcher.exe`. From now on the launcher updates Mixer for you. The `.sha256` file is the zip's fingerprint, which the launcher checks.
+If you have Mixer 0.10.0, the Mixer Launcher offers this update by itself: press Update now. Otherwise download `mixer-0.10.1-windows.zip`, unzip it, and start `mixer-launcher.exe`.
