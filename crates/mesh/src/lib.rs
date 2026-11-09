@@ -81,6 +81,7 @@ mod groups;
 mod history;
 mod id;
 mod loops;
+mod materials;
 mod mesh;
 mod modifiers;
 mod obj;
@@ -103,9 +104,10 @@ pub use boolean::BooleanOp;
 pub use cut::CutPoint;
 pub use error::MeshError;
 pub use history::{DEFAULT_MAX_BYTES, DEFAULT_MAX_STEPS, Document, HistoryLimits};
-pub use id::ModifierId;
 pub use id::{CornerId, EdgeId, FaceId, VertexId};
+pub use id::{MaterialId, ModifierId};
 pub use loops::{MAX_LOOP_CUTS, SlideRail};
+pub use materials::{MAX_MATERIAL_NAME, MAX_MATERIALS, Material};
 pub use mesh::{Corner, Edge, Face, Mesh, Vertex};
 pub use modifiers::{
     DEFAULT_MERGE_DISTANCE, MAX_ARRAY_COUNT, MAX_MERGE_DISTANCE, Modifier, ModifierEntry,

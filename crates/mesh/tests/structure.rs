@@ -313,7 +313,8 @@ fn memory_use_per_element_stays_small() {
     assert!(size_of::<mixer_mesh::Vertex>() <= 24);
     assert!(size_of::<mixer_mesh::Edge>() <= 60);
     assert!(size_of::<mixer_mesh::Corner>() <= 56);
-    assert!(size_of::<mixer_mesh::Face>() <= 16);
+    // A face grew from 16 to 24 bytes with its material (Stage 11), a deliberate cost.
+    assert!(size_of::<mixer_mesh::Face>() <= 24);
 }
 
 #[test]

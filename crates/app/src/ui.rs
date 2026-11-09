@@ -11,8 +11,8 @@ use imgui::{
 };
 use mixer_mesh::{
     AUTO_SMOOTH_ANGLE, BevelSettings, BooleanOp, CustomProfile, DEFAULT_MERGE_DISTANCE,
-    Intersection, MAX_ARRAY_COUNT, MAX_BEVEL_SEGMENTS, MAX_SPREAD, MAX_SUBDIVISIONS, Miter,
-    Modifier, ModifierId, Primitive, ProfilePreset, ProfileType, WidthType,
+    Intersection, MAX_ARRAY_COUNT, MAX_BEVEL_SEGMENTS, MAX_SPREAD, MAX_SUBDIVISIONS, Material,
+    MaterialId, Miter, Modifier, ModifierId, Primitive, ProfilePreset, ProfileType, WidthType,
 };
 
 use crate::editor::Target;
@@ -163,10 +163,18 @@ pub struct PanelState {
     pub panel_content: f32,
     /// The Properties panel's content height, as for `panel_content`.
     pub props_content: f32,
+    /// The Materials panel's content height.
+    pub materials_content: f32,
     /// Where the two side panels are, and how big.
     pub dock: Dock,
     /// Feature search, while it is open.
     pub search: Option<SearchState>,
+    /// The material the Materials panel shows; `None` is the default look.
+    pub active_material: Option<MaterialId>,
+    /// The active material as being edited, before it is saved.
+    pub material_draft: Option<(MaterialId, Material)>,
+    /// The name field's text.
+    pub material_name: String,
     pub export_format: ExportFormat,
     /// Where there are no system file dialogs, the path being typed.
     pub path_prompt: Option<PathPrompt>,
@@ -212,8 +220,12 @@ impl Default for PanelState {
             show_defaults: false,
             panel_content: f32::MAX,
             props_content: f32::MAX,
+            materials_content: f32::MAX,
             dock: Dock::default(),
             search: None,
+            active_material: None,
+            material_draft: None,
+            material_name: String::new(),
             export_format: ExportFormat::Obj,
             path_prompt: None,
             bevel: BevelSettings {
@@ -316,7 +328,21 @@ pub struct ViewState {
 }
 
 /// What the document looks like, for showing in the interface.
+/// One line of the Materials panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialRow {
+    pub id: MaterialId,
+    pub material: Material,
+    /// Faces using it, and how many of them are selected.
+    pub faces: usize,
+    pub selected: usize,
+}
+
 pub struct PanelInfo<'a> {
+    /// The project's materials, in order.
+    pub materials: Vec<MaterialRow>,
+    /// Faces with no material, and how many of them are selected.
+    pub plain_faces: (usize, usize),
     pub triangles: usize,
     /// The triangle limit from the settings, or `None` when it is off.
     pub triangle_limit: Option<usize>,
@@ -447,6 +473,18 @@ pub enum Action {
     ToggleView,
     /// Opens feature search (Ctrl+F).
     Search,
+    /// A new material, made the active one.
+    AddMaterial,
+    RemoveMaterial(MaterialId),
+    /// Shows `PanelState::material_draft` without saving it, while a slider or the color
+    /// picker is dragged.
+    PreviewMaterial,
+    /// Saves `PanelState::material_draft` as an undo step.
+    ChangeMaterial,
+    /// Gives the selected faces a material, or the default look.
+    AssignMaterial(Option<MaterialId>),
+    /// Selects (true) or deselects the faces with a material, or with none.
+    SelectMaterial(Option<MaterialId>, bool),
     /// Back to the start window, asking about unsaved changes first.
     StartWindow,
     /// Opens the settings window.
@@ -513,9 +551,10 @@ pub enum Place {
 pub struct Dock {
     /// The column's width.
     pub width: f32,
-    /// The upper panel's height when both are docked; `None` fits it to its contents.
-    pub top_height: Option<f32>,
-    pub places: [Place; 2],
+    /// Each docked panel's height as dragged; `None` fits it to its contents. The
+    /// lowest docked panel takes what is left.
+    pub heights: [Option<f32>; PANELS],
+    pub places: [Place; PANELS],
     /// The panel whose title is being dragged, and where in it the mouse took hold.
     pub dragging: Option<(usize, [f32; 2])>,
 }
@@ -524,14 +563,20 @@ impl Default for Dock {
     fn default() -> Self {
         Self {
             width: RIGHT_PANEL,
-            top_height: None,
-            places: [Place::Docked; 2],
+            heights: [None; PANELS],
+            places: [Place::Docked; PANELS],
             dragging: None,
         }
     }
 }
 
-pub const PANEL_NAMES: [&str; 2] = ["Add Shapes", "Properties"];
+/// The side panels: Add Shapes (0), Properties (1) and Materials (2).
+pub const PANELS: usize = 3;
+pub const PANEL_NAMES: [&str; PANELS] = ["Add Shapes", "Properties", "Materials"];
+/// Top to bottom when docked.
+const DOCK_ORDER: [usize; PANELS] = [0, 2, 1];
+/// The most of the column a panel fits itself to, before it scrolls.
+const FIT_SHARE: [f32; PANELS] = [0.6, 0.55, 0.3];
 const NARROWEST_DOCK: f32 = 240.0;
 const WIDEST_DOCK: f32 = 640.0;
 /// How far a title must be dragged before its panel comes out of the column.
@@ -2395,40 +2440,45 @@ fn side_panels(
     let column_x = display[0] - dock.width - MARGIN;
     let top = TOP_BAR + MARGIN;
     let room = (display[1] - TOP_BAR - STATUS_BAR - MARGIN * 2.0).max(80.0);
-    let both = dock.places == [Place::Docked; 2];
-    // Docked heights: the upper panel fits its contents unless its lower edge was
-    // dragged, and never leaves the lower one less than a little.
-    let contents = [state.panel_content, state.props_content];
-    let upper = if both {
-        // Properties gets its contents up to a little over half; Add Shapes the rest.
-        let fitted = contents[0].min(room - MARGIN - contents[1].min(room * 0.55));
-        dock.top_height
-            .unwrap_or(fitted)
-            .clamp(80.0, (room - MARGIN - 80.0).max(80.0))
-    } else {
-        room
-    };
-    let docked_rect = |panel: usize| -> [f32; 4] {
-        if both {
-            if panel == 0 {
-                [column_x, top, dock.width, upper]
-            } else {
-                let y = top + upper + MARGIN;
-                [column_x, y, dock.width, room - upper - MARGIN]
-            }
+    // Docked panels stack in DOCK_ORDER. Each fits its contents (up to a share of the
+    // column) unless its lower edge was dragged; the lowest takes what is left.
+    let contents = [
+        state.panel_content,
+        state.props_content,
+        state.materials_content,
+    ];
+    let docked: Vec<usize> = DOCK_ORDER
+        .into_iter()
+        .filter(|&p| dock.places[p] == Place::Docked)
+        .collect();
+    let mut docked_rects = [[0.0f32; 4]; PANELS];
+    let mut y = top;
+    let bottom = top + room;
+    for (k, &panel) in docked.iter().enumerate() {
+        let below = docked.len() - k - 1;
+        let h = if docked.len() == 1 {
+            contents[panel].min(room)
+        } else if below == 0 {
+            bottom - y
         } else {
-            [column_x, top, dock.width, contents[panel].min(room)]
-        }
-    };
-    let rects_wanted: Vec<[f32; 4]> = (0..2)
+            let fitted = contents[panel].min(room * FIT_SHARE[panel]);
+            let most = (bottom - y - below as f32 * (80.0 + MARGIN)).max(80.0);
+            dock.heights[panel]
+                .unwrap_or(fitted)
+                .clamp(80.0_f32.min(most), most)
+        };
+        docked_rects[panel] = [column_x, y, dock.width, h.max(60.0)];
+        y += h + MARGIN;
+    }
+    let rects_wanted: Vec<[f32; 4]> = (0..PANELS)
         .map(|panel| match dock.places[panel] {
-            Place::Docked => docked_rect(panel),
+            Place::Docked => docked_rects[panel],
             Place::Floating { pos, size } => [pos[0], pos[1], size[0], size[1]],
         })
         .collect();
 
     let mouse = ui.io().mouse_pos;
-    for panel in 0..2 {
+    for panel in 0..PANELS {
         let [x, y, w, h] = rects_wanted[panel];
         let docked = state.dock.places[panel] == Place::Docked;
         let mut flags = WindowFlags::NO_TITLE_BAR
@@ -2439,7 +2489,7 @@ fn side_panels(
             flags |= WindowFlags::NO_RESIZE;
         }
         let padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 10.0]));
-        let name = ["##panel", "##properties"][panel];
+        let name = ["##panel", "##properties", "##materials"][panel];
         let built = ui
             .window(name)
             .position([x, y], Condition::Always)
@@ -2448,18 +2498,26 @@ fn side_panels(
             .flags(flags)
             .build(|| {
                 panel_header(ui, state, fonts, panel);
-                if panel == 0 {
-                    tools_panel(ui, state, info, fonts, action);
-                } else {
-                    properties(ui, state, info, fonts, action);
-                }
-                // Where the next item would go, plus the bottom padding, minus the
+                // The contents scroll below the title, which stays in reach.
+                let header = ui.cursor_pos()[1];
+                let mut inner = 0.0;
+                ui.child_window(format!("##panel_body{panel}"))
+                    .size([0.0, 0.0])
+                    .build(|| {
+                        match panel {
+                            0 => tools_panel(ui, state, info, fonts, action),
+                            1 => properties(ui, state, info, fonts, action),
+                            _ => materials_panel(ui, state, info, fonts, action),
+                        }
+                        inner = ui.cursor_pos()[1];
+                    });
+                // The title, then the contents, plus the bottom padding, minus the
                 // spacing the last item left below itself.
-                let content = (ui.cursor_pos()[1] + 10.0 - 8.0).max(60.0);
-                if panel == 0 {
-                    state.panel_content = content;
-                } else {
-                    state.props_content = content;
+                let content = (header + inner + 10.0 - 8.0).max(60.0);
+                match panel {
+                    0 => state.panel_content = content,
+                    1 => state.props_content = content,
+                    _ => state.materials_content = content,
                 }
                 let [px, py] = ui.window_pos();
                 let [pw, ph] = ui.window_size();
@@ -2517,10 +2575,12 @@ fn side_panels(
         if let Some(dx) = splitter(ui, "##dock_width", edge, true) {
             state.dock.width = (state.dock.width - dx).clamp(NARROWEST_DOCK, WIDEST_DOCK);
         }
-        if both {
-            let gap = [column_x, top + upper, state.dock.width, MARGIN];
-            if let Some(dy) = splitter(ui, "##dock_split", gap, false) {
-                state.dock.top_height = Some(upper + dy);
+        // Below each docked panel but the lowest.
+        for pair in docked.windows(2) {
+            let [x, y, w, h] = docked_rects[pair[0]];
+            let gap = [x, y + h, w, MARGIN];
+            if let Some(dy) = splitter(ui, &format!("##dock_split{}", pair[0]), gap, false) {
+                state.dock.heights[pair[0]] = Some(h + dy);
             }
         }
     }
@@ -2636,6 +2696,211 @@ fn panel_header(ui: &Ui, state: &mut PanelState, fonts: &Fonts, panel: usize) {
     drop(list);
 }
 
+/// The Materials panel, as Blender's material tab: the project's materials, the active
+/// one's settings, and buttons to put it on the selected faces.
+fn materials_panel(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+) {
+    // A material removed, or undone away, is no longer active.
+    if let Some(id) = state.active_material
+        && !info.materials.iter().any(|r| r.id == id)
+    {
+        state.active_material = None;
+    }
+    let active = state
+        .active_material
+        .and_then(|id| info.materials.iter().find(|r| r.id == id).copied());
+    // The draft follows the active material unless it is being edited.
+    match (&state.material_draft, active) {
+        (Some((id, _)), Some(row)) if *id == row.id => {}
+        (_, Some(row)) => {
+            state.material_draft = Some((row.id, row.material));
+            state.material_name = row.material.name().to_string();
+        }
+        (_, None) => state.material_draft = None,
+    }
+
+    // The list: the default look first, then each material.
+    let line = |ui: &Ui, label: &str, swatch: [f32; 4], count: (usize, usize), on: bool| -> bool {
+        let start = ui.cursor_screen_pos();
+        let width = ui.content_region_avail()[0];
+        let clicked = ui
+            .selectable_config(format!("##{label}"))
+            .selected(on)
+            .size([width, 26.0])
+            .build();
+        let list = ui.get_window_draw_list();
+        list.add_rect(
+            [start[0] + 4.0, start[1] + 5.0],
+            [start[0] + 20.0, start[1] + 21.0],
+            [swatch[0], swatch[1], swatch[2], 1.0],
+        )
+        .filled(true)
+        .rounding(4.0)
+        .build();
+        list.add_rect(
+            [start[0] + 4.0, start[1] + 5.0],
+            [start[0] + 20.0, start[1] + 21.0],
+            color::BORDER(),
+        )
+        .rounding(4.0)
+        .build();
+        let name = label.split("##").next().unwrap_or(label);
+        list.add_text([start[0] + 28.0, start[1] + 5.0], color::TEXT(), name);
+        let plural = if count.0 == 1 { "face" } else { "faces" };
+        let faces = if count.1 > 0 {
+            format!("{} {plural}, {} selected", count.0, count.1)
+        } else {
+            format!("{} {plural}", count.0)
+        };
+        let faces_width = ui.calc_text_size(&faces)[0];
+        list.add_text(
+            [start[0] + width - faces_width - 6.0, start[1] + 5.0],
+            color::FAINT(),
+            &faces,
+        );
+        clicked
+    };
+    let face = crate::palette::get(crate::palette::FACE);
+    if line(
+        ui,
+        "Default look##plain",
+        face,
+        info.plain_faces,
+        active.is_none(),
+    ) {
+        state.active_material = None;
+    }
+    tooltip(
+        ui,
+        "Faces without a material. Its color is the theme's face color.",
+        "",
+    );
+    for row in &info.materials {
+        let label = format!("{}##material{:?}", row.material.name(), row.id);
+        if line(
+            ui,
+            &label,
+            row.material.color,
+            (row.faces, row.selected),
+            active.map(|a| a.id) == Some(row.id),
+        ) {
+            state.active_material = Some(row.id);
+        }
+    }
+    ui.dummy([0.0, 4.0]);
+    let half = (ui.content_region_avail()[0] - 8.0) / 2.0;
+    if ui.button_with_size("+ New material", [half, 0.0]) {
+        *action = Some(Action::AddMaterial);
+    }
+    tooltip(ui, "Adds a material, a copy of the one chosen above", "");
+    ui.same_line_with_spacing(0.0, 8.0);
+    let disabled = ui.begin_disabled(active.is_none());
+    if ui.button_with_size("Remove", [half, 0.0])
+        && let Some(row) = active
+    {
+        *action = Some(Action::RemoveMaterial(row.id));
+    }
+    drop(disabled);
+    if active.is_some() {
+        tooltip(
+            ui,
+            "Removes the material; its faces get the default look",
+            "",
+        );
+    }
+
+    // The active material's settings.
+    if let Some((id, draft)) = state.material_draft.as_mut() {
+        let id = *id;
+        ui.dummy([0.0, 6.0]);
+        heading(ui, fonts, "SETTINGS");
+        row(ui, "Name");
+        ui.set_next_item_width(-1.0);
+        if ui
+            .input_text("##material_name", &mut state.material_name)
+            .enter_returns_true(true)
+            .build()
+            || ui.is_item_deactivated_after_edit()
+        {
+            draft.set_name(&state.material_name);
+            state.material_name = draft.name().to_string();
+            *action = Some(Action::ChangeMaterial);
+        }
+        let mut changed = false;
+        let mut finished = false;
+        row(ui, "Color");
+        ui.set_next_item_width(-1.0);
+        changed |= ui
+            .color_edit4_config("##material_color", &mut draft.color)
+            .alpha_bar(true)
+            .build();
+        finished |= ui.is_item_deactivated_after_edit();
+        tooltip(
+            ui,
+            "The color; its opacity shows in exports, not in Mixer's view",
+            "",
+        );
+        row(ui, "Metal");
+        ui.set_next_item_width(-1.0);
+        changed |= ui
+            .slider_config("##material_metal", 0.0, 1.0)
+            .display_format("%.2f")
+            .build(&mut draft.metal);
+        finished |= ui.is_item_deactivated_after_edit();
+        tooltip(ui, "0 for paint, plastic or wood; 1 for bare metal", "");
+        row(ui, "Roughness");
+        ui.set_next_item_width(-1.0);
+        changed |= ui
+            .slider_config("##material_rough", 0.0, 1.0)
+            .display_format("%.2f")
+            .build(&mut draft.roughness);
+        finished |= ui.is_item_deactivated_after_edit();
+        tooltip(ui, "0 is a mirror finish, 1 is dull", "");
+        if finished {
+            *action = Some(Action::ChangeMaterial);
+        } else if changed && action.is_none() {
+            *action = Some(Action::PreviewMaterial);
+        }
+        let _ = id;
+    }
+
+    // Putting it on faces.
+    ui.dummy([0.0, 6.0]);
+    let chosen = active.map(|r| r.id);
+    let selected: usize =
+        info.materials.iter().map(|r| r.selected).sum::<usize>() + info.plain_faces.1;
+    let third = (ui.content_region_avail()[0] - 16.0) / 3.0;
+    let disabled = ui.begin_disabled(selected == 0);
+    if ui.button_with_size("Assign", [third, 0.0]) {
+        *action = Some(Action::AssignMaterial(chosen));
+    }
+    drop(disabled);
+    tooltip(
+        ui,
+        if selected == 0 {
+            "Select faces first, then give them this material"
+        } else {
+            "Gives the selected faces this material"
+        },
+        "",
+    );
+    ui.same_line_with_spacing(0.0, 8.0);
+    if ui.button_with_size("Select", [third, 0.0]) {
+        *action = Some(Action::SelectMaterial(chosen, true));
+    }
+    tooltip(ui, "Selects the faces with this material", "");
+    ui.same_line_with_spacing(0.0, 8.0);
+    if ui.button_with_size("Deselect", [third, 0.0]) {
+        *action = Some(Action::SelectMaterial(chosen, false));
+    }
+    tooltip(ui, "Deselects the faces with this material", "");
+}
+
 /// The Properties panel: what the last tool or the selected shape can still change,
 /// as Blender's "Adjust Last Operation" panel and sidebar do.
 fn properties(
@@ -2646,7 +2911,7 @@ fn properties(
     action: &mut Option<Action>,
 ) {
     if info.bevel_panel {
-        bevel_panel(ui, state, fonts, action);
+        bevel_panel(ui, state, info, fonts, action);
         ui.dummy([0.0, 8.0]);
     }
     // Shape settings.
@@ -2706,7 +2971,13 @@ fn properties(
 }
 
 /// The bevel panel: a title that folds it, then the settings. Any change redoes the bevel.
-fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Option<Action>) {
+fn bevel_panel(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+) {
     let start = ui.cursor_screen_pos();
     let width = ui.content_region_avail()[0];
     if ui.invisible_button("##bevel_fold", [width, 24.0]) {
@@ -2988,6 +3259,21 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
             "Where three or more beveled edges meet: a rounded patch, or each end cut off flat",
             "",
         );
+        // Blender's Material Index.
+        row(ui, "Material");
+        let mut names = vec!["From the faces around".to_string()];
+        names.extend(info.materials.iter().map(|r| r.material.name().to_string()));
+        let mut chosen = settings
+            .material
+            .and_then(|m| info.materials.iter().position(|r| r.id == m))
+            .map_or(0, |i| i + 1);
+        if ui.combo_simple_string("##bevel_material", &mut chosen, &names) {
+            settings.material = chosen
+                .checked_sub(1)
+                .and_then(|i| info.materials.get(i))
+                .map(|r| r.id);
+        }
+        tooltip(ui, "The material the bevel's new faces get", "");
     }
 
     settings.width = settings.width.max(0.0);
@@ -3364,6 +3650,15 @@ mod tests {
 
     fn info<'a>(target: Target, warnings: &'a [String], transform: bool) -> PanelInfo<'a> {
         PanelInfo {
+            materials: vec![MaterialRow {
+                id: mixer_mesh::Mesh::new()
+                    .add_material(Material::new("Red"))
+                    .unwrap(),
+                material: Material::new("Red"),
+                faces: 4,
+                selected: 2,
+            }],
+            plain_faces: (8, 1),
             triangles: 12,
             transform_waiting: false,
             transform_dragging: false,
@@ -3447,9 +3742,9 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            // The last case has one shape with modifiers, on a tall screen so that their
-            // settings fit without scrolling.
-            let height: f32 = if case == 6 { 1400.0 } else { 800.0 };
+            // Tall enough that the three docked panels show everything without
+            // scrolling; the case with modifiers needs more.
+            let height: f32 = if case == 6 { 1800.0 } else { 1100.0 };
             context.io_mut().display_size = [1280.0, height];
             let mut info = info(target, &warnings, transform);
             if case == 6 {

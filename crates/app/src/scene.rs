@@ -9,8 +9,9 @@ use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, ShadingNormals, VertexId};
 use crate::palette;
 use crate::picking::face_dot;
 
-/// Position, normal and selected (0 or 1), for each corner of each triangle.
-pub const FLOATS_PER_TRIANGLE_VERTEX: usize = 7;
+/// Position, normal, selected (0 or 1), the material's color, metal and roughness, for
+/// each corner of each triangle.
+pub const FLOATS_PER_TRIANGLE_VERTEX: usize = 12;
 /// Position and color, for each end of an edge and each point.
 pub const FLOATS_PER_LINE_VERTEX: usize = 6;
 
@@ -54,7 +55,16 @@ fn color(selected: bool) -> [f32; 3] {
 }
 
 fn write_face(mesh: &Mesh, normals: &ShadingNormals, face: FaceId, out: &mut [f32]) {
-    let selected = f32::from(u8::from(mesh.face(face).is_some_and(|f| f.is_selected())));
+    let data = mesh.face(face);
+    let selected = f32::from(u8::from(data.is_some_and(|f| f.is_selected())));
+    // Faces without a material show the theme's face color, rough and not metal.
+    let (color, metal, roughness) = match data
+        .and_then(|f| f.material())
+        .and_then(|m| mesh.material(m))
+    {
+        Some(m) => ([m.color[0], m.color[1], m.color[2]], m.metal, m.roughness),
+        None => (palette::rgb(palette::FACE), 0.0, 1.0),
+    };
     let mut chunks = out.chunks_exact_mut(FLOATS_PER_TRIANGLE_VERTEX);
     for triangle in mesh.face_triangles(face).unwrap_or_default() {
         for id in triangle {
@@ -64,6 +74,9 @@ fn write_face(mesh: &Mesh, normals: &ShadingNormals, face: FaceId, out: &mut [f3
             chunk[..3].copy_from_slice(&vertex.position());
             chunk[3..6].copy_from_slice(&normals.at(face, id));
             chunk[6] = selected;
+            chunk[7..10].copy_from_slice(&color);
+            chunk[10] = metal;
+            chunk[11] = roughness;
         }
     }
 }

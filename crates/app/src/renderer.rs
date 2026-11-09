@@ -52,39 +52,56 @@ const MESH_VERTEX_SHADER: &str = r#"#version 120
 attribute vec3 a_position;
 attribute vec3 a_normal;
 attribute float a_selected;
+// The face's material: color, and metal and roughness together.
+attribute vec3 a_color;
+attribute vec2 a_finish;
 uniform mat4 u_view_projection;
 varying vec3 v_normal;
 varying float v_selected;
+varying vec3 v_color;
+varying vec2 v_finish;
 void main() {
     v_normal = a_normal;
     v_selected = a_selected;
+    v_color = a_color;
+    v_finish = a_finish;
     gl_Position = u_view_projection * vec4(a_position, 1.0);
 }
 "#;
 
 const MESH_FRAGMENT_SHADER: &str = r#"#version 120
 uniform vec3 u_light;
-// The theme's colors: faces, faces seen from behind, and the selection tint with its
-// strength in the fourth number.
-uniform vec3 u_face;
+// The theme's colors: faces seen from behind, and the selection tint with its strength
+// in the fourth number. Faces' own colors come with them (the default is the theme's).
 uniform vec3 u_back;
 uniform vec4 u_selected;
 // 1 lights faces by which way they face, with darker sides; 0 lights them all evenly.
 uniform float u_shadows;
 varying vec3 v_normal;
 varying float v_selected;
+varying vec3 v_color;
+varying vec2 v_finish;
 void main() {
     // The light follows the camera. A face seen from behind turns red, which shows
     // inside-out faces at a glance.
-    vec3 color = gl_FrontFacing ? u_face : u_back;
-    color = mix(color, u_selected.rgb, v_selected * u_selected.a);
+    vec3 color = gl_FrontFacing ? v_color : u_back;
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(v_normal) * side;
     // A key light near the camera, plus soft light from the sky above.
     float key = max(dot(n, u_light), 0.0);
     float sky = 0.5 + 0.5 * n.z;
     float lit = mix(0.92, 0.20 + 0.55 * key + 0.30 * sky, u_shadows);
-    gl_FragColor = vec4(color * lit, 1.0);
+    // Smooth surfaces shine more, and more sharply; metal tints its shine. Cheap, so
+    // it stays quick on old graphics chips.
+    float metal = v_finish.x;
+    float gloss = 1.0 - v_finish.y;
+    float shine = pow(key, 4.0 + 60.0 * gloss) * gloss * gloss * u_shadows;
+    // Metal shows its color in what it reflects, here a soft sky and the key light.
+    vec3 reflected = color * (0.35 + 0.45 * sky + 0.35 * key);
+    vec3 shade = mix(color * lit, mix(color * lit, reflected, u_shadows), metal)
+        + shine * mix(vec3(0.6), color, metal);
+    shade = mix(shade, u_selected.rgb * lit, v_selected * u_selected.a);
+    gl_FragColor = vec4(shade, 1.0);
 }
 "#;
 
@@ -96,6 +113,8 @@ pub const EDGE_GLOW: [(f32, f32); 2] = [(7.0, 0.28), (2.5, 1.0)];
 const POSITION_ATTRIBUTE: u32 = 0;
 const COLOR_ATTRIBUTE: u32 = 1;
 const SELECTED_ATTRIBUTE: u32 = 2;
+const MATERIAL_ATTRIBUTE: u32 = 3;
+const FINISH_ATTRIBUTE: u32 = 4;
 const IDENTITY: Mat4 = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
@@ -117,7 +136,6 @@ pub struct Renderer {
     mesh_view_projection: Option<glow::UniformLocation>,
     mesh_light: Option<glow::UniformLocation>,
     mesh_shadows: Option<glow::UniformLocation>,
-    mesh_face: Option<glow::UniformLocation>,
     mesh_back: Option<glow::UniformLocation>,
     mesh_selected: Option<glow::UniformLocation>,
     /// The theme the grid and background were made with.
@@ -247,6 +265,8 @@ impl Renderer {
                     (COLOR_ATTRIBUTE, "a_normal"),
                     // Left to the driver, this could share a slot with another attribute.
                     (SELECTED_ATTRIBUTE, "a_selected"),
+                    (MATERIAL_ATTRIBUTE, "a_color"),
+                    (FINISH_ATTRIBUTE, "a_finish"),
                 ],
             )?;
             let view_projection = gl.get_uniform_location(program, "u_view_projection");
@@ -267,7 +287,6 @@ impl Renderer {
                 glow: gl.get_uniform_location(program, "u_glow"),
                 background_buffer: gl.create_buffer()?,
                 theme_version: std::cell::Cell::new(u64::MAX),
-                mesh_face: gl.get_uniform_location(mesh_program, "u_face"),
                 mesh_back: gl.get_uniform_location(mesh_program, "u_back"),
                 mesh_selected: gl.get_uniform_location(mesh_program, "u_selected"),
                 mesh_view_projection: gl.get_uniform_location(mesh_program, "u_view_projection"),
@@ -517,8 +536,6 @@ impl Renderer {
                 );
                 let [x, y, z] = view.light;
                 gl.uniform_3_f32(self.mesh_light.as_ref(), x, y, z);
-                let [r, g, b] = palette::rgb(palette::FACE);
-                gl.uniform_3_f32(self.mesh_face.as_ref(), r, g, b);
                 let [r, g, b] = palette::rgb(palette::FACE_BACK);
                 gl.uniform_3_f32(self.mesh_back.as_ref(), r, g, b);
                 let [r, g, b, a] = palette::get(palette::FACE_SELECTED);
@@ -552,11 +569,31 @@ impl Renderer {
                     // Every face unselected.
                     gl.vertex_attrib_1_f32(SELECTED_ATTRIBUTE, 0.0);
                 }
+                gl.enable_vertex_attrib_array(MATERIAL_ATTRIBUTE);
+                gl.vertex_attrib_pointer_f32(
+                    MATERIAL_ATTRIBUTE,
+                    3,
+                    glow::FLOAT,
+                    false,
+                    stride,
+                    7 * size,
+                );
+                gl.enable_vertex_attrib_array(FINISH_ATTRIBUTE);
+                gl.vertex_attrib_pointer_f32(
+                    FINISH_ATTRIBUTE,
+                    2,
+                    glow::FLOAT,
+                    false,
+                    stride,
+                    10 * size,
+                );
                 gl.enable(glow::POLYGON_OFFSET_FILL);
                 gl.polygon_offset(1.0, 1.0);
                 gl.draw_arrays(glow::TRIANGLES, 0, self.triangle_vertex_count);
                 gl.disable(glow::POLYGON_OFFSET_FILL);
                 gl.disable_vertex_attrib_array(SELECTED_ATTRIBUTE);
+                gl.disable_vertex_attrib_array(MATERIAL_ATTRIBUTE);
+                gl.disable_vertex_attrib_array(FINISH_ATTRIBUTE);
             }
 
             // In View mode, plain edge lines all in one color, when the settings ask.

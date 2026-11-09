@@ -222,6 +222,16 @@ Step 4 is done (version 0.13.0); see its decisions below.
 - Ctrl+B (or the Bevel button) no longer makes the bevel follow the mouse straight away. It waits, with "Hold left click and drag" in the hint; the width follows the drag from where the button went down, and letting go confirms. Scrolling still changes segments; Esc or right-click cancels; Enter before any drag cancels too, as a bevel of no width does nothing.
 - The two Edit and View buttons in the top bar are now one button showing the current look ("Edit" or "View"); clicking it switches. Tab still does the same.
 
+### Materials (owner's choices, 2026-11-09)
+
+- **What a material is:** a name, a color with opacity, Metal and Roughness (Blender's Principled BSDF basics). Each face uses one material or none ("Default look", the theme's face color).
+- **One list per project**, not Blender's slots per object: Mixer's parts are pieces of one mesh, so a per-part list would only add steps. Up to 256 materials.
+- **Materials panel**, a third dockable panel (docked between Add Shapes and Properties): the list with a swatch and face counts, New and Remove, Name, Color, Metal and Roughness, and Assign, Select and Deselect as in Blender. Editing shows at once; letting go makes one undo step.
+- **Tools keep materials:** new faces take a neighbor's material (extrude, inset, loop cut, bevel, subdivide), and duplicate, mirror, array, join, separate and booleans keep each face's own. The bevel's **Material Index** option (under More options) gives the bevel's new faces a chosen material.
+- **Saved in projects** as `mat` and `u` lines; the file says `mixer 2` only when it has materials, so files without them still open in older versions.
+- **Exports:** OBJ gets a `.mtl` file beside it (Kd, d, and the PBR extension's Pm and Pr). glTF/GLB gets one primitive per material with metallic-roughness materials (colors turned from sRGB to linear), plus the same colors as vertex colors (COLOR_0).
+- **Roblox (checked 2026-11-09):** the Importer makes one MeshPart per glTF primitive, so each material becomes its own MeshPart, and it has an "Ignore Vertex Colors" option, so it reads vertex colors. Its docs do not say whether it reads glTF material colors or OBJ `.mtl` colors; the owner's import test will tell. Sources: https://create.roblox.com/docs/en-us/studio/importer.md
+
 ### Not a Roblox tool (owner's request, 2026-11-08)
 
 - Every "for Roblox" wording is gone from the interface and README: the start window says "3D modeling", the export button and popup just say Export, and scale is explained as "sizes are exported as they are".
@@ -241,7 +251,7 @@ The owner sent the Blender 5.2 manual page for Bevel and asked for what is on it
 - **Loop slide** (on by default): off gives an even width instead of sliding along the edges.
 - **Sharp edges:** edges can be marked sharp (Mark sharp and Clear sharp in Edge mode, or the bevel's Mark sharp option, which marks the bevel's borders). Smooth shading stops at them; they are saved in project files (`sharp a b` lines) and carried into exports through the normals. Sharp edges are drawn blue.
 - The less common options are behind "More options" in the Bevel panel, so it stays short on the laptop's screen; the panel scrolls when it is taller than the 3D view.
-- **Left for later**, because Mixer has nothing for them yet: Material Index (needs materials), Mark Seams (needs UVs), Harden Normals and Face Strength (need custom normals).
+- **Left for later**, because Mixer has nothing for them yet: Mark Seams (needs UVs), Harden Normals and Face Strength (need custom normals).
 - **Shadows setting** (Settings > Display > Shadows on shapes, on by default): off lights every side the same. Asked whether that looks too flat in View mode, the owner chose to offer both: with shadows off, "Edge lines in View mode" (off by default, `flatedges` in settings.txt) draws thin plain edge lines in View mode, so the shape still shows.
 - **Leftover launcher:** after an update, Mixer deletes `mixer-launcher.old.exe` when it starts (trying for up to 10 seconds while the old launcher closes), so it no longer waits for the launcher's next start. Owner's request.
 
@@ -330,7 +340,6 @@ The owner decided this on 2026-11-05.
 - Modifiers: solidify, bevel, decimate, weld, triangulate, and boolean (mirror and array are done, and the one-time boolean tools are done)
 - UV seams, unwrapping, and UV editing, then the bevel's Mark Seams option
 - Custom normals, then the bevel's Harden Normals and Face Strength options
-- Simple materials, then the bevel's Material Index option
 - Mesh checks for bad geometry before export
 - Feature search (owner's request, Stage 10 step 5): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
 
@@ -431,6 +440,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-09 | 10 | Version 0.14.0, at the owner's requests: bevel-again fix, docked and floating Add Shapes and Properties panels, cursor held during bevel drags, a theme page for every color. New tests: bevelling again after every preset (2), theme files read back, the docked layout stacking inside the column. Run on Linux with simulated input: the bevel options showing as soon as the drag ends, taking Add Shapes out, moving it, the docking outline, docking it again, the theme page, and a light blue theme loaded from theme.txt | Not yet |
 | 2026-11-09 | 10 | Step 5, version 0.15.0: feature search (Ctrl+F). 1 new test (matching and ranking, every name once). Run on Linux with simulated input: Ctrl+F opened the list, typing "sub" left Subdivide and Subtract, Enter subdivided the selected cube | Not yet |
 | 2026-11-09 | 10 | Version 0.15.1, the owner's report again (bevelling a bevelled shape still failed): the round corner patch where three bevelled edges meet chose each small triangle's facing from its own shape, and on nearly flat corners, such as a cylinder's or cone's rim with many segments, some came out facing the other way. Now the whole patch turns together. New tests bevel again the way the app does (width 0 with the last settings, then moving the points) after every preset, segment count, intersection and width on one edge, a loop and a whole cube, and after round bevels of every shape on cubes, cylinders, cones and spheres | Not yet |
+| 2026-11-09 | 10 | Version 0.16.0, materials (the owner chose color, metal and roughness; per-face assignment; saved in the project; their own panel): the Materials panel, the bevel's Material Index, tools keeping materials, project saving, OBJ+MTL and glTF materials with vertex colors, and both renderers shading metal and roughness. One project-wide list instead of per-part slots (see section 5). 6 new tests: undo, new faces inheriting and the bevel's Material Index, duplicates and booleans, project round trip and old files, both exports, and the app writing the `.mtl` file. Run on Linux with simulated input, on OpenGL 2.1 and Vulkan: adding a gold metal material, selecting it in the list, assigning it to the top face, and undo. Not tried yet: importing the colors into Roblox Studio | Not yet |
 
 ## 12. Open questions
 
@@ -445,5 +455,6 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
 - [x] Approve the picture of the new Mixer Launcher before it is built (Stage 10 step 2): approved 2026-11-08
 - [ ] Save the side panels' layout between runs?
+- [ ] Does Roblox Studio show exported material colors (glTF materials, vertex colors, or OBJ's .mtl)? To try with the owner's import test
 - [ ] Try the newer engines on a PC with a modern graphics card (the laptop only has OpenGL 2.1; GitHub's Windows machine only has DirectX 12 in software)
 - [x] With shadows off, should View mode look flat? Owner: let people choose; fully flat by default, edge lines as an option

@@ -1,7 +1,8 @@
 //! The mesh elements and read-only queries. Edits are in `ops.rs`.
 
 use crate::error::MeshError;
-use crate::id::{CornerId, EdgeId, FaceId, ModifierId, VertexId};
+use crate::id::{CornerId, EdgeId, FaceId, MaterialId, ModifierId, VertexId};
+use crate::materials::Material;
 use crate::modifiers::ModifierEntry;
 use crate::pool::{Pool, PoolDelta};
 
@@ -154,9 +155,31 @@ pub struct Face {
     /// Shading: 0 is flat; otherwise smooth across edges up to this many degrees.
     /// See [`Mesh::shading_normals`].
     pub(crate) smooth: u8,
+    /// The face's material, or `None` for the plain default look.
+    pub(crate) material: Option<MaterialId>,
+}
+
+/// How a face looks: its shading and material, which tools carry from the faces they
+/// replace to the faces they make.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Look {
+    pub(crate) smooth: u8,
+    pub(crate) material: Option<MaterialId>,
 }
 
 impl Face {
+    pub(crate) fn look(&self) -> Look {
+        Look {
+            smooth: self.smooth,
+            material: self.material,
+        }
+    }
+
+    pub(crate) fn set_look(&mut self, look: Look) {
+        self.smooth = look.smooth;
+        self.material = look.material;
+    }
+
     /// Any one corner of the face.
     pub fn first_corner(&self) -> CornerId {
         self.first_corner
@@ -169,6 +192,10 @@ impl Face {
     /// [`Mesh::join_selected_parts`].
     pub fn group(&self) -> u16 {
         self.group
+    }
+    /// The face's material, or `None` for the default look. See [`Mesh::materials`].
+    pub fn material(&self) -> Option<MaterialId> {
+        self.material
     }
     /// 0 for flat shading; otherwise how sharp an edge, in degrees, is still shaded
     /// smooth. 180 smooths everything.
@@ -193,6 +220,8 @@ pub struct Mesh {
     pub(crate) faces: Pool<Face, FaceId>,
     /// Live modifiers on parts, kept here so that undo covers them.
     pub(crate) modifiers: Pool<ModifierEntry, ModifierId>,
+    /// The project's materials, kept here so that undo covers them.
+    pub(crate) materials: Pool<Material, MaterialId>,
 }
 
 impl Default for Mesh {
@@ -209,6 +238,7 @@ pub(crate) struct MeshDelta {
     corners: PoolDelta<Corner>,
     faces: PoolDelta<Face>,
     modifiers: PoolDelta<ModifierEntry>,
+    materials: PoolDelta<Material>,
 }
 
 impl MeshDelta {
@@ -218,6 +248,7 @@ impl MeshDelta {
             && self.corners.is_empty()
             && self.faces.is_empty()
             && self.modifiers.is_empty()
+            && self.materials.is_empty()
     }
 
     pub(crate) fn memory_bytes(&self) -> usize {
@@ -226,6 +257,7 @@ impl MeshDelta {
             + self.corners.memory_bytes()
             + self.faces.memory_bytes()
             + self.modifiers.memory_bytes()
+            + self.materials.memory_bytes()
     }
 }
 
@@ -256,6 +288,7 @@ impl Mesh {
             corners: Pool::new(),
             faces: Pool::new(),
             modifiers: Pool::new(),
+            materials: Pool::new(),
         }
     }
 
@@ -404,6 +437,7 @@ impl Mesh {
             + self.corners.memory_bytes()
             + self.faces.memory_bytes()
             + self.modifiers.memory_bytes()
+            + self.materials.memory_bytes()
     }
 
     pub(crate) fn require_vertex(&self, id: VertexId) -> Result<(), MeshError> {
@@ -485,6 +519,7 @@ impl Mesh {
         self.corners.begin_journal();
         self.faces.begin_journal();
         self.modifiers.begin_journal();
+        self.materials.begin_journal();
     }
 
     /// Stops saving and returns what changed.
@@ -495,6 +530,7 @@ impl Mesh {
             corners: self.corners.finish_journal(),
             faces: self.faces.finish_journal(),
             modifiers: self.modifiers.finish_journal(),
+            materials: self.materials.finish_journal(),
         }
     }
 
@@ -505,6 +541,7 @@ impl Mesh {
         self.corners.rollback_journal();
         self.faces.rollback_journal();
         self.modifiers.rollback_journal();
+        self.materials.rollback_journal();
     }
 
     /// Swaps the mesh with the other state stored in the delta.
@@ -514,6 +551,7 @@ impl Mesh {
         self.corners.swap_delta(&mut delta.corners);
         self.faces.swap_delta(&mut delta.faces);
         self.modifiers.swap_delta(&mut delta.modifiers);
+        self.materials.swap_delta(&mut delta.materials);
     }
 }
 
@@ -536,6 +574,7 @@ mod tests {
                 + mesh.corners.memory_bytes()
                 + mesh.faces.memory_bytes()
                 + mesh.modifiers.memory_bytes()
+                + mesh.materials.memory_bytes()
         );
 
         mesh.begin_journal();
@@ -553,6 +592,7 @@ mod tests {
                 + delta.corners.memory_bytes()
                 + delta.faces.memory_bytes()
                 + delta.modifiers.memory_bytes()
+                + delta.materials.memory_bytes()
         );
     }
 }

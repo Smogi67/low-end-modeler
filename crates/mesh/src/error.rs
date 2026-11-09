@@ -119,6 +119,10 @@ pub enum MeshError {
     NotJoined,
     /// The tool cannot work on parts with modifiers until they are applied.
     HasModifiers,
+    /// The project already has [`MAX_MATERIALS`](crate::MAX_MATERIALS) materials.
+    TooManyMaterials,
+    /// The material ID refers to a removed material.
+    StaleMaterial(crate::MaterialId),
     /// All IDs for an element type have been used. This takes about four billion
     /// element creations in one session, so it should never occur in practice.
     IdsExhausted,
@@ -202,6 +206,12 @@ impl fmt::Display for MeshError {
             Self::TooComplex => write!(f, "the result would be too detailed to make"),
             Self::NeedsTwoParts => write!(f, "select at least two parts first"),
             Self::NotJoined => write!(f, "the selected parts are not joined to anything"),
+            Self::TooManyMaterials => write!(
+                f,
+                "a project can have at most {} materials",
+                crate::MAX_MATERIALS
+            ),
+            Self::StaleMaterial(id) => write!(f, "material {id:?} no longer exists"),
             Self::HasModifiers => write!(
                 f,
                 "apply or remove the modifiers of the selected parts first"

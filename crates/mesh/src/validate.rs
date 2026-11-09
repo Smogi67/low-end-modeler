@@ -78,6 +78,14 @@ impl Mesh {
         self.check_radial_cycles()?;
         self.check_faces()?;
         self.check_selection()?;
+        self.materials.check_integrity("material")?;
+        for (id, face) in self.faces.iter() {
+            if let Some(material) = face.material
+                && !self.materials.contains(material)
+            {
+                bail!("face {id} uses removed material {material}");
+            }
+        }
         Ok(())
     }
 
@@ -368,6 +376,7 @@ mod tests {
             selected: false,
             group: 0,
             smooth: 0,
+            material: None,
         });
         let ids: Vec<CornerId> = corners
             .iter()

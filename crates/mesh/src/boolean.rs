@@ -16,12 +16,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::MeshError;
 use crate::id::{FaceId, VertexId};
-use crate::mesh::Mesh;
+use crate::mesh::{Look, Mesh};
 use crate::selection::SelectMode;
 
 type P = [f64; 3];
 /// Numbered points, and faces as lists of their numbers.
-type Built = (Vec<P>, Vec<(Vec<usize>, u8)>);
+type Built = (Vec<P>, Vec<(Vec<usize>, Look)>);
 
 /// Points closer than this to a plane count as on it.
 const PLANE_EPS: f64 = 1e-5;
@@ -122,8 +122,8 @@ impl Plane {
 struct Polygon {
     points: Vec<P>,
     plane: Plane,
-    /// The shading of the face it came from.
-    smooth: u8,
+    /// The shading and material of the face it came from.
+    smooth: Look,
 }
 
 impl Polygon {
@@ -132,7 +132,7 @@ impl Polygon {
         Some(Polygon {
             points,
             plane,
-            smooth: 0,
+            smooth: Look::default(),
         })
     }
 
@@ -468,7 +468,7 @@ fn weld(polygons: &[Polygon]) -> Built {
 }
 
 /// How many edges of these faces are not matched by a neighbor running the other way.
-fn open_edge_count(faces: &[(Vec<usize>, u8)]) -> usize {
+fn open_edge_count(faces: &[(Vec<usize>, Look)]) -> usize {
     let mut directed: HashMap<(usize, usize), i32> = HashMap::new();
     for (face, _) in faces {
         for k in 0..face.len() {
@@ -488,7 +488,7 @@ fn weld_with(polygons: &[Polygon], tol: f64) -> Built {
         .flat_map(|p| p.points.iter().copied())
         .collect();
     let (points, index) = weld_points(&all, tol);
-    let mut faces: Vec<(Vec<usize>, u8)> = Vec::new();
+    let mut faces: Vec<(Vec<usize>, Look)> = Vec::new();
     let mut at = 0;
     for polygon in polygons {
         let count = polygon.points.len();
@@ -496,7 +496,7 @@ fn weld_with(polygons: &[Polygon], tol: f64) -> Built {
         faces.extend(pieces.into_iter().map(|face| (face, polygon.smooth)));
         at += count;
     }
-    let faces: Vec<(Vec<usize>, u8)> = faces
+    let faces: Vec<(Vec<usize>, Look)> = faces
         .into_iter()
         .filter(|(face, _)| {
             let corners: Vec<P> = face.iter().map(|&i| points[i]).collect();
@@ -624,7 +624,7 @@ impl Mesh {
                 let [a, b, c] = t.map(|v| self.point(v));
                 volume += dot(a, cross(b, c)) / 6.0;
             }
-            let smooth = self.faces[face].smooth;
+            let smooth = self.faces[face].look();
             match Polygon::new(points.clone()) {
                 Some(mut polygon) if is_flat_and_convex(&polygon) => {
                     polygon.smooth = smooth;
@@ -752,7 +752,7 @@ impl Mesh {
                 }
                 match self.add_face(&cycle) {
                     Ok(face) => {
-                        self.faces[face].smooth = *smooth;
+                        self.faces[face].set_look(*smooth);
                         made.push(face);
                     }
                     Err(MeshError::FaceExists(_) | MeshError::RepeatedVertex(_)) => {}
@@ -922,7 +922,7 @@ impl Mesh {
         let (selected, group, smooth) = (
             self.faces[fa].selected,
             self.faces[fa].group,
-            self.faces[fa].smooth,
+            self.faces[fa].look(),
         );
         self.remove_face(fa).ok()?;
         self.remove_face(fb).ok()?;
@@ -943,7 +943,7 @@ impl Mesh {
         let merged = self.add_face(&outline).ok()?;
         self.faces[merged].selected = selected;
         self.faces[merged].group = group;
-        self.faces[merged].smooth = smooth;
+        self.faces[merged].set_look(smooth);
         Some(merged)
     }
 
@@ -1002,7 +1002,7 @@ impl Mesh {
                     ok = false;
                 }
                 let f = &self.faces[face];
-                cycles.push((cycle, f.selected, f.group, f.smooth));
+                cycles.push((cycle, f.selected, f.group, f.look()));
             }
             if !ok {
                 continue;
@@ -1027,7 +1027,7 @@ impl Mesh {
                 if let Ok(face) = self.add_face(&cycle) {
                     self.faces[face].selected = selected;
                     self.faces[face].group = group;
-                    self.faces[face].smooth = smooth;
+                    self.faces[face].set_look(smooth);
                     faces.insert(face);
                 }
             }

@@ -79,6 +79,10 @@ define_id!(
     /// Identifies a modifier. See [`Mesh::modifiers`](crate::Mesh::modifiers).
     ModifierId, "M"
 );
+define_id!(
+    /// Identifies a material. See [`Mesh::materials`](crate::Mesh::materials).
+    MaterialId, "T"
+);
 
 impl CornerId {
     /// Placeholder used only while a new face is being linked. It is always

@@ -105,12 +105,21 @@ pub fn write_export(
     format: ExportFormat,
 ) -> Result<PathBuf, String> {
     let name = clean_file_name(name);
+    // An OBJ file's materials go in an MTL file beside it, which it names.
+    let library = format!("{name}.mtl");
     let bytes = match format {
-        ExportFormat::Obj => mesh.to_obj(&name, scale).map(String::into_bytes),
+        ExportFormat::Obj => mesh
+            .to_obj_with_materials(&name, scale, &library)
+            .map(String::into_bytes),
         ExportFormat::Glb => mesh.to_glb(scale),
     }
     .map_err(|error| error.to_string())?;
     let path = folder.join(format!("{name}.{}", format.extension()));
+    if format == ExportFormat::Obj
+        && let Some(mtl) = mesh.evaluated().to_mtl()
+    {
+        write_whole(&folder.join(&library), mtl.as_bytes())?;
+    }
     write_whole(&path, &bytes)?;
     Ok(path)
 }
@@ -199,6 +208,24 @@ mod tests {
         let files = std::fs::read_dir(&folder).unwrap().count();
         assert_eq!(files, 1, "the temporary file must be gone");
         assert!(write_export(&mesh, &folder, "bad", 0.0, ExportFormat::Obj).is_err());
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn obj_export_with_materials_writes_an_mtl_file_beside_it() {
+        let folder = std::env::temp_dir().join(format!("modeler-mtl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let mut mesh = Mesh::new();
+        mesh.add_primitive(Primitive::Cube { size: 2.0 }, [0.0; 3])
+            .unwrap();
+        let red = mesh.add_material(mixer_mesh::Material::new("Red")).unwrap();
+        mesh.select_all();
+        mesh.assign_material_selected(Some(red)).unwrap();
+        let path = write_export(&mesh, &folder, "Box", 1.0, ExportFormat::Obj).unwrap();
+        let obj = std::fs::read_to_string(&path).unwrap();
+        assert!(obj.contains("mtllib Box.mtl") && obj.contains("usemtl Red"));
+        let mtl = std::fs::read_to_string(folder.join("Box.mtl")).unwrap();
+        assert!(mtl.contains("newmtl Red"));
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

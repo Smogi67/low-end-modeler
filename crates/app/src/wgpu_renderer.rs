@@ -514,7 +514,13 @@ impl WgpuRenderer {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &glow_attributes,
         };
-        let mesh_attributes = [f(0, 0, Float32x3), f(12, 1, Float32x3), f(24, 2, Float32)];
+        let mesh_attributes = [
+            f(0, 0, Float32x3),
+            f(12, 1, Float32x3),
+            f(24, 2, Float32),
+            f(28, 3, Float32x3),
+            f(40, 4, wgpu::VertexFormat::Float32x2),
+        ];
         let mesh_layout = wgpu::VertexBufferLayout {
             array_stride: (FLOATS_PER_TRIANGLE_VERTEX * 4) as u64,
             step_mode: wgpu::VertexStepMode::Vertex,

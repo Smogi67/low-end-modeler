@@ -82,6 +82,7 @@ impl Mesh {
             selected: false,
             group: 0,
             smooth: 0,
+            material: None,
         });
         let mut corners = Vec::with_capacity(count);
         for (i, &vertex) in vertices.iter().enumerate() {
@@ -243,6 +244,7 @@ impl Mesh {
         let selected = self.faces[face].selected;
         let group = self.faces[face].group;
         let smooth = self.faces[face].smooth;
+        let material = self.faces[face].material;
         if selected {
             self.edges[edge].selected = true;
         }
@@ -252,6 +254,7 @@ impl Mesh {
             selected,
             group,
             smooth,
+            material,
         });
 
         let before_a = self.corners[corner_a].prev;

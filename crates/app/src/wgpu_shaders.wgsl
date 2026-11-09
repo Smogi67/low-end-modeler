@@ -133,6 +133,9 @@ struct MeshOut {
     @builtin(position) position: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) selected: f32,
+    @location(2) color: vec3<f32>,
+    // Metal, then roughness.
+    @location(3) finish: vec2<f32>,
 }
 
 @vertex
@@ -140,26 +143,37 @@ fn mesh_vs(
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) selected: f32,
+    @location(3) color: vec3<f32>,
+    @location(4) finish: vec2<f32>,
 ) -> MeshOut {
     var out: MeshOut;
     out.position = to_clip(position);
     out.normal = normal;
     out.selected = selected * u.extra.y;
+    out.color = color;
+    out.finish = finish;
     return out;
 }
 
 @fragment
 fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // A face seen from behind turns red, which shows inside-out faces at a glance.
-    var color = select(u.back.rgb, u.face.rgb, front);
-    color = mix(color, u.selected_face.rgb, in.selected * u.selected_face.w);
+    let color = select(u.back.rgb, in.color, front);
     let side = select(-1.0, 1.0, front);
     let n = normalize(in.normal) * side;
     // A key light near the camera, plus soft light from the sky above.
     let key = max(dot(n, u.light.xyz), 0.0);
     let sky = 0.5 + 0.5 * n.z;
     let lit = mix(0.92, 0.20 + 0.55 * key + 0.30 * sky, u.light.w);
-    return vec4<f32>(color * lit, 1.0);
+    // The same simple shine as the OpenGL 2.1 engine (renderer.rs).
+    let metal = in.finish.x;
+    let gloss = 1.0 - in.finish.y;
+    let shine = pow(key, 4.0 + 60.0 * gloss) * gloss * gloss * u.light.w;
+    let reflected = color * (0.35 + 0.45 * sky + 0.35 * key);
+    var shade = mix(color * lit, mix(color * lit, reflected, u.light.w), metal)
+        + shine * mix(vec3<f32>(0.6), color, metal);
+    shade = mix(shade, u.selected_face.rgb * lit, in.selected * u.selected_face.w);
+    return vec4<f32>(shade, 1.0);
 }
 
 // Picking: each pixel's depth, written as a color so it can be read back everywhere.

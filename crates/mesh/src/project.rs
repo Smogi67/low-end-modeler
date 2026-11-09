@@ -17,6 +17,10 @@
 //! `g 2` puts the faces after it in group 2, which joins them into one part, and
 //! `g 0` ends the group. Older versions of the modeler skip these lines.
 //!
+//! `mat <r> <g> <b> <opacity> <metal> <roughness> <name>` defines the next material,
+//! numbered from 1, and `u 2` gives the faces after it material 2 (`u 0`: none). A file
+//! with materials says `mixer 2`, so versions before materials refuse it plainly.
+//!
 //! OBJ files from other programs read with the same parser. They are Y up, so they are
 //! turned to Z up, the reverse of export. Texture coordinates, normals, groups and
 //! materials are skipped, since the modeler has no use for them yet.
@@ -29,8 +33,9 @@ use crate::id::VertexId;
 use crate::mesh::Mesh;
 use crate::modifiers::Modifier;
 
-/// The project format's version. A newer file is refused rather than misread.
-pub const PROJECT_VERSION: u32 = 1;
+/// The project format's version. A newer file is refused rather than misread. Files
+/// without materials still say 1, so older versions of Mixer can open them.
+pub const PROJECT_VERSION: u32 = 2;
 
 /// Why a file could not be read. Nothing is changed when this is returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +105,27 @@ impl Mesh {
     /// The mesh and the project's settings as project file text.
     pub fn to_project_with(&self, settings: &ProjectSettings) -> String {
         let mut out = String::with_capacity(self.corner_count() * 12 + self.vertex_count() * 40);
-        let _ = writeln!(out, "# Mixer project\nmixer {PROJECT_VERSION}");
+        let materials = self.materials();
+        let version = if materials.is_empty() {
+            1
+        } else {
+            PROJECT_VERSION
+        };
+        let _ = writeln!(out, "# Mixer project\nmixer {version}");
+        for (_, m) in &materials {
+            let [r, g, b, a] = m.color;
+            let _ = writeln!(
+                out,
+                "mat {r} {g} {b} {a} {} {} {}",
+                m.metal,
+                m.roughness,
+                m.name()
+            );
+        }
+        let material_number = |id: Option<crate::MaterialId>| {
+            id.and_then(|id| materials.iter().position(|(m, _)| *m == id))
+                .map_or(0, |n| n + 1)
+        };
         if let Some(format) = &settings.export_format {
             let _ = writeln!(out, "export {format}");
         }
@@ -127,8 +152,13 @@ impl Mesh {
             let _ = writeln!(out, "v {x} {y} {z}");
         }
         let number = |v: VertexId| numbers[v.index() as usize];
-        let (mut group, mut smooth) = (0, 0);
+        let (mut group, mut smooth, mut material) = (0, 0, 0);
         for (face, f) in self.faces() {
+            let used = material_number(f.material);
+            if used != material {
+                material = used;
+                let _ = writeln!(out, "u {material}");
+            }
             if f.group != group {
                 group = f.group;
                 let _ = writeln!(out, "g {group}");
@@ -199,6 +229,8 @@ impl Mesh {
         let mut seen_faces: HashSet<Vec<VertexId>> = HashSet::new();
         let mut group: u16 = 0;
         let mut smooth: u8 = 0;
+        let mut materials: Vec<crate::MaterialId> = Vec::new();
+        let mut material: Option<crate::MaterialId> = None;
 
         // OBJ numbers from 1, and negative numbers count back from the latest vertex.
         let index = |token: &str, line: usize, count: usize| -> Result<usize, ParseError> {
@@ -280,6 +312,7 @@ impl Mesh {
                         Ok(face) => {
                             mesh.faces[face].group = group;
                             mesh.faces[face].smooth = smooth;
+                            mesh.faces[face].material = material;
                         }
                         Err(MeshError::FaceExists(_) | MeshError::RepeatedVertex(_)) => {
                             report.skipped_faces += 1;
@@ -341,6 +374,39 @@ impl Mesh {
                         .ok_or_else(|| bad(line, "a modifier this version cannot read"))?;
                     mesh.add_modifier_unchecked(modifier.0, modifier.1)
                         .map_err(|e| bad(line, e.to_string()))?;
+                }
+                "mat" if kind == FileKind::Project => {
+                    let number = |k: usize| rest.get(k).and_then(|w| w.parse::<f32>().ok());
+                    let (Some(r), Some(g), Some(b), Some(a), Some(metal), Some(rough)) = (
+                        number(0),
+                        number(1),
+                        number(2),
+                        number(3),
+                        number(4),
+                        number(5),
+                    ) else {
+                        return Err(bad(line, "a material needs six numbers and a name"));
+                    };
+                    let mut m = crate::Material::new(&rest.get(6..).unwrap_or(&[]).join(" "));
+                    m.color = [r, g, b, a];
+                    m.metal = metal;
+                    m.roughness = rough;
+                    let id = mesh.add_material(m).map_err(|e| bad(line, e.to_string()))?;
+                    materials.push(id);
+                }
+                "u" if kind == FileKind::Project => {
+                    let n: usize = rest
+                        .first()
+                        .and_then(|n| n.parse().ok())
+                        .ok_or_else(|| bad(line, "a material number is missing"))?;
+                    material = match n {
+                        0 => None,
+                        n => Some(
+                            *materials
+                                .get(n - 1)
+                                .ok_or_else(|| bad(line, format!("there is no material {n}")))?,
+                        ),
+                    };
                 }
                 "g" if kind == FileKind::Project => {
                     group = rest

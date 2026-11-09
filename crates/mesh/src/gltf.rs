@@ -24,6 +24,16 @@ fn to_y_up(p: [f32; 3], scale: f32) -> [f32; 3] {
     [p[0] * scale + 0.0, p[2] * scale + 0.0, -p[1] * scale + 0.0]
 }
 
+/// glTF's colors are linear light; Mixer's, like most color pickers', are sRGB, so they
+/// are converted to look the same.
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// A number for JSON, which has no NaN or infinity. Positions are already checked.
 fn json_number(value: f32) -> String {
     if value.is_finite() {
@@ -69,20 +79,52 @@ impl Mesh {
             view_count - 1
         };
 
+        // Materials: the project's, in order, then a plain one for faces without.
+        let list = self.materials();
+        let with_materials = !list.is_empty();
+        let material_index = |m: Option<crate::MaterialId>| {
+            m.and_then(|m| list.iter().position(|(id, _)| *id == m))
+                .unwrap_or(list.len())
+        };
         let shading = self.shading_normals();
         for (n, faces) in parts.iter().enumerate() {
             let mut positions: Vec<[f32; 3]> = Vec::new();
             let mut normals: Vec<[f32; 3]> = Vec::new();
-            let mut indices: Vec<u32> = Vec::new();
+            // Each corner's material color, linear, as COLOR_0: Roblox's importer keeps
+            // vertex colors, while it may not read material colors.
+            let mut colors: Vec<[f32; 4]> = Vec::new();
+            // Triangle corners, per material used in this part.
+            let mut by_material: Vec<(usize, Vec<u32>)> = Vec::new();
             for &face in faces {
+                let which = material_index(self.faces[face].material);
+                let slot = match by_material.iter().position(|(m, _)| *m == which) {
+                    Some(slot) => slot,
+                    None => {
+                        by_material.push((which, Vec::new()));
+                        by_material.len() - 1
+                    }
+                };
+                let indices = &mut by_material[slot].1;
                 let base = positions.len() as u32;
                 let corners: Vec<VertexId> = self
                     .face_walk(face)
                     .map(|c| self.corners[c].vertex)
                     .collect();
+                let color = self.faces[face]
+                    .material
+                    .and_then(|m| self.material(m))
+                    .unwrap_or_else(|| crate::Material::new("Default"))
+                    .color;
+                let color = [
+                    linear(color[0]),
+                    linear(color[1]),
+                    linear(color[2]),
+                    color[3],
+                ];
                 for &v in &corners {
                     positions.push(to_y_up(self.vertices[v].position, scale));
                     normals.push(to_y_up(shading.at(face, v), 1.0));
+                    colors.push(color);
                 }
                 for triangle in self.face_triangles(face)? {
                     for v in triangle {
@@ -105,17 +147,15 @@ impl Mesh {
                     .collect()
             };
             let wide = positions.len() > usize::from(u16::MAX);
-            let index_bytes: Vec<u8> = if wide {
-                indices.iter().flat_map(|i| i.to_le_bytes()).collect()
-            } else {
-                indices
-                    .iter()
-                    .flat_map(|&i| (i as u16).to_le_bytes())
-                    .collect()
-            };
             let position_view = add_view(&mut bin, &floats(&positions), ARRAY_BUFFER, &mut views);
             let normal_view = add_view(&mut bin, &floats(&normals), ARRAY_BUFFER, &mut views);
-            let index_view = add_view(&mut bin, &index_bytes, ELEMENT_ARRAY_BUFFER, &mut views);
+            let color_view = with_materials.then(|| {
+                let bytes: Vec<u8> = colors
+                    .iter()
+                    .flat_map(|c| c.iter().flat_map(|v| v.to_le_bytes()))
+                    .collect();
+                add_view(&mut bin, &bytes, ARRAY_BUFFER, &mut views)
+            });
 
             let comma = if accessor_count > 0 { "," } else { "" };
             let vec3 = |list: [f32; 3]| {
@@ -129,21 +169,61 @@ impl Mesh {
             let _ = write!(
                 accessors,
                 "{comma}{{\"bufferView\":{position_view},\"componentType\":{FLOAT},\"count\":{},\"type\":\"VEC3\",\"min\":{},\"max\":{}}}\
-                 ,{{\"bufferView\":{normal_view},\"componentType\":{FLOAT},\"count\":{},\"type\":\"VEC3\"}}\
-                 ,{{\"bufferView\":{index_view},\"componentType\":{},\"count\":{},\"type\":\"SCALAR\"}}",
+                 ,{{\"bufferView\":{normal_view},\"componentType\":{FLOAT},\"count\":{},\"type\":\"VEC3\"}}",
                 positions.len(),
                 vec3(min),
                 vec3(max),
                 normals.len(),
-                if wide { UNSIGNED_INT } else { UNSIGNED_SHORT },
-                indices.len()
             );
-            let (p, nrm, idx) = (accessor_count, accessor_count + 1, accessor_count + 2);
-            accessor_count += 3;
+            let (p, nrm) = (accessor_count, accessor_count + 1);
+            accessor_count += 2;
+            let color_attribute = match color_view {
+                Some(view) => {
+                    let _ = write!(
+                        accessors,
+                        ",{{\"bufferView\":{view},\"componentType\":{FLOAT},\"count\":{},\"type\":\"VEC4\"}}",
+                        colors.len()
+                    );
+                    accessor_count += 1;
+                    format!(",\"COLOR_0\":{}", accessor_count - 1)
+                }
+                None => String::new(),
+            };
+            // One primitive per material, sharing the part's points.
+            let mut primitives = String::new();
+            for (k, (material, indices)) in by_material.iter().enumerate() {
+                let index_bytes: Vec<u8> = if wide {
+                    indices.iter().flat_map(|i| i.to_le_bytes()).collect()
+                } else {
+                    indices
+                        .iter()
+                        .flat_map(|&i| (i as u16).to_le_bytes())
+                        .collect()
+                };
+                let index_view = add_view(&mut bin, &index_bytes, ELEMENT_ARRAY_BUFFER, &mut views);
+                let _ = write!(
+                    accessors,
+                    ",{{\"bufferView\":{index_view},\"componentType\":{},\"count\":{},\"type\":\"SCALAR\"}}",
+                    if wide { UNSIGNED_INT } else { UNSIGNED_SHORT },
+                    indices.len()
+                );
+                let idx = accessor_count;
+                accessor_count += 1;
+                let material = if with_materials {
+                    format!(",\"material\":{material}")
+                } else {
+                    String::new()
+                };
+                let _ = write!(
+                    primitives,
+                    "{}{{\"attributes\":{{\"POSITION\":{p},\"NORMAL\":{nrm}{color_attribute}}},\"indices\":{idx},\"mode\":4{material}}}",
+                    if k > 0 { "," } else { "" }
+                );
+            }
             let comma = if n > 0 { "," } else { "" };
             let _ = write!(
                 meshes,
-                "{comma}{{\"name\":\"Part{0}Mesh\",\"primitives\":[{{\"attributes\":{{\"POSITION\":{p},\"NORMAL\":{nrm}}},\"indices\":{idx},\"mode\":4}}]}}",
+                "{comma}{{\"name\":\"Part{0}Mesh\",\"primitives\":[{primitives}]}}",
                 n + 1
             );
             let _ = write!(nodes, "{comma}{{\"name\":\"Part{0}\",\"mesh\":{n}}}", n + 1);
@@ -165,6 +245,37 @@ impl Mesh {
                 node_list.join(",")
             )
         };
+        if with_materials && !parts.is_empty() {
+            // glTF's colors are linear light; Mixer's, like most color pickers', are
+            // sRGB, so they are converted to look the same.
+            let mut materials = String::new();
+            let plain = crate::Material::new("Default");
+            for (k, m) in list.iter().map(|(_, m)| m).chain([&plain]).enumerate() {
+                let [r, g, b, a] = m.color;
+                let name: String = m
+                    .name()
+                    .chars()
+                    .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+                    .collect();
+                let _ = write!(
+                    materials,
+                    "{}{{\"name\":\"{name}\",\"pbrMetallicRoughness\":{{\"baseColorFactor\":[{},{},{},{}],\"metallicFactor\":{},\"roughnessFactor\":{}}}{}}}",
+                    if k > 0 { "," } else { "" },
+                    json_number(linear(r)),
+                    json_number(linear(g)),
+                    json_number(linear(b)),
+                    json_number(a),
+                    json_number(m.metal),
+                    json_number(m.roughness),
+                    if a < 1.0 {
+                        ",\"alphaMode\":\"BLEND\""
+                    } else {
+                        ""
+                    }
+                );
+            }
+            let _ = write!(json, ",\"materials\":[{materials}]");
+        }
         if bin.is_empty() {
             json.push('}');
         } else {

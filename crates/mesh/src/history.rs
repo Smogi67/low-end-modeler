@@ -66,8 +66,9 @@ pub struct Document {
     /// Where joined groups were when the open edit began. See
     /// [`Mesh::restore_groups`].
     group_marks: Vec<(FaceId, VertexId, u16)>,
-    /// The faces there were when the open edit began, if any was smooth, so that new
-    /// faces can take their neighbors' shading. See [`Mesh::inherit_shading`].
+    /// The faces there were when the open edit began, if any was smooth or had a
+    /// material, so that new faces can take their neighbors' shading and material. See
+    /// [`Mesh::inherit_shading`].
     faces_before: Option<std::collections::HashSet<FaceId>>,
 }
 
@@ -133,7 +134,7 @@ impl Document {
         self.faces_before = self
             .mesh
             .faces()
-            .any(|(_, f)| f.smooth() > 0)
+            .any(|(_, f)| f.smooth() > 0 || f.material().is_some())
             .then(|| self.mesh.faces().map(|(id, _)| id).collect());
         Ok(())
     }
@@ -161,6 +162,7 @@ impl Document {
         self.mesh.tidy_modifier_groups();
         if let Some(before) = self.faces_before.take() {
             self.mesh.inherit_shading(&before);
+            self.mesh.inherit_materials(&before);
         }
         let delta = self.mesh.finish_journal();
         debug_assert_eq!(

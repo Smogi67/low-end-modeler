@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::MeshError;
 use crate::id::{FaceId, ModifierId, VertexId};
-use crate::mesh::Mesh;
+use crate::mesh::{Look, Mesh};
 use crate::selection::SelectMode;
 
 type V3 = [f32; 3];
@@ -107,7 +107,7 @@ struct Soup {
     points: Vec<V3>,
     /// Corner point numbers, smoothing, and whether the face is an original one
     /// that was selected.
-    faces: Vec<(Vec<usize>, u8, bool)>,
+    faces: Vec<(Vec<usize>, Look, bool)>,
 }
 
 impl Soup {
@@ -527,7 +527,7 @@ impl Mesh {
                 cycle.push(n);
             }
             let f = self.faces[face];
-            soup.faces.push((cycle, f.smooth, f.selected));
+            soup.faces.push((cycle, f.look(), f.selected));
         }
         for (_, modifier) in list {
             soup.run(modifier);
@@ -558,7 +558,7 @@ impl Mesh {
                 Ok(new) => {
                     let f = &mut self.faces[new];
                     f.group = group;
-                    f.smooth = *smooth;
+                    f.set_look(*smooth);
                     f.selected = select || *selected;
                     made += 1;
                 }

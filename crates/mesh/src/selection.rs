@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::MeshError;
 use crate::id::{EdgeId, FaceId, VertexId};
-use crate::mesh::Mesh;
+use crate::mesh::{Look, Mesh};
 
 /// Which kind of element the user is selecting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,13 +314,13 @@ impl Mesh {
             .filter(|(_, e)| e.selected)
             .map(|(_, e)| e.vertices)
             .collect();
-        let faces: Vec<(Vec<VertexId>, u16, u8)> = self
+        let faces: Vec<(Vec<VertexId>, u16, Look)> = self
             .faces
             .iter()
             .filter(|(_, f)| f.selected)
             .map(|(id, f)| {
                 let cycle = self.face_walk(id).map(|c| self.corners[c].vertex).collect();
-                (cycle, f.group, f.smooth)
+                (cycle, f.group, f.look())
             })
             .collect();
         // Copies of joined parts are joined to each other, not to the originals.
@@ -342,7 +342,7 @@ impl Mesh {
             let cycle: Vec<VertexId> = face.iter().map(|v| map[v]).collect();
             let new_face = self.add_face(&cycle)?;
             self.set_face_flag(new_face, true);
-            self.faces[new_face].smooth = smooth;
+            self.faces[new_face].set_look(smooth);
             if group != 0 {
                 let copy = match groups.get(&group) {
                     Some(&copy) => copy,

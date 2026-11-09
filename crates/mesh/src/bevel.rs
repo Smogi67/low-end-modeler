@@ -32,8 +32,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use crate::error::MeshError;
-use crate::id::{CornerId, EdgeId, FaceId, VertexId};
-use crate::mesh::Mesh;
+use crate::id::{CornerId, EdgeId, FaceId, MaterialId, VertexId};
+use crate::mesh::{Look, Mesh};
 use crate::profile::CustomProfile;
 use crate::selection::{Element, SelectMode, SelectOp};
 
@@ -153,6 +153,9 @@ pub struct BevelSettings {
     pub spread: f32,
     /// Where three or more beveled edges meet.
     pub intersection: Intersection,
+    /// The material for the bevel's new faces, as Blender's Material Index; `None`
+    /// takes the material of the faces around.
+    pub material: Option<MaterialId>,
 }
 
 impl Default for BevelSettings {
@@ -172,6 +175,7 @@ impl Default for BevelSettings {
             miter_inner: Miter::Sharp,
             spread: 0.1,
             intersection: Intersection::GridFill,
+            material: None,
         }
     }
 }
@@ -1381,11 +1385,11 @@ impl Mesh {
 
         // Out with the old, keeping each face's shading and group for its new outline;
         // the bevel's own faces take the smoothest shading around them.
-        let kept: Vec<(u8, u16)> = affected
+        let kept: Vec<(Look, u16)> = affected
             .iter()
-            .map(|&f| (self.faces[f].smooth, self.faces[f].group))
+            .map(|&f| (self.faces[f].look(), self.faces[f].group))
             .collect();
-        let bevel_smooth = kept.iter().map(|k| k.0).max().unwrap_or(0);
+        let bevel_smooth = kept.iter().map(|k| k.0.smooth).max().unwrap_or(0);
         for &face in &affected {
             self.remove_face(face)?;
         }
@@ -1423,13 +1427,16 @@ impl Mesh {
         };
         for (outline, (smooth, group)) in new_faces.into_iter().zip(kept) {
             let face = self.add_face(&outline).map_err(refused)?;
-            self.faces[face].smooth = smooth;
+            self.faces[face].set_look(smooth);
             self.faces[face].group = group;
         }
         let mut selected = Vec::with_capacity(bevel_faces.len());
         for outline in bevel_faces {
             let face = self.add_face(&outline).map_err(refused)?;
             self.faces[face].smooth = bevel_smooth;
+            // Blender's Material Index: the bevel's own faces can take a material;
+            // otherwise they take a neighbor's when the edit ends.
+            self.faces[face].material = settings.material;
             selected.push(Element::Face(face));
         }
         if settings.mark_sharp {
@@ -1860,11 +1867,11 @@ impl Mesh {
             }
         }
 
-        let kept: Vec<(u8, u16)> = affected
+        let kept: Vec<(Look, u16)> = affected
             .iter()
-            .map(|&f| (self.faces[f].smooth, self.faces[f].group))
+            .map(|&f| (self.faces[f].look(), self.faces[f].group))
             .collect();
-        let bevel_smooth = kept.iter().map(|k| k.0).max().unwrap_or(0);
+        let bevel_smooth = kept.iter().map(|k| k.0.smooth).max().unwrap_or(0);
         for &face in &affected {
             self.remove_face(face)?;
         }
@@ -1879,13 +1886,16 @@ impl Mesh {
         };
         for (outline, (smooth, group)) in new_faces.into_iter().zip(kept) {
             let face = self.add_face(&outline).map_err(refused)?;
-            self.faces[face].smooth = smooth;
+            self.faces[face].set_look(smooth);
             self.faces[face].group = group;
         }
         let mut selected = Vec::with_capacity(cap_faces.len());
         for outline in cap_faces {
             let face = self.add_face(&outline).map_err(refused)?;
             self.faces[face].smooth = bevel_smooth;
+            // Blender's Material Index: the bevel's own faces can take a material;
+            // otherwise they take a neighbor's when the edit ends.
+            self.faces[face].material = settings.material;
             selected.push(Element::Face(face));
         }
         if settings.mark_sharp {

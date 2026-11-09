@@ -235,6 +235,9 @@ pub struct App {
     /// While a bevel is dragged, the cursor is hidden and held still, as in Blender,
     /// so the drag never stops at the screen's edge. This is where it was.
     held_cursor: Option<[f32; 2]>,
+    /// A material shown as edited while its color or sliders are dragged, before it is
+    /// saved as an undo step.
+    material_preview: Option<(mixer_mesh::MaterialId, mixer_mesh::Material)>,
 }
 
 impl App {
@@ -310,6 +313,7 @@ impl App {
             pixels: [1.0, 1.0],
             last_save: Instant::now(),
             held_cursor: None,
+            material_preview: None,
         })
     }
 
@@ -372,7 +376,37 @@ impl App {
                     .any(|&f| mesh.face(f).is_some_and(|f| f.is_selected()))
             })
             .count();
+        let mut materials: Vec<crate::ui::MaterialRow> = mesh
+            .materials()
+            .into_iter()
+            .map(|(id, material)| crate::ui::MaterialRow {
+                id,
+                material,
+                faces: 0,
+                selected: 0,
+            })
+            .collect();
+        let mut plain_faces = (0, 0);
+        for (_, f) in mesh.faces() {
+            let counts = match f.material() {
+                Some(m) => match materials.iter_mut().find(|r| r.id == m) {
+                    Some(row) => (&mut row.faces, &mut row.selected),
+                    None => continue,
+                },
+                None => (&mut plain_faces.0, &mut plain_faces.1),
+            };
+            *counts.0 += 1;
+            *counts.1 += usize::from(f.is_selected());
+        }
+        // A material being edited shows as edited.
+        if let Some((id, draft)) = self.material_preview
+            && let Some(row) = materials.iter_mut().find(|r| r.id == id)
+        {
+            row.material = draft;
+        }
         let info = PanelInfo {
+            materials,
+            plain_faces,
             // What gets exported, modifiers' copies included.
             triangles: self.scene.triangle_count(),
             triangle_limit: self.settings.triangle_limit(),
@@ -503,7 +537,15 @@ impl App {
         let modified = Scene::needs_rebuild_to_move(self.editor.document().mesh());
         if self.stale == Stale::Everything || (self.stale == Stale::Moved && modified) {
             let mesh = self.editor.document().mesh();
-            self.scene.rebuild(mesh, self.editor.drawing_mode());
+            match self.material_preview {
+                // A copy with the material as being edited.
+                Some((id, draft)) => {
+                    let mut copy = mesh.clone();
+                    let _ = copy.set_material(id, draft);
+                    self.scene.rebuild(&copy, self.editor.drawing_mode());
+                }
+                None => self.scene.rebuild(mesh, self.editor.drawing_mode()),
+            }
             self.gpu.upload_scene(&self.scene);
             // Warnings are about what gets exported.
             let shown = mesh.evaluated();
@@ -1061,6 +1103,104 @@ impl App {
                 if result.is_ok() {
                     self.state.message = format!("Applied: the shape now has {faces} real faces.");
                 }
+                self.finish_edit(result);
+            }
+            Action::AddMaterial => {
+                // A copy of the chosen one, or a fresh one, with a name not yet used.
+                let mesh = self.editor.document().mesh();
+                let base = self
+                    .state
+                    .active_material
+                    .and_then(|id| mesh.material(id))
+                    .unwrap_or_else(|| mixer_mesh::Material::new("Material"));
+                let taken: Vec<String> = mesh
+                    .materials()
+                    .iter()
+                    .map(|(_, m)| m.name().to_string())
+                    .collect();
+                let stem = base
+                    .name()
+                    .trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+                    .to_string();
+                let stem = if stem.is_empty() {
+                    "Material".to_string()
+                } else {
+                    stem
+                };
+                let mut name = stem.clone();
+                let mut n = 1;
+                while taken.contains(&name) {
+                    name = format!("{stem}.{n:03}");
+                    n += 1;
+                }
+                let mut material = base;
+                material.set_name(&name);
+                let mut made = None;
+                let result = self.editor.run("New material", |mesh, _| {
+                    made = Some(mesh.add_material(material)?);
+                    Ok(())
+                });
+                if result.is_ok() {
+                    self.state.active_material = made;
+                    self.state.message = format!("Made the material {name}.");
+                }
+                self.finish_edit(result);
+            }
+            Action::RemoveMaterial(id) => {
+                self.material_preview = None;
+                let result = self
+                    .editor
+                    .run("Remove material", |mesh, _| mesh.remove_material(id));
+                if result.is_ok() {
+                    self.state.active_material = None;
+                }
+                self.finish_edit(result);
+            }
+            Action::PreviewMaterial => {
+                self.material_preview = self.state.material_draft;
+                self.stale = Stale::Everything;
+            }
+            Action::ChangeMaterial => {
+                self.material_preview = None;
+                if let Some((id, draft)) = self.state.material_draft {
+                    let result = self
+                        .editor
+                        .run("Change material", |mesh, _| mesh.set_material(id, draft));
+                    self.finish_edit(result);
+                }
+                self.stale = Stale::Everything;
+            }
+            Action::AssignMaterial(material) => {
+                let mut changed = 0;
+                let result = self.editor.run("Assign material", |mesh, _| {
+                    changed = mesh.assign_material_selected(material)?;
+                    Ok(())
+                });
+                if result.is_ok() {
+                    let faces = if changed == 1 { "face" } else { "faces" };
+                    self.state.message = format!("Gave {changed} {faces} the material.");
+                }
+                self.finish_edit(result);
+            }
+            Action::SelectMaterial(material, select) => {
+                let result = self.editor.run("Select by material", |mesh, mode| {
+                    let faces: Vec<mixer_mesh::Element> = mesh
+                        .faces_with_material(material)
+                        .into_iter()
+                        .map(mixer_mesh::Element::Face)
+                        .collect();
+                    if faces.is_empty() {
+                        return Ok(());
+                    }
+                    let op = if select {
+                        mixer_mesh::SelectOp::Add
+                    } else {
+                        mixer_mesh::SelectOp::Subtract
+                    };
+                    mesh.select_elements(mixer_mesh::SelectMode::Face, &faces, op)?;
+                    mesh.flush_selection(mode);
+                    Ok(())
+                });
                 self.finish_edit(result);
             }
             Action::MarkSharp(sharp) => {
