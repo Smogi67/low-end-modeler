@@ -232,6 +232,12 @@ Step 4 is done (version 0.13.0); see its decisions below.
 - **Exports:** OBJ gets a `.mtl` file beside it (Kd, d, and the PBR extension's Pm and Pr). glTF/GLB gets one primitive per material with metallic-roughness materials (colors turned from sRGB to linear), plus the same colors as vertex colors (COLOR_0).
 - **Roblox (checked 2026-11-09):** the Importer makes one MeshPart per glTF primitive, so each material becomes its own MeshPart, and it has an "Ignore Vertex Colors" option, so it reads vertex colors. Its docs do not say whether it reads glTF material colors or OBJ `.mtl` colors; the owner's import test will tell. Sources: https://create.roblox.com/docs/en-us/studio/importer.md
 
+### Bevel starts as in Blender (owner's choice, 2026-11-09)
+
+- Asked again, the owner chose Blender's exact way over the hold-and-drag from 2026-11-08: after Ctrl+B (or the Bevel button) the bevel follows the mouse at once, with the dashed line from the center; left click or Enter confirms, right click or Esc cancels. This replaces "Bevel by dragging" and the held cursor below. The cursor stays visible; it is not wrapped at the window's edge as Blender does.
+- A click before the mouse has moved makes no bevel.
+- **Next, chosen by the owner:** corners where three or more bevelled edges meet built from four-sided faces in a grid, as Blender does, instead of small triangles. Not started; Aufwand Extra hoch.
+
 ### Blender's selection colors and bevel guide line (owner's request, 2026-11-09)
 
 - **Selection colors** follow Blender 4's default theme (https://projects.blender.org/blender/blender/pulls/111431): selected edges orange (#ff9900), but yellow (#ffd800) in Edge mode; selected points #ff7a00; selected faces a light orange tint (#ffad0d at 25 %). Two new theme colors: "Selected edges in Edge mode" and "Selected points". Faces no longer show center dots, as in Blender outside X-ray. Blender's lighter active face (the last one clicked) is not done.
@@ -463,6 +469,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-09 | 10 | Version 0.16.1, the owner's file (bevelling a bevelled cube still failed): the cause was a bevel kept at width 0, not the bevel code. Bevels with no width are now dropped (letting go without a drag, or Width 0 in the panel); damaged shapes get a message pointing to Merge close vertices; Properties gets a fair share of the column again. 2 new tests: a bevel kept at no width is named and merging repairs it; crowded panels share the column. Run on Linux with simulated input on the owner's file: the message, Merge close vertices, bevelling again, a click without a drag, and Width 0 then 0.05 in the panel | Not yet |
 | 2026-11-09 | 10 | Version 0.17.0, at the owner's requests: snapping steps (magnet popup in the top bar, saved in settings), and a faster online build (no screenshots, kept libraries, lightly optimized tests). 2 new tests: the chosen steps used for move, rotate and scale with odd steps brought into range, and the steps read back from settings. Run on Linux with simulated input: the popup, typing 45°, the setting saved, a Ctrl-held rotation, the popup closing with Esc | Not yet |
 | 2026-11-09 | 10 | Version 0.18.0, at the owner's request from a Blender screenshot: Blender 4's selection colors (mode-aware edges, points, face tint, no face dots), the dashed guide line with a crosshair during bevel, rotate and scale, and the bevel width measured from the center. New and changed tests: edge colors by mode, point colors, no face dots, the bevel width growing and shrinking with distance from the center. Run on Linux with simulated input: a selected face in Face, Edge and Vertex mode, a rotation and a bevel with the line | Not yet |
+| 2026-11-09 | 10 | Version 0.18.1, the owner's choice: the bevel follows the mouse straight after Ctrl+B and a click confirms, as in Blender; the held cursor is gone. Run on Linux with simulated input: Ctrl+B and moving without a button widened the bevel with the dashed line, a click confirmed it, and a click without moving left the shape alone | Not yet |
 
 ## 12. Open questions
 

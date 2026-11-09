@@ -237,9 +237,6 @@ pub struct App {
     pixels: [f32; 2],
     /// When the project was last saved, by hand or automatically.
     last_save: Instant,
-    /// While a bevel is dragged, the cursor is hidden and held still, as in Blender,
-    /// so the drag never stops at the screen's edge. This is where it was.
-    held_cursor: Option<[f32; 2]>,
     /// A material shown as edited while its color or sliders are dragged, before it is
     /// saved as an undo step.
     material_preview: Option<(mixer_mesh::MaterialId, mixer_mesh::Material)>,
@@ -318,7 +315,6 @@ impl App {
             ui_scale,
             pixels: [1.0, 1.0],
             last_save: Instant::now(),
-            held_cursor: None,
             material_preview: None,
         })
     }
@@ -503,7 +499,7 @@ impl App {
                     width,
                     height,
                 });
-                Some((center, self.pointer, self.held_cursor.is_some()))
+                Some((center, self.pointer, false))
             }
             _ => None,
         };
@@ -1704,10 +1700,6 @@ impl App {
         }
         transform.keep_on_cancel = cutting;
         transform.plain = prepare == Prepare::Nothing;
-        if kind == Kind::Bevel {
-            transform.waiting = true;
-            transform.release_confirms = true;
-        }
         self.mouse_state = Mouse::Transforming {
             transform: Box::new(transform),
             parts,
@@ -1769,7 +1761,8 @@ impl App {
         // Blender does.
         if bevel_width.is_some_and(|w| w < MIN_BEVEL_WIDTH) {
             confirm = false;
-            self.state.message = "No bevel: hold left click and drag to bevel.".into();
+            self.state.message =
+                "No bevel: move the mouse away from the center, then click.".into();
         }
         let bevel_width = bevel_width.filter(|_| confirm);
         let keep = !confirm && transform.keep_on_cancel && transform.kind != Kind::Bevel;
@@ -2269,12 +2262,6 @@ impl App {
             if transform.release_confirms && !transform.waiting)
     }
 
-    /// A bevel following a held left button.
-    fn bevel_dragging(&self) -> bool {
-        matches!(&self.mouse_state, Mouse::Transforming { transform, .. }
-            if transform.kind == Kind::Bevel && !transform.waiting)
-    }
-
     fn bevel_waiting(&self) -> bool {
         matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.waiting)
     }
@@ -2397,16 +2384,8 @@ impl App {
 
     /// Handles one event. `mods` is the current state of Shift, Ctrl and Alt.
     pub fn handle_event(&mut self, event: &Event, mouse: &MouseUtil, mods: Mod) {
-        if let Event::MouseMotion {
-            x, y, xrel, yrel, ..
-        } = *event
-        {
-            self.pointer = if self.held_cursor.is_some() {
-                // The cursor stays still; only its movement counts.
-                [self.pointer[0] + xrel as f32, self.pointer[1] + yrel as f32]
-            } else {
-                [x as f32, y as f32]
-            };
+        if let Event::MouseMotion { x, y, .. } = *event {
+            self.pointer = [x as f32, y as f32];
         }
         // The settings and start windows take everything while they show.
         if self.settings_window.is_some() {
@@ -2434,15 +2413,6 @@ impl App {
         if matches!(self.mouse_state, Mouse::Transforming { .. }) {
             self.imgui_pointer_only(event);
             self.handle_transform_event(event, snap);
-            if self.bevel_dragging() && self.held_cursor.is_none() {
-                self.held_cursor = Some(self.pointer);
-                mouse.set_relative_mouse_mode(true);
-            } else if !self.bevel_dragging()
-                && let Some(held) = self.held_cursor.take()
-            {
-                mouse.set_relative_mouse_mode(false);
-                self.pointer = held;
-            }
             return;
         }
         if matches!(self.mouse_state, Mouse::LoopCut(_)) {
