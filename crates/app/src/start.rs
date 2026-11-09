@@ -118,7 +118,7 @@ fn title(ui: &Ui, fonts: &Fonts) {
         .add_rect(
             [start[0], start[1] + 4.0],
             [start[0] + 26.0, start[1] + 30.0],
-            color::ACCENT,
+            color::ACCENT(),
         )
         .filled(true)
         .rounding(7.0)
@@ -130,7 +130,7 @@ fn title(ui: &Ui, fonts: &Fonts) {
     ui.same_line_with_spacing(0.0, 14.0);
     ui.set_cursor_screen_pos([ui.cursor_screen_pos()[0], start[1] + 12.0]);
     ui.text_colored(
-        color::MUTED,
+        color::MUTED(),
         concat!("3D modeling  \u{2022}  version ", env!("CARGO_PKG_VERSION")),
     );
 }
@@ -144,7 +144,7 @@ fn wrapped(ui: &Ui, tint: [f32; 4], text: &str) {
 
 fn heading(ui: &Ui, fonts: &Fonts, text: &str) {
     let font = ui.push_font(fonts.heading);
-    ui.text_colored(color::FAINT, text);
+    ui.text_colored(color::FAINT(), text);
     drop(font);
     ui.dummy([0.0, 2.0]);
 }
@@ -158,11 +158,11 @@ fn tile(ui: &Ui, fonts: &Fonts, id: &str, glyph: char, name: &str, line: &str) -
     let (hovered, active) = (ui.is_item_hovered(), ui.is_item_active());
     let list = ui.get_window_draw_list();
     let fill = if active {
-        color::FRAME_ACTIVE
+        color::FRAME_ACTIVE()
     } else if hovered {
-        color::FRAME_HOVER
+        color::FRAME_HOVER()
     } else {
-        color::FRAME
+        color::FRAME()
     };
     list.add_rect(start, [start[0] + width, start[1] + height], fill)
         .filled(true)
@@ -171,12 +171,12 @@ fn tile(ui: &Ui, fonts: &Fonts, id: &str, glyph: char, name: &str, line: &str) -
     let font = ui.push_font(fonts.tool);
     list.add_text(
         [start[0] + 16.0, start[1] + 20.0],
-        color::ACCENT,
+        color::ACCENT(),
         glyph.to_string(),
     );
-    list.add_text([start[0] + 52.0, start[1] + 12.0], color::TEXT, name);
+    list.add_text([start[0] + 52.0, start[1] + 12.0], color::TEXT(), name);
     drop(font);
-    list.add_text([start[0] + 52.0, start[1] + 36.0], color::MUTED, line);
+    list.add_text([start[0] + 52.0, start[1] + 36.0], color::MUTED(), line);
     clicked
 }
 
@@ -197,7 +197,7 @@ fn left_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opti
     let label_column = 112.0;
     let row = |label: &str| {
         ui.align_text_to_frame_padding();
-        ui.text_colored(color::MUTED, label);
+        ui.text_colored(color::MUTED(), label);
         ui.same_line_with_pos(label_column);
         ui.set_next_item_width(-1.0);
     };
@@ -218,7 +218,7 @@ fn left_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opti
     ui.set_cursor_pos([label_column, ui.cursor_pos()[1]]);
     wrapped(
         ui,
-        color::FAINT,
+        color::FAINT(),
         &format!("Saved in {} > {shown}", state.projects_folder),
     );
 
@@ -268,24 +268,24 @@ fn left_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opti
     }
     ui.dummy([0.0, 4.0]);
     let accent = [
-        ui.push_style_color(StyleColor::Button, color::ACCENT),
-        ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER),
-        ui.push_style_color(StyleColor::ButtonActive, color::ACCENT),
-        ui.push_style_color(StyleColor::Text, color::ON_ACCENT),
+        ui.push_style_color(StyleColor::Button, color::ACCENT()),
+        ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER()),
+        ui.push_style_color(StyleColor::ButtonActive, color::ACCENT()),
+        ui.push_style_color(StyleColor::Text, color::ON_ACCENT()),
     ];
     if ui.button_with_size(format!("{}  Create project", icon::NEW), [-1.0, 36.0]) {
         *action = Some(StartAction::Create);
     }
     drop(accent);
     if !state.message.is_empty() {
-        wrapped(ui, color::WARNING, &state.message);
+        wrapped(ui, color::WARNING(), &state.message);
     }
 }
 
 fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Option<StartAction>) {
     heading(ui, fonts, "RECENT");
     if state.recent.is_empty() {
-        ui.text_colored(color::MUTED, "Projects you open or save show up here.");
+        ui.text_colored(color::MUTED(), "Projects you open or save show up here.");
     }
     let row = 44.0;
     let icon_button = 34.0;
@@ -342,7 +342,7 @@ fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opt
             list.add_rect(
                 start,
                 [start[0] + open_width, start[1] + row],
-                color::FRAME_HOVER,
+                color::FRAME_HOVER(),
             )
             .filled(true)
             .rounding(8.0)
@@ -357,10 +357,10 @@ fn right_column(ui: &Ui, state: &mut StartState, fonts: &Fonts, action: &mut Opt
             .to_string();
         let clip_end = [start[0] + open_width - 6.0, start[1] + row];
         list.with_clip_rect_intersect(start, clip_end, || {
-            list.add_text([start[0] + 10.0, start[1] + 6.0], color::TEXT, &name);
+            list.add_text([start[0] + 10.0, start[1] + 6.0], color::TEXT(), &name);
             list.add_text(
                 [start[0] + 10.0, start[1] + 24.0],
-                color::FAINT,
+                color::FAINT(),
                 format!("{folder}  \u{2022}  {}", recent.age),
             );
         });
@@ -389,7 +389,7 @@ fn confirm_row(
     action: &mut Option<StartAction>,
 ) {
     ui.get_window_draw_list()
-        .add_rect(start, [start[0] + width, start[1] + row], color::FRAME)
+        .add_rect(start, [start[0] + width, start[1] + row], color::FRAME())
         .filled(true)
         .rounding(8.0)
         .build();
@@ -398,7 +398,7 @@ fn confirm_row(
     let wrap = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + width - buttons - 20.0);
     ui.text(format!("Delete {name}?"));
     ui.set_cursor_screen_pos([start[0] + 10.0, start[1] + 24.0]);
-    ui.text_colored(color::FAINT, "It goes to the Recycle Bin.");
+    ui.text_colored(color::FAINT(), "It goes to the Recycle Bin.");
     drop(wrap);
     ui.set_cursor_screen_pos([start[0] + width - buttons, start[1] + 7.0]);
     let red = ui.push_style_color(StyleColor::Button, [0.62, 0.20, 0.18, 1.0]);
@@ -427,8 +427,8 @@ fn settings_row(ui: &Ui, action: &mut Option<StartAction>) {
     ui.same_line_with_spacing(0.0, 12.0);
     ui.align_text_to_frame_padding();
     ui.text_colored(
-        color::FAINT,
-        "Anti-aliasing, interface size, mouse, auto-save and more.",
+        color::FAINT(),
+        "Rendering engine, theme, mouse, auto-save and more.",
     );
 }
 

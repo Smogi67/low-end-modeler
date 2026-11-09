@@ -10,10 +10,8 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::Mat4;
 use crate::grid::{FLOATS_PER_VERTEX, GridPlane, grid_vertices};
-use crate::renderer::{
-    BACKGROUND_BOTTOM, BACKGROUND_TOP, EDGE_GLOW, PLAIN_EDGE_COLOR, SELECTED_FACE,
-    SELECTED_FACE_AMOUNT, View,
-};
+use crate::palette;
+use crate::renderer::{EDGE_GLOW, View, background_corners};
 use crate::scene::{Changed, FLOATS_PER_LINE_VERTEX, FLOATS_PER_TRIANGLE_VERTEX, Scene};
 
 /// The engines wgpu offers here, by their key in settings.txt.
@@ -165,6 +163,8 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 /// Each draw's settings sit in their own slot of one buffer.
 const SLOT: u64 = 256;
+/// The shader's `Uniforms`: a matrix and eight groups of four numbers.
+const UNIFORM_SIZE: u64 = 192;
 const SLOTS: u64 = 9;
 const BACKGROUND_SLOT: u64 = 0;
 const GRID_SLOT: u64 = 1;
@@ -187,6 +187,9 @@ struct Uniforms {
     light: [f32; 4],
     extra: [f32; 4],
     glow: [f32; 4],
+    face: [f32; 4],
+    back: [f32; 4],
+    selected_face: [f32; 4],
 }
 
 impl Uniforms {
@@ -200,6 +203,9 @@ impl Uniforms {
             .chain(&self.light)
             .chain(&self.extra)
             .chain(&self.glow)
+            .chain(&self.face)
+            .chain(&self.back)
+            .chain(&self.selected_face)
         {
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -305,6 +311,8 @@ pub struct WgpuRenderer {
     ui_pipeline: wgpu::RenderPipeline,
     background: wgpu::Buffer,
     grid: wgpu::Buffer,
+    /// The theme the grid and background were made with.
+    theme_version: u64,
     grid_vertex_count: u32,
     triangles: Growing,
     edges: Growing,
@@ -436,15 +444,7 @@ impl WgpuRenderer {
             1
         };
 
-        let source = format!(
-            "const SELECTED_FACE = vec3<f32>({:?}, {:?}, {:?});\n\
-             const SELECTED_FACE_AMOUNT: f32 = {:?};\n{}",
-            SELECTED_FACE[0],
-            SELECTED_FACE[1],
-            SELECTED_FACE[2],
-            SELECTED_FACE_AMOUNT,
-            include_str!("wgpu_shaders.wgsl")
-        );
+        let source = include_str!("wgpu_shaders.wgsl");
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mixer shaders"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -458,7 +458,7 @@ impl WgpuRenderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(144),
+                    min_binding_size: wgpu::BufferSize::new(UNIFORM_SIZE),
                 },
                 count: None,
             }],
@@ -477,7 +477,7 @@ impl WgpuRenderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &uniforms,
                     offset: 0,
-                    size: wgpu::BufferSize::new(144),
+                    size: wgpu::BufferSize::new(UNIFORM_SIZE),
                 }),
             }],
         });
@@ -747,20 +747,12 @@ impl WgpuRenderer {
             ..Default::default()
         });
 
-        let [t, b] = [BACKGROUND_TOP, BACKGROUND_BOTTOM];
-        let corners: [f32; 24] = [
-            -1.0, -1.0, 0.0, b[0], b[1], b[2], 1.0, -1.0, 0.0, b[0], b[1], b[2], -1.0, 1.0, 0.0,
-            t[0], t[1], t[2], 1.0, 1.0, 0.0, t[0], t[1], t[2],
-        ];
         let background = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("background"),
-            contents: &as_bytes(&corners),
-            usage: wgpu::BufferUsages::VERTEX,
+            contents: &as_bytes(&background_corners()),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
-        let grid_floats: Vec<f32> = GridPlane::ALL
-            .into_iter()
-            .flat_map(|plane| split_lines(&grid_vertices(plane), 2.0))
-            .collect();
+        let grid_floats = grid_lines();
         let grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("grid"),
             contents: &as_bytes(&grid_floats),
@@ -812,6 +804,7 @@ impl WgpuRenderer {
             ui_pipeline,
             background,
             grid,
+            theme_version: palette::version(),
             grid_vertex_count,
             ui_uniforms,
             ui_uniform_group,
@@ -954,6 +947,18 @@ impl WgpuRenderer {
         let (width, height) = (width.max(1) as u32, height.max(1) as u32);
         self.resize(width, height);
         self.pending = None;
+        if self.theme_version != palette::version() {
+            self.theme_version = palette::version();
+            self.grid = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("grid"),
+                    contents: &as_bytes(&grid_lines()),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            self.queue
+                .write_buffer(&self.background, 0, &as_bytes(&background_corners()));
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -973,6 +978,9 @@ impl WgpuRenderer {
         let base = Uniforms {
             matrix: view.view_projection,
             extra: [0.0, 1.0, size[0], size[1]],
+            face: palette::get(palette::FACE),
+            back: palette::get(palette::FACE_BACK),
+            selected_face: palette::get(palette::FACE_SELECTED),
             ..Default::default()
         };
         self.write_slot(
@@ -1014,7 +1022,7 @@ impl WgpuRenderer {
                 },
             );
         }
-        let [r, g, b] = PLAIN_EDGE_COLOR;
+        let [r, g, b] = palette::rgb(palette::EDGE_PLAIN);
         self.write_slot(
             PLAIN_EDGE_SLOT,
             &Uniforms {
@@ -1042,7 +1050,7 @@ impl WgpuRenderer {
             None => (&frame_view, None),
         };
         {
-            let [r, g, b] = BACKGROUND_BOTTOM;
+            let [r, g, b] = palette::rgb(palette::BACKGROUND_BOTTOM);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1419,6 +1427,14 @@ impl WgpuRenderer {
     }
 }
 
+/// The grid's three planes, one after another, in short pieces.
+fn grid_lines() -> Vec<f32> {
+    GridPlane::ALL
+        .into_iter()
+        .flat_map(|plane| split_lines(&grid_vertices(plane), 2.0))
+        .collect()
+}
+
 /// Cuts each line (two vertices of position and color) into pieces about `step` long.
 /// Some drivers draw a line wrongly when one end is far behind the camera; short pieces
 /// never are.
@@ -1542,19 +1558,16 @@ mod tests {
         let bytes = values.bytes();
         assert_eq!(bytes.len(), SLOT as usize);
         // matrix (64 bytes) and four vec4s (64 bytes) come before the glow.
+        assert_eq!(UNIFORM_SIZE, 64 + 8 * 16);
         assert_eq!(&bytes[128..132], &9.0f32.to_le_bytes());
     }
 
     /// Runs the WGSL through wgpu's shader compiler, as the graphics driver would get it.
     #[test]
     fn the_shaders_compile() {
-        let source = format!(
-            "const SELECTED_FACE = vec3<f32>(1.0, 0.5, 0.2);\n\
-             const SELECTED_FACE_AMOUNT: f32 = 0.4;\n{}",
-            include_str!("wgpu_shaders.wgsl")
-        );
+        let source = include_str!("wgpu_shaders.wgsl");
         // naga is wgpu's compiler; parsing and validating catch mistakes without a GPU.
-        let module = naga_check(&source);
+        let module = naga_check(source);
         assert!(module.is_ok(), "{module:?}");
     }
 

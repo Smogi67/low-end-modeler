@@ -5,6 +5,7 @@ use imgui::{Condition, Drag, SliderFlags, StyleColor, StyleVar, Ui, WindowFlags}
 
 use crate::engines::Report;
 use crate::export::ExportFormat;
+use crate::palette;
 use crate::settings::{
     AUTOSAVE_CHOICES, FASTEST_TURN, FEWEST_RECENT, FEWEST_UNDO_STEPS, HIGHEST_TRIANGLE_LIMIT,
     INTERFACE_SIZES, LOWEST_TRIANGLE_LIMIT, MOST_RECENT, MOST_UNDO_STEPS, RENDERERS, SLOWEST_TURN,
@@ -14,8 +15,9 @@ use crate::theme::{Fonts, color, icon};
 use crate::wgpu_renderer::{Engine, Support};
 
 /// The pages, in order.
-pub const PAGES: [(char, &str); 4] = [
+pub const PAGES: [(char, &str); 5] = [
     (icon::MONITOR, "Display"),
+    (icon::EDIT, "Theme"),
     (icon::MOUSE, "Mouse"),
     (icon::DRIVE, "Saving"),
     (icon::EXPORT, "Export & updates"),
@@ -35,6 +37,8 @@ pub struct SettingsState {
     pub renderer_wanted: String,
     /// Which engines this computer offers, once Mixer has checked.
     pub engines: Option<Report>,
+    /// Every color, as Settings > Theme edits them.
+    pub theme: palette::Colors,
 }
 
 /// What happened this frame.
@@ -51,7 +55,7 @@ const LABEL: f32 = 170.0;
 
 fn heading(ui: &Ui, fonts: &Fonts, text: &str) {
     let font = ui.push_font(fonts.heading);
-    ui.text_colored(color::FAINT, text);
+    ui.text_colored(color::FAINT(), text);
     drop(font);
     ui.dummy([0.0, 2.0]);
 }
@@ -65,7 +69,7 @@ fn note(ui: &Ui, tint: [f32; 4], text: &str) {
 /// A muted label, with the control after it at a fixed column.
 fn label(ui: &Ui, text: &str) {
     ui.align_text_to_frame_padding();
-    ui.text_colored(color::MUTED, text);
+    ui.text_colored(color::MUTED(), text);
     ui.same_line_with_pos(LABEL);
 }
 
@@ -80,12 +84,12 @@ fn choices(ui: &Ui, id: &str, names: &[String], chosen: usize) -> Option<usize> 
         let lit = i == chosen;
         let colors = if lit {
             vec![
-                ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT),
-                ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_SOFT),
-                ui.push_style_color(StyleColor::Text, color::ACCENT),
+                ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT()),
+                ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_SOFT()),
+                ui.push_style_color(StyleColor::Text, color::ACCENT()),
             ]
         } else {
-            vec![ui.push_style_color(StyleColor::Text, color::MUTED)]
+            vec![ui.push_style_color(StyleColor::Text, color::MUTED())]
         };
         let width = ui.calc_text_size(name)[0] + 28.0;
         if ui.button_with_size(format!("{name}##{id}{i}"), [width.max(64.0), 30.0]) && !lit {
@@ -110,6 +114,7 @@ pub fn build_settings(ui: &Ui, state: &mut SettingsState, fonts: &Fonts) -> Opti
         .filled(true)
         .build();
     let before = state.values.clone();
+    let theme_before = state.theme;
     let mut action = None;
     let padding = ui.push_style_var(StyleVar::WindowPadding([24.0, 20.0]));
     let rounding = ui.push_style_var(StyleVar::WindowRounding(12.0));
@@ -126,7 +131,7 @@ pub fn build_settings(ui: &Ui, state: &mut SettingsState, fonts: &Fonts) -> Opti
         .build(|| {
             // Title, and Close on the right.
             let font = ui.push_font(fonts.title);
-            ui.text_colored(color::ACCENT, icon::SETTINGS.to_string());
+            ui.text_colored(color::ACCENT(), icon::SETTINGS.to_string());
             ui.same_line_with_spacing(0.0, 12.0);
             ui.text("Settings");
             drop(font);
@@ -145,13 +150,13 @@ pub fn build_settings(ui: &Ui, state: &mut SettingsState, fonts: &Fonts) -> Opti
                         let lit = state.page == i;
                         let colors = if lit {
                             vec![
-                                ui.push_style_color(StyleColor::Button, color::FRAME_ACTIVE),
-                                ui.push_style_color(StyleColor::Text, color::TEXT),
+                                ui.push_style_color(StyleColor::Button, color::FRAME_ACTIVE()),
+                                ui.push_style_color(StyleColor::Text, color::TEXT()),
                             ]
                         } else {
                             vec![
                                 ui.push_style_color(StyleColor::Button, [0.0; 4]),
-                                ui.push_style_color(StyleColor::Text, color::MUTED),
+                                ui.push_style_color(StyleColor::Text, color::MUTED()),
                             ]
                         };
                         let align = ui.push_style_var(StyleVar::ButtonTextAlign([0.0, 0.5]));
@@ -167,21 +172,59 @@ pub fn build_settings(ui: &Ui, state: &mut SettingsState, fonts: &Fonts) -> Opti
                 .size([0.0, -28.0])
                 .build(|| match state.page {
                     0 => display_page(ui, fonts, state),
-                    1 => mouse_page(ui, fonts, &mut state.values),
-                    2 => saving_page(ui, fonts, &mut state.values),
+                    1 => theme_page(ui, fonts, &mut state.theme),
+                    2 => mouse_page(ui, fonts, &mut state.values),
+                    3 => saving_page(ui, fonts, &mut state.values),
                     _ => export_page(ui, fonts, &mut state.values),
                 });
             ui.text_colored(
-                color::FAINT,
+                color::FAINT(),
                 "Changes are saved straight away. Esc closes this window.",
             );
         });
     drop(rounding);
     drop(padding);
-    if action.is_none() && state.values != before {
+    if action.is_none() && (state.values != before || state.theme != theme_before) {
         action = Some(SettingsAction::Changed);
     }
     action
+}
+
+/// Every color, grouped, each with a swatch that opens a color picker.
+fn theme_page(ui: &Ui, fonts: &Fonts, theme: &mut palette::Colors) {
+    let defaults = palette::defaults();
+    let changed = *theme != defaults;
+    let disabled = ui.begin_disabled(!changed);
+    if ui.button("Reset to the default theme##theme_reset") {
+        *theme = defaults;
+    }
+    drop(disabled);
+    note(
+        ui,
+        color::FAINT(),
+        "Click a color to change it. Changes show straight away and are kept in theme.txt.",
+    );
+    for group in [palette::INTERFACE, palette::VIEW, palette::SHAPES] {
+        ui.dummy([0.0, 6.0]);
+        heading(ui, fonts, &group.to_uppercase());
+        for (i, entry) in palette::ENTRIES.iter().enumerate() {
+            if entry.group != group {
+                continue;
+            }
+            label(ui, entry.label);
+            ui.color_edit4_config(format!("##theme{i}"), &mut theme[i])
+                .inputs(false)
+                .label(false)
+                .alpha_bar(true)
+                .build();
+            if theme[i] != defaults[i] {
+                ui.same_line();
+                if ui.small_button(format!("Reset##theme_one{i}")) {
+                    theme[i] = defaults[i];
+                }
+            }
+        }
+    }
 }
 
 fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
@@ -205,21 +248,21 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
             ui.text_colored(tint, text);
         };
         if key == recommended {
-            badge(color::SUCCESS, "Recommended");
+            badge(color::SUCCESS(), "Recommended");
         }
         if key == state.renderer_now {
-            badge(color::ACCENT, "In use");
+            badge(color::ACCENT(), "In use");
         }
         // Every engine may be picked, even one that seems missing (owner's choice).
         match support {
-            Some(Support::No) => badge(color::WARNING, "May be unsupported"),
-            Some(Support::Software) => badge(color::WARNING, "Software only, slow"),
+            Some(Support::No) => badge(color::WARNING(), "May be unsupported"),
+            Some(Support::Software) => badge(color::WARNING(), "Software only, slow"),
             // The description, when there is room for it; it is in the tooltip too.
             _ => {
                 let room =
                     ui.window_pos()[0] + ui.window_content_region_max()[0] - ui.item_rect_max()[0];
                 if ui.calc_text_size(description)[0] + 12.0 < room {
-                    badge(color::FAINT, description);
+                    badge(color::FAINT(), description);
                 }
             }
         }
@@ -230,18 +273,18 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
         let now = name_of(&state.renderer_now);
         note(
             ui,
-            color::WARNING,
+            color::WARNING(),
             &format!(
                 "{name} could not start this time, so Mixer uses {now}. \
                  mixer.log, beside Mixer, says why."
             ),
         );
     } else if values.renderer != state.renderer_now {
-        note(ui, color::WARNING, "Changes the next time Mixer starts.");
+        note(ui, color::WARNING(), "Changes the next time Mixer starts.");
     } else if state.engines.is_none() {
         note(
             ui,
-            color::FAINT,
+            color::FAINT(),
             "Mixer is checking which engines this computer offers; see again next time.",
         );
     }
@@ -251,13 +294,13 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
     if values.antialiasing && state.antialiasing_refused {
         note(
             ui,
-            color::FAINT,
+            color::FAINT(),
             "Your graphics driver did not allow it, so it is off.",
         );
     } else if values.antialiasing != state.antialiasing_now {
-        note(ui, color::WARNING, "Changes the next time Mixer starts.");
+        note(ui, color::WARNING(), "Changes the next time Mixer starts.");
     } else {
-        note(ui, color::FAINT, "Turn off if Mixer feels slow.");
+        note(ui, color::FAINT(), "Turn off if Mixer feels slow.");
     }
     ui.checkbox("Show the grid", &mut values.grid);
     ui.checkbox("Shadows on shapes", &mut values.shadows);
@@ -266,7 +309,7 @@ fn display_page(ui: &Ui, fonts: &Fonts, state: &mut SettingsState) {
         ui.checkbox("Edge lines in View mode", &mut values.flat_edges);
         note(
             ui,
-            color::FAINT,
+            color::FAINT(),
             if values.flat_edges {
                 "Every side is lit the same; thin lines show the shape."
             } else {
@@ -292,7 +335,7 @@ fn mouse_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     ui.checkbox("Touchpad mode", &mut values.touchpad);
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         "Two-finger scrolling turns the view. Hold Shift while scrolling to slide it, or \
          Ctrl to zoom.",
     );
@@ -315,7 +358,7 @@ fn mouse_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     ui.dummy([0.0, 8.0]);
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         "Always available: right-drag or Alt+drag turns the view, middle-drag or \
          Shift+Alt+drag slides it, and Ctrl+Alt+drag or the wheel zooms.",
     );
@@ -343,7 +386,7 @@ fn saving_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     }
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         "Saves the open project when it has changes, as Ctrl+S does. Imported OBJ files \
          are not saved over.",
     );
@@ -382,7 +425,7 @@ fn saving_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     if !values.start_window {
         note(
             ui,
-            color::FAINT,
+            color::FAINT(),
             "Mixer then opens your most recent project, or the start window if there is none.",
         );
     }
@@ -410,7 +453,7 @@ fn export_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
         .build(ui, &mut values.export_scale);
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         "Quick Projects and the New Project form start with these. Each project keeps its own.",
     );
     ui.dummy([0.0, 8.0]);
@@ -434,7 +477,7 @@ fn export_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     }
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         "The counter in the side panel turns red above it, and exporting warns. Some \
          game engines refuse bigger meshes.",
     );
@@ -452,7 +495,7 @@ fn export_page(ui: &Ui, fonts: &Fonts, values: &mut Settings) {
     );
     note(
         ui,
-        color::FAINT,
+        color::FAINT(),
         concat!(
             "This is Mixer ",
             env!("CARGO_PKG_VERSION"),
@@ -488,6 +531,7 @@ mod tests {
             engines: Some(Report::parse(
                 "version 1\nvulkan no\ndirectx12 software x\n",
             )),
+            theme: palette::defaults(),
         };
         let mut seen = std::collections::HashSet::new();
         let mut pages = std::collections::HashSet::new();

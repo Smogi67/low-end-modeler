@@ -14,6 +14,7 @@ mod gpu;
 mod grid;
 mod imgui_gl;
 mod knife;
+mod palette;
 mod picking;
 mod places;
 mod platform;
@@ -166,6 +167,7 @@ fn run() -> Result<(), String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
     let settings = settings::Settings::load();
+    palette::set(&palette::load());
     let wanted = settings.antialiasing;
     let mut log = Log::open();
     log.line(&format!(

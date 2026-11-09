@@ -484,6 +484,15 @@ impl Mesh {
         }
 
         let here = self.vertices[vertex].position;
+        // A face with no area of its own (all its points in a line, as a bevel's cut
+        // end can be) borrows the way the faces around it face.
+        let mut sum = [0.0f32; 3];
+        for &c in &ordered {
+            if let Ok(Some(n)) = self.face_normal(self.corners[c].face) {
+                sum = add(sum, n);
+            }
+        }
+        let around = unit(sum);
         let toward = |e: EdgeId| {
             let other = self.edges[e].other_vertex(vertex)?;
             unit(sub(self.vertices[other].position, here))
@@ -498,7 +507,8 @@ impl Mesh {
                 .face_normal(face)
                 .ok()
                 .flatten()
-                .or_else(|| unit(cross(u_out, u_in)))?;
+                .or_else(|| unit(cross(u_out, u_in)))
+                .or(around)?;
             // Faces wind counterclockwise about their normal, so the inside of an edge
             // lies to the left of the way the face runs along it.
             let inward_in = unit(cross(normal, scale(u_in, -1.0)))?;

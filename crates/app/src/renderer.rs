@@ -5,6 +5,7 @@ use glow::HasContext;
 
 use crate::camera::Mat4;
 use crate::grid::{FLOATS_PER_VERTEX, GridPlane, grid_vertices};
+use crate::palette;
 use crate::scene::{Changed, FLOATS_PER_LINE_VERTEX, FLOATS_PER_TRIANGLE_VERTEX, Scene};
 
 const VERTEX_SHADER: &str = r#"#version 120
@@ -61,10 +62,13 @@ void main() {
 }
 "#;
 
-/// The start of the faces' fragment shader; `mesh_fragment_shader` adds the selection
-/// color, which the newer engines share.
-const MESH_FRAGMENT_SHADER: &str = r#"
+const MESH_FRAGMENT_SHADER: &str = r#"#version 120
 uniform vec3 u_light;
+// The theme's colors: faces, faces seen from behind, and the selection tint with its
+// strength in the fourth number.
+uniform vec3 u_face;
+uniform vec3 u_back;
+uniform vec4 u_selected;
 // 1 lights faces by which way they face, with darker sides; 0 lights them all evenly.
 uniform float u_shadows;
 varying vec3 v_normal;
@@ -72,8 +76,8 @@ varying float v_selected;
 void main() {
     // The light follows the camera. A face seen from behind turns red, which shows
     // inside-out faces at a glance.
-    vec3 color = gl_FrontFacing ? vec3(0.74, 0.75, 0.77) : vec3(0.62, 0.20, 0.20);
-    color = mix(color, SELECTED_FACE, v_selected * SELECTED_FACE_AMOUNT);
+    vec3 color = gl_FrontFacing ? u_face : u_back;
+    color = mix(color, u_selected.rgb, v_selected * u_selected.a);
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(v_normal) * side;
     // A key light near the camera, plus soft light from the sky above.
@@ -84,17 +88,6 @@ void main() {
 }
 "#;
 
-fn mesh_fragment_shader() -> String {
-    let [r, g, b] = SELECTED_FACE;
-    format!(
-        "#version 120\nconst vec3 SELECTED_FACE = vec3({r:?}, {g:?}, {b:?});\n\
-         const float SELECTED_FACE_AMOUNT = {SELECTED_FACE_AMOUNT:?};\n{MESH_FRAGMENT_SHADER}"
-    )
-}
-
-/// The tint of selected faces, and how much of it they get.
-pub const SELECTED_FACE: [f32; 3] = [1.0, 0.64, 0.30];
-pub const SELECTED_FACE_AMOUNT: f32 = 0.40;
 /// Bright edges (selected and sharp ones) are drawn again on top, as Blender does: a
 /// wide faint glow, then a thicker bright core. Each is a width in pixels and a
 /// strength. Where glowing edges meet, the glow adds up, so corners stand out.
@@ -103,8 +96,6 @@ pub const EDGE_GLOW: [(f32, f32); 2] = [(7.0, 0.28), (2.5, 1.0)];
 const POSITION_ATTRIBUTE: u32 = 0;
 const COLOR_ATTRIBUTE: u32 = 1;
 const SELECTED_ATTRIBUTE: u32 = 2;
-pub const BACKGROUND_TOP: [f32; 3] = [0.235, 0.245, 0.265];
-pub const BACKGROUND_BOTTOM: [f32; 3] = [0.135, 0.14, 0.15];
 const IDENTITY: Mat4 = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
@@ -126,6 +117,11 @@ pub struct Renderer {
     mesh_view_projection: Option<glow::UniformLocation>,
     mesh_light: Option<glow::UniformLocation>,
     mesh_shadows: Option<glow::UniformLocation>,
+    mesh_face: Option<glow::UniformLocation>,
+    mesh_back: Option<glow::UniformLocation>,
+    mesh_selected: Option<glow::UniformLocation>,
+    /// The theme the grid and background were made with.
+    theme_version: std::cell::Cell<u64>,
     triangle_buffer: glow::Buffer,
     triangle_vertex_count: i32,
     edge_buffer: glow::Buffer,
@@ -165,8 +161,15 @@ pub struct View {
     pub plain_edges: bool,
 }
 
-/// The color of View mode's plain edge lines.
-pub const PLAIN_EDGE_COLOR: [f32; 3] = [0.30, 0.31, 0.34];
+/// The background's square: the theme's bottom color below, its top color above.
+pub fn background_corners() -> [f32; 24] {
+    let t = palette::rgb(palette::BACKGROUND_TOP);
+    let b = palette::rgb(palette::BACKGROUND_BOTTOM);
+    [
+        -1.0, -1.0, 0.0, b[0], b[1], b[2], 1.0, -1.0, 0.0, b[0], b[1], b[2], -1.0, 1.0, 0.0, t[0],
+        t[1], t[2], 1.0, 1.0, 0.0, t[0], t[1], t[2],
+    ]
+}
 
 fn as_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
@@ -238,7 +241,7 @@ impl Renderer {
             let mesh_program = create_program(
                 &gl,
                 MESH_VERTEX_SHADER,
-                &mesh_fragment_shader(),
+                MESH_FRAGMENT_SHADER,
                 &[
                     (POSITION_ATTRIBUTE, "a_position"),
                     (COLOR_ATTRIBUTE, "a_normal"),
@@ -256,33 +259,17 @@ impl Renderer {
 
             gl.enable(glow::DEPTH_TEST);
             gl.enable(glow::PROGRAM_POINT_SIZE);
-            gl.clear_color(
-                BACKGROUND_BOTTOM[0],
-                BACKGROUND_BOTTOM[1],
-                BACKGROUND_BOTTOM[2],
-                1.0,
-            );
 
             let renderer = Self {
                 depth_bias: gl.get_uniform_location(program, "u_depth_bias"),
                 fade_center: gl.get_uniform_location(program, "u_fade_center"),
                 fade_radius: gl.get_uniform_location(program, "u_fade_radius"),
                 glow: gl.get_uniform_location(program, "u_glow"),
-                background_buffer: {
-                    let [t, b] = [BACKGROUND_TOP, BACKGROUND_BOTTOM];
-                    let corners = [
-                        -1.0, -1.0, 0.0, b[0], b[1], b[2], 1.0, -1.0, 0.0, b[0], b[1], b[2], -1.0,
-                        1.0, 0.0, t[0], t[1], t[2], 1.0, 1.0, 0.0, t[0], t[1], t[2],
-                    ];
-                    let buffer = gl.create_buffer()?;
-                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-                    gl.buffer_data_u8_slice(
-                        glow::ARRAY_BUFFER,
-                        &as_bytes(&corners),
-                        glow::STATIC_DRAW,
-                    );
-                    buffer
-                },
+                background_buffer: gl.create_buffer()?,
+                theme_version: std::cell::Cell::new(u64::MAX),
+                mesh_face: gl.get_uniform_location(mesh_program, "u_face"),
+                mesh_back: gl.get_uniform_location(mesh_program, "u_back"),
+                mesh_selected: gl.get_uniform_location(mesh_program, "u_selected"),
                 mesh_view_projection: gl.get_uniform_location(mesh_program, "u_view_projection"),
                 mesh_light: gl.get_uniform_location(mesh_program, "u_light"),
                 mesh_shadows: gl.get_uniform_location(mesh_program, "u_shadows"),
@@ -452,6 +439,23 @@ impl Renderer {
     pub fn render(&self, width: i32, height: i32, view: &View) {
         let gl = &self.gl;
         let size = size_of::<f32>() as i32;
+        if self.theme_version.get() != palette::version() {
+            self.theme_version.set(palette::version());
+            let grid: Vec<f32> = GridPlane::ALL.into_iter().flat_map(grid_vertices).collect();
+            // SAFETY: as for the other calls.
+            unsafe {
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.grid_buffer));
+                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &as_bytes(&grid), glow::STATIC_DRAW);
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.background_buffer));
+                gl.buffer_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    &as_bytes(&background_corners()),
+                    glow::STATIC_DRAW,
+                );
+                let [r, g, b] = palette::rgb(palette::BACKGROUND_BOTTOM);
+                gl.clear_color(r, g, b, 1.0);
+            }
+        }
         unsafe {
             gl.viewport(0, 0, width, height);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
@@ -513,6 +517,12 @@ impl Renderer {
                 );
                 let [x, y, z] = view.light;
                 gl.uniform_3_f32(self.mesh_light.as_ref(), x, y, z);
+                let [r, g, b] = palette::rgb(palette::FACE);
+                gl.uniform_3_f32(self.mesh_face.as_ref(), r, g, b);
+                let [r, g, b] = palette::rgb(palette::FACE_BACK);
+                gl.uniform_3_f32(self.mesh_back.as_ref(), r, g, b);
+                let [r, g, b, a] = palette::get(palette::FACE_SELECTED);
+                gl.uniform_4_f32(self.mesh_selected.as_ref(), r, g, b, a);
                 gl.uniform_1_f32(
                     self.mesh_shadows.as_ref(),
                     if view.shadows { 1.0 } else { 0.0 },
@@ -557,7 +567,7 @@ impl Renderer {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.edge_buffer));
                 gl.vertex_attrib_pointer_f32(POSITION_ATTRIBUTE, 3, glow::FLOAT, false, stride, 0);
                 gl.disable_vertex_attrib_array(COLOR_ATTRIBUTE);
-                let [r, g, b] = PLAIN_EDGE_COLOR;
+                let [r, g, b] = palette::rgb(palette::EDGE_PLAIN);
                 gl.vertex_attrib_3_f32(COLOR_ATTRIBUTE, r, g, b);
                 gl.draw_arrays(glow::LINES, 0, self.edge_vertex_count);
                 gl.enable_vertex_attrib_array(COLOR_ATTRIBUTE);

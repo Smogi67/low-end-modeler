@@ -6,18 +6,13 @@ use std::collections::{HashMap, HashSet};
 
 use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, ShadingNormals, VertexId};
 
+use crate::palette;
 use crate::picking::face_dot;
 
 /// Position, normal and selected (0 or 1), for each corner of each triangle.
 pub const FLOATS_PER_TRIANGLE_VERTEX: usize = 7;
 /// Position and color, for each end of an edge and each point.
 pub const FLOATS_PER_LINE_VERTEX: usize = 6;
-
-const NORMAL_COLOR: [f32; 3] = [0.11, 0.115, 0.13];
-/// Bright, so that the glow around it shows (renderer.rs).
-const SELECTED_COLOR: [f32; 3] = [1.0, 0.62, 0.18];
-/// Sharp edges, in Blender's cyan.
-const SHARP_COLOR: [f32; 3] = [0.15, 0.72, 0.95];
 
 /// A range of floats that changed, to send to the graphics card.
 pub type Range = std::ops::Range<usize>;
@@ -52,9 +47,9 @@ pub struct Scene {
 
 fn color(selected: bool) -> [f32; 3] {
     if selected {
-        SELECTED_COLOR
+        palette::rgb(palette::EDGE_SELECTED)
     } else {
-        NORMAL_COLOR
+        palette::rgb(palette::EDGE)
     }
 }
 
@@ -78,7 +73,7 @@ fn write_edge(mesh: &Mesh, edge: EdgeId, out: &mut [f32]) {
         return;
     };
     let tint = if data.is_sharp() && !data.is_selected() {
-        SHARP_COLOR
+        palette::rgb(palette::EDGE_SHARP)
     } else {
         color(data.is_selected())
     };
@@ -339,13 +334,13 @@ mod tests {
             scene
                 .edges
                 .chunks_exact(FLOATS_PER_LINE_VERTEX)
-                .all(|v| v[3..] == SELECTED_COLOR)
+                .all(|v| v[3..] == palette::rgb(palette::EDGE_SELECTED))
         );
         assert!(
             scene
                 .points
                 .chunks_exact(FLOATS_PER_LINE_VERTEX)
-                .all(|v| v[3..] == SELECTED_COLOR)
+                .all(|v| v[3..] == palette::rgb(palette::EDGE_SELECTED))
         );
     }
 

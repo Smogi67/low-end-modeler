@@ -13,6 +13,10 @@ struct Uniforms {
     extra: vec4<f32>,
     // x: glow width in pixels, y: glow strength.
     glow: vec4<f32>,
+    // The theme's face colors, and the selection tint with its strength in w.
+    face: vec4<f32>,
+    back: vec4<f32>,
+    selected_face: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -147,8 +151,8 @@ fn mesh_vs(
 @fragment
 fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // A face seen from behind turns red, which shows inside-out faces at a glance.
-    var color = select(vec3<f32>(0.62, 0.20, 0.20), vec3<f32>(0.74, 0.75, 0.77), front);
-    color = mix(color, SELECTED_FACE, in.selected * SELECTED_FACE_AMOUNT);
+    var color = select(u.back.rgb, u.face.rgb, front);
+    color = mix(color, u.selected_face.rgb, in.selected * u.selected_face.w);
     let side = select(-1.0, 1.0, front);
     let n = normalize(in.normal) * side;
     // A key light near the camera, plus soft light from the sky above.

@@ -232,6 +232,9 @@ pub struct App {
     pixels: [f32; 2],
     /// When the project was last saved, by hand or automatically.
     last_save: Instant,
+    /// While a bevel is dragged, the cursor is hidden and held still, as in Blender,
+    /// so the drag never stops at the screen's edge. This is where it was.
+    held_cursor: Option<[f32; 2]>,
 }
 
 impl App {
@@ -306,6 +309,7 @@ impl App {
             ui_scale,
             pixels: [1.0, 1.0],
             last_save: Instant::now(),
+            held_cursor: None,
         })
     }
 
@@ -560,6 +564,7 @@ impl App {
             renderer_now: self.renderer_now.clone(),
             renderer_wanted: self.renderer_wanted.clone(),
             engines: crate::engines::read(),
+            theme: crate::palette::current(),
         }));
         self.mouse_state = Mouse::Idle;
         self.request_frames();
@@ -573,6 +578,16 @@ impl App {
                     return;
                 };
                 let new = window.values.clone();
+                let theme = window.theme;
+                if theme != crate::palette::current() {
+                    crate::palette::set(&theme);
+                    theme::install_style(&mut self.imgui);
+                    if let Err(error) = crate::palette::save(&theme) {
+                        self.state.message = format!("Could not save the theme: {error}");
+                    }
+                    // Edges and points take their colors when the scene is built.
+                    self.stale = Stale::Everything;
+                }
                 self.change_settings(new);
             }
         }
@@ -2041,6 +2056,12 @@ impl App {
             if transform.release_confirms && !transform.waiting)
     }
 
+    /// A bevel following a held left button.
+    fn bevel_dragging(&self) -> bool {
+        matches!(&self.mouse_state, Mouse::Transforming { transform, .. }
+            if transform.kind == Kind::Bevel && !transform.waiting)
+    }
+
     fn bevel_waiting(&self) -> bool {
         matches!(&self.mouse_state, Mouse::Transforming { transform, .. } if transform.waiting)
     }
@@ -2163,8 +2184,16 @@ impl App {
 
     /// Handles one event. `mods` is the current state of Shift, Ctrl and Alt.
     pub fn handle_event(&mut self, event: &Event, mouse: &MouseUtil, mods: Mod) {
-        if let Event::MouseMotion { x, y, .. } = *event {
-            self.pointer = [x as f32, y as f32];
+        if let Event::MouseMotion {
+            x, y, xrel, yrel, ..
+        } = *event
+        {
+            self.pointer = if self.held_cursor.is_some() {
+                // The cursor stays still; only its movement counts.
+                [self.pointer[0] + xrel as f32, self.pointer[1] + yrel as f32]
+            } else {
+                [x as f32, y as f32]
+            };
         }
         // The settings and start windows take everything while they show.
         if self.settings_window.is_some() {
@@ -2192,6 +2221,15 @@ impl App {
         if matches!(self.mouse_state, Mouse::Transforming { .. }) {
             self.imgui_pointer_only(event);
             self.handle_transform_event(event, snap);
+            if self.bevel_dragging() && self.held_cursor.is_none() {
+                self.held_cursor = Some(self.pointer);
+                mouse.set_relative_mouse_mode(true);
+            } else if !self.bevel_dragging()
+                && let Some(held) = self.held_cursor.take()
+            {
+                mouse.set_relative_mouse_mode(false);
+                self.pointer = held;
+            }
             return;
         }
         if matches!(self.mouse_state, Mouse::LoopCut(_)) {

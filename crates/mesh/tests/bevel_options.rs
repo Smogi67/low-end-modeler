@@ -439,3 +439,114 @@ fn every_combination_stays_valid_and_undoes_exactly() {
     }
     assert_eq!(worked, 3 * 3 * 3 * 2 * 2 * 5);
 }
+
+/// The owner's report: bevel a shape, then bevel it again, in every select mode.
+#[test]
+fn a_beveled_shape_can_be_beveled_again() {
+    for first in [ProfileType::Superellipse, ProfileType::Custom] {
+        for segments in [1, 3] {
+            for mode in [SelectMode::Edge, SelectMode::Face, SelectMode::Vertex] {
+                let mut mesh = top_loop();
+                let settings = BevelSettings {
+                    width: 0.2,
+                    segments,
+                    profile_type: first,
+                    ..Default::default()
+                };
+                mesh.bevel_selected(&settings, SelectMode::Edge).unwrap();
+                mesh.select_all();
+                let again = mesh.bevel_selected(
+                    &BevelSettings {
+                        width: 0.05,
+                        ..Default::default()
+                    },
+                    mode,
+                );
+                assert!(again.is_ok(), "{first:?} {segments} {mode:?}: {again:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn every_preset_can_be_beveled_again() {
+    let mut failures = Vec::new();
+    for preset in ProfilePreset::ALL {
+        for segments in [1, 2, 3, 4, 6, 8, 12] {
+            for start in [0, 1] {
+                let mut mesh = if start == 0 { one_edge().0 } else { top_loop() };
+                let settings = BevelSettings {
+                    width: 0.3,
+                    segments,
+                    profile_type: ProfileType::Custom,
+                    custom: CustomProfile::preset(preset),
+                    ..Default::default()
+                };
+                mesh.bevel_selected(&settings, SelectMode::Edge).unwrap();
+                mesh.select_all();
+                if let Err(e) = mesh.bevel_selected(
+                    &BevelSettings {
+                        width: 0.02,
+                        ..Default::default()
+                    },
+                    SelectMode::Edge,
+                ) {
+                    failures.push(format!("{preset:?} {segments} {start}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn a_cube_beveled_everywhere_can_be_beveled_again() {
+    let mut failures = Vec::new();
+    for (name, custom) in std::iter::once(("round", None))
+        .chain(ProfilePreset::ALL.into_iter().map(|p| (p.name(), Some(p))))
+    {
+        for segments in [1, 2, 3, 4, 6] {
+            for intersection in [Intersection::GridFill, Intersection::Cutoff] {
+                for width in [0.1, 0.3, 0.6] {
+                    let (mut mesh, _, _) = cube();
+                    mesh.select_all();
+                    let settings = BevelSettings {
+                        width,
+                        segments,
+                        intersection,
+                        profile_type: if custom.is_some() {
+                            ProfileType::Custom
+                        } else {
+                            ProfileType::Superellipse
+                        },
+                        custom: custom.map(CustomProfile::preset).unwrap_or_default(),
+                        ..Default::default()
+                    };
+                    if let Err(e) = mesh.bevel_selected(&settings, SelectMode::Edge) {
+                        failures.push(format!(
+                            "first {name} {segments} {intersection:?} {width}: {e}"
+                        ));
+                        continue;
+                    }
+                    mesh.select_all();
+                    for again in [1, 3] {
+                        let mut copy = mesh.clone();
+                        if let Err(e) = copy.bevel_selected(
+                            &BevelSettings {
+                                width: 0.01,
+                                segments: again,
+                                ..Default::default()
+                            },
+                            SelectMode::Edge,
+                        ) {
+                            failures.push(format!(
+                                "{name} {segments} {intersection:?} {width} again {again}: {e}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -1,5 +1,7 @@
-Mixer 0.13.2
+Mixer 0.14.0
 
-- Bevel: after Ctrl+B, hold left click and drag to set the width; let go to confirm. Moving the mouse alone does nothing
-- One Edit/View button in the top bar: click it to switch
-- Includes 0.13.1 and 0.13.0: rendering engines, edge glow, triangle limit setting, no Roblox wording
+- Fixed: bevelling a shape again after a stepped bevel no longer fails
+- Add Shapes and Properties are now panels docked on the right: drag a title to take one out, drop it on the right edge to dock it again
+- The bevel options show in Properties the moment you let go
+- While dragging a bevel the cursor is hidden and held, like in Blender
+- Settings > Theme: change any color, or reset to the default

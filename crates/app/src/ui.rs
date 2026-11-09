@@ -41,7 +41,6 @@ pub fn tool_button_size(display_height: f32) -> f32 {
 }
 const GIZMO: f32 = 104.0;
 const LABEL_COLUMN: f32 = 96.0;
-const BEVEL_PANEL: f32 = 320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -161,6 +160,10 @@ pub struct PanelState {
     pub show_defaults: bool,
     /// How tall the panel's contents were last frame, so that it can end below them.
     pub panel_content: f32,
+    /// The Properties panel's content height, as for `panel_content`.
+    pub props_content: f32,
+    /// Where the two side panels are, and how big.
+    pub dock: Dock,
     pub export_format: ExportFormat,
     /// Where there are no system file dialogs, the path being typed.
     pub path_prompt: Option<PathPrompt>,
@@ -205,6 +208,8 @@ impl Default for PanelState {
             tool: DragTool::ClickOnly,
             show_defaults: false,
             panel_content: f32::MAX,
+            props_content: f32::MAX,
+            dock: Dock::default(),
             export_format: ExportFormat::Obj,
             path_prompt: None,
             bevel: BevelSettings {
@@ -488,10 +493,66 @@ pub struct UiOutput {
     pub rects: Vec<[f32; 4]>,
 }
 
+/// Where a side panel is: in the column on the right, or floating where it was put.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Place {
+    Docked,
+    Floating { pos: [f32; 2], size: [f32; 2] },
+}
+
+/// The two side panels, Add Shapes (0) and Properties (1), as Blender's sidebars:
+/// docked in a column on the right, stacked, or floating. Drag a panel's title to take
+/// it out; drop it on the right edge to put it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dock {
+    /// The column's width.
+    pub width: f32,
+    /// The upper panel's height when both are docked; `None` fits it to its contents.
+    pub top_height: Option<f32>,
+    pub places: [Place; 2],
+    /// The panel whose title is being dragged, and where in it the mouse took hold.
+    pub dragging: Option<(usize, [f32; 2])>,
+}
+
+impl Default for Dock {
+    fn default() -> Self {
+        Self {
+            width: RIGHT_PANEL,
+            top_height: None,
+            places: [Place::Docked; 2],
+            dragging: None,
+        }
+    }
+}
+
+pub const PANEL_NAMES: [&str; 2] = ["Add Shapes", "Properties"];
+const NARROWEST_DOCK: f32 = 240.0;
+const WIDEST_DOCK: f32 = 640.0;
+/// How far a title must be dragged before its panel comes out of the column.
+const UNDOCK_DRAG: f32 = 14.0;
+/// Dropping a panel this close to the window's right edge docks it.
+const DOCK_REACH: f32 = 60.0;
+const PANEL_HEADER: f32 = 26.0;
+
+impl Dock {
+    pub fn any_docked(&self) -> bool {
+        self.places.contains(&Place::Docked)
+    }
+
+    /// The width the docked column takes from the right of the window.
+    pub fn reserved(&self) -> f32 {
+        if self.any_docked() {
+            self.width + MARGIN * 2.0
+        } else {
+            MARGIN
+        }
+    }
+}
+
 /// The part of the window the 3D view shows through, between the panels.
-pub fn viewport_area(display: [f32; 2]) -> [f32; 4] {
+pub fn viewport_area(display: [f32; 2], right_reserved: f32) -> [f32; 4] {
     let left = MARGIN * 2.0 + tool_button_size(display[1]) + 16.0;
-    let right = display[0] - RIGHT_PANEL - MARGIN * 2.0;
+    let right = display[0] - right_reserved;
     let top = TOP_BAR;
     let bottom = display[1] - STATUS_BAR;
     [left, top, (right - left).max(1.0), (bottom - top).max(1.0)]
@@ -508,7 +569,7 @@ fn tooltip(ui: &Ui, name: &str, key: &str) {
             ui.text(name);
             if !key.is_empty() {
                 ui.same_line_with_spacing(0.0, 10.0);
-                ui.text_colored(color::MUTED, key);
+                ui.text_colored(color::MUTED(), key);
             }
         });
     }
@@ -518,9 +579,9 @@ fn tooltip(ui: &Ui, name: &str, key: &str) {
 fn icon_button(ui: &Ui, id: &str, glyph: char, active: bool, enabled: bool, size: f32) -> bool {
     let colors = active.then(|| {
         [
-            ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT),
-            ui.push_style_color(StyleColor::ButtonHovered, with_alpha(color::ACCENT, 0.32)),
-            ui.push_style_color(StyleColor::Text, color::ACCENT),
+            ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT()),
+            ui.push_style_color(StyleColor::ButtonHovered, with_alpha(color::ACCENT(), 0.32)),
+            ui.push_style_color(StyleColor::Text, color::ACCENT()),
         ]
     });
     let quiet = (!active).then(|| ui.push_style_color(StyleColor::Button, [0.0; 4]));
@@ -553,7 +614,7 @@ fn segmented(ui: &Ui, id: &str, items: &[(char, &str, bool, &str)], height: f32)
         .add_rect(
             start,
             [start[0] + total, start[1] + height + 4.0],
-            color::FRAME,
+            color::FRAME(),
         )
         .filled(true)
         .rounding(8.0)
@@ -568,14 +629,14 @@ fn segmented(ui: &Ui, id: &str, items: &[(char, &str, bool, &str)], height: f32)
         }
         let colors = if *active {
             vec![
-                ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT),
-                ui.push_style_color(StyleColor::ButtonHovered, with_alpha(color::ACCENT, 0.30)),
-                ui.push_style_color(StyleColor::Text, color::ACCENT),
+                ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT()),
+                ui.push_style_color(StyleColor::ButtonHovered, with_alpha(color::ACCENT(), 0.30)),
+                ui.push_style_color(StyleColor::Text, color::ACCENT()),
             ]
         } else {
             vec![
                 ui.push_style_color(StyleColor::Button, [0.0; 4]),
-                ui.push_style_color(StyleColor::Text, color::MUTED),
+                ui.push_style_color(StyleColor::Text, color::MUTED()),
             ]
         };
         let text = if label.is_empty() {
@@ -599,14 +660,14 @@ fn segmented(ui: &Ui, id: &str, items: &[(char, &str, bool, &str)], height: f32)
 fn heading(ui: &Ui, fonts: &Fonts, text: &str) {
     ui.dummy([0.0, 2.0]);
     let font = ui.push_font(fonts.heading);
-    ui.text_colored(color::FAINT, text);
+    ui.text_colored(color::FAINT(), text);
     drop(font);
 }
 
 /// A muted label on the left, and the widget filling the rest of the row.
 fn row(ui: &Ui, label: &str) {
     ui.align_text_to_frame_padding();
-    ui.text_colored(color::MUTED, label);
+    ui.text_colored(color::MUTED(), label);
     ui.same_line_with_pos(LABEL_COLUMN);
     ui.set_next_item_width(-1.0);
 }
@@ -649,7 +710,7 @@ fn note(ui: &Ui, glyph: char, tint: [f32; 4], text: &str) {
         ui.text_colored(tint, glyph.to_string());
         ui.same_line();
         let wrap = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + width - 44.0);
-        ui.text_colored(color::MUTED, text);
+        ui.text_colored(color::MUTED(), text);
         drop(wrap);
         let end = ui.item_rect_max();
         channels.set_current(0);
@@ -701,7 +762,7 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
             ui.push_style_var(StyleVar::WindowRounding(0.0)),
             ui.push_style_var(StyleVar::WindowBorderSize(0.0)),
         ];
-        let bg = ui.push_style_color(StyleColor::WindowBg, color::BAR);
+        let bg = ui.push_style_color(StyleColor::WindowBg, color::BAR());
         let padding = ui.push_style_var(StyleVar::WindowPadding([12.0, 8.0]));
         if let Some(rect) = fixed_window(ui, "##top", [0.0, 0.0], [display[0], TOP_BAR])
             .flags(
@@ -771,31 +832,14 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
         drop(padding);
     }
 
-    // Settings panel.
-    {
-        let padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 14.0]));
-        let pos = [display[0] - RIGHT_PANEL - MARGIN, TOP_BAR + MARGIN];
-        // As tall as its contents, but never past the status bar; then it scrolls.
-        let room = (display[1] - TOP_BAR - STATUS_BAR - MARGIN * 2.0).max(60.0);
-        let size = [RIGHT_PANEL, state.panel_content.min(room)];
-        if let Some(rect) = fixed_window(ui, "##panel", pos, size).build(|| {
-            panel(ui, state, info, fonts, &mut action);
-            // Where the next item would go, plus the bottom padding, minus the
-            // spacing the last item left below itself.
-            let content = ui.cursor_pos()[1] + 14.0 - 8.0;
-            state.panel_content = content.max(60.0);
-            record(ui)
-        }) {
-            rects.push(rect);
-        }
-        drop(padding);
-    }
+    // The two side panels: Add Shapes and Properties, docked or floating.
+    side_panels(ui, state, info, fonts, &mut action, &mut rects, display);
 
     // View gizmo, without a background.
     {
         let padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
         let pos = [
-            display[0] - RIGHT_PANEL - MARGIN * 2.0 - GIZMO,
+            display[0] - state.dock.reserved() - MARGIN - GIZMO,
             TOP_BAR + MARGIN,
         ];
         if let Some(rect) = fixed_window(ui, "##view", pos, [GIZMO, GIZMO + 40.0])
@@ -817,37 +861,8 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
         drop(padding);
     }
 
-    // Changes the last bevel, as Blender's "Adjust Last Operation" panel does.
-    if info.bevel_panel {
-        let padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 10.0]));
-        let area = viewport_area(display);
-        if let Some(rect) = ui
-            .window("##bevel")
-            .position([area[0], area[1] + area[3] - MARGIN], Condition::Always)
-            .position_pivot([0.0, 1.0])
-            .size_constraints(
-                [BEVEL_PANEL, 0.0],
-                [BEVEL_PANEL, (area[3] - 2.0 * MARGIN).max(120.0)],
-            )
-            .flags(
-                WindowFlags::NO_TITLE_BAR
-                    | WindowFlags::NO_RESIZE
-                    | WindowFlags::NO_MOVE
-                    | WindowFlags::NO_SAVED_SETTINGS
-                    | WindowFlags::ALWAYS_AUTO_RESIZE,
-            )
-            .build(|| {
-                bevel_panel(ui, state, fonts, &mut action);
-                record(ui)
-            })
-        {
-            rects.push(rect);
-        }
-        drop(padding);
-    }
-
     dialogs(ui, state, info, &mut action);
-    viewport_overlays(ui, info, display);
+    viewport_overlays(ui, info, display, state.dock.reserved());
     UiOutput { action, rects }
 }
 
@@ -865,7 +880,7 @@ fn top_bar(
         .add_rect(
             [start[0], start[1] + 8.0],
             [start[0] + 18.0, start[1] + 26.0],
-            color::ACCENT,
+            color::ACCENT(),
         )
         .filled(true)
         .rounding(5.0)
@@ -888,11 +903,11 @@ fn top_bar(
     if info.document.chars().count() > longest {
         name.push('\u{2026}');
     }
-    ui.text_colored(color::MUTED, &name);
+    ui.text_colored(color::MUTED(), &name);
     tooltip(ui, info.document, "");
     if info.unsaved {
         ui.same_line_with_spacing(0.0, 6.0);
-        ui.text_colored(color::ACCENT, "\u{2022}");
+        ui.text_colored(color::ACCENT(), "\u{2022}");
         tooltip(ui, "Unsaved changes", "Ctrl+S");
     }
     ui.same_line_with_spacing(0.0, 24.0);
@@ -1024,10 +1039,10 @@ fn top_bar(
     help_popup(ui, fonts);
     ui.same_line_with_pos(ui.window_size()[0] - width - 12.0);
     let colors = [
-        ui.push_style_color(StyleColor::Button, color::ACCENT),
-        ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER),
-        ui.push_style_color(StyleColor::ButtonActive, color::ACCENT_HOVER),
-        ui.push_style_color(StyleColor::Text, color::ON_ACCENT),
+        ui.push_style_color(StyleColor::Button, color::ACCENT()),
+        ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER()),
+        ui.push_style_color(StyleColor::ButtonActive, color::ACCENT_HOVER()),
+        ui.push_style_color(StyleColor::Text, color::ON_ACCENT()),
     ];
     let font = ui.push_font(fonts.tool);
     if ui.button_with_size(
@@ -1085,17 +1100,20 @@ fn export_popup(
             .display_format("%.3f")
             .flags(SliderFlags::ALWAYS_CLAMP)
             .build(ui, &mut state.scale);
-        ui.text_colored(color::FAINT, "At scale 1, sizes are exported as they are.");
+        ui.text_colored(
+            color::FAINT(),
+            "At scale 1, sizes are exported as they are.",
+        );
         ui.spacing();
         triangle_budget(ui, info.triangles, info.triangle_limit);
         for warning in info.warnings {
-            note(ui, icon::WARNING, color::WARNING, warning);
+            note(ui, icon::WARNING, color::WARNING(), warning);
         }
         let colors = [
-            ui.push_style_color(StyleColor::Button, color::ACCENT),
-            ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER),
-            ui.push_style_color(StyleColor::ButtonActive, color::ACCENT_HOVER),
-            ui.push_style_color(StyleColor::Text, color::ON_ACCENT),
+            ui.push_style_color(StyleColor::Button, color::ACCENT()),
+            ui.push_style_color(StyleColor::ButtonHovered, color::ACCENT_HOVER()),
+            ui.push_style_color(StyleColor::ButtonActive, color::ACCENT_HOVER()),
+            ui.push_style_color(StyleColor::Text, color::ON_ACCENT()),
         ];
         let disabled = ui.begin_disabled(info.triangles == 0);
         let label = match state.export_format {
@@ -1108,14 +1126,17 @@ fn export_popup(
         disabled.end();
         drop(colors);
         if !state.message.is_empty() && state.message.starts_with("Saved") {
-            ui.text_colored(color::ACCENT, format!("{}  {}", icon::CHECK, state.message));
+            ui.text_colored(
+                color::ACCENT(),
+                format!("{}  {}", icon::CHECK, state.message),
+            );
             #[cfg(windows)]
             if ui.button_with_size(format!("{}  Open folder##open", icon::FOLDER), [-1.0, 30.0]) {
                 *action = Some(Action::OpenExportFolder);
             }
         }
         let wrap = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + 300.0);
-        ui.text_colored(color::FAINT, format!("Saved in {}", info.export_folder));
+        ui.text_colored(color::FAINT(), format!("Saved in {}", info.export_folder));
         drop(wrap);
     }
     drop(padding);
@@ -1165,7 +1186,7 @@ fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32
             *action = Some(Action::Export);
         }
         ui.text_colored(
-            color::FAINT,
+            color::FAINT(),
             "Open reads .mix projects, older .lem ones, and .obj files.",
         );
     }
@@ -1244,7 +1265,7 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                 for (title, rows) in groups {
                     heading(ui, fonts, title);
                     for (what, keys) in *rows {
-                        ui.text_colored(color::MUTED, what);
+                        ui.text_colored(color::MUTED(), what);
                         // Measured from the group's start.
                         ui.same_line_with_pos(170.0);
                         ui.text(keys);
@@ -1310,7 +1331,7 @@ fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Optio
             .always_auto_resize(true)
             .movable(false)
             .build(|| {
-                ui.text_colored(color::MUTED, "Path to the file");
+                ui.text_colored(color::MUTED(), "Path to the file");
                 ui.set_next_item_width(420.0);
                 // Ready for typing, so Enter alone accepts the suggested path.
                 if ui.is_window_appearing() {
@@ -1341,7 +1362,7 @@ fn dialogs(ui: &Ui, state: &mut PanelState, info: &PanelInfo, action: &mut Optio
 }
 
 fn triangle_budget(ui: &Ui, triangles: usize, limit: Option<usize>) {
-    ui.text_colored(color::MUTED, "Triangles");
+    ui.text_colored(color::MUTED(), "Triangles");
     ui.same_line();
     let Some(limit) = limit else {
         let text = triangles.to_string();
@@ -1359,10 +1380,14 @@ fn triangle_budget(ui: &Ui, triangles: usize, limit: Option<usize>) {
         ui.cursor_pos()[0].max(ui.content_region_avail()[0] + ui.cursor_pos()[0] - width),
     );
     let over = triangles > limit;
-    ui.text_colored(if over { color::DANGER } else { color::TEXT }, text);
+    ui.text_colored(if over { color::DANGER() } else { color::TEXT() }, text);
     let bar = ui.push_style_color(
         StyleColor::PlotHistogram,
-        if over { color::DANGER } else { color::ACCENT },
+        if over {
+            color::DANGER()
+        } else {
+            color::ACCENT()
+        },
     );
     ProgressBar::new(fraction.min(1.0))
         .size([-1.0, 5.0])
@@ -1488,7 +1513,11 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
             ui.dummy([0.0, 2.0]);
             let p = ui.cursor_screen_pos();
             ui.get_window_draw_list()
-                .add_line([p[0] + 8.0, p[1]], [p[0] + size - 8.0, p[1]], color::BORDER)
+                .add_line(
+                    [p[0] + 8.0, p[1]],
+                    [p[0] + size - 8.0, p[1]],
+                    color::BORDER(),
+                )
                 .build();
             ui.dummy([0.0, 4.0]);
         }
@@ -1524,9 +1553,9 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
     }
     drop(font);
     if let Some(_popup) = ui.begin_popup("##mirror_popup") {
-        ui.text_colored(color::MUTED, "Mirror across");
+        ui.text_colored(color::MUTED(), "Mirror across");
         for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
-            let text = ui.push_style_color(StyleColor::Text, color::AXIS[axis]);
+            let text = ui.push_style_color(StyleColor::Text, color::AXIS()[axis]);
             if ui.button_with_size(format!("{name}##mirror{axis}"), [44.0, 32.0]) {
                 *action = Some(Action::Mirror(axis));
                 ui.close_current_popup();
@@ -1539,7 +1568,7 @@ fn tool_strip(ui: &Ui, info: &PanelInfo, fonts: &Fonts, action: &mut Option<Acti
     }
 }
 
-fn panel(
+fn tools_panel(
     ui: &Ui,
     state: &mut PanelState,
     info: &PanelInfo,
@@ -1564,11 +1593,11 @@ fn panel(
         let pressed = ui.is_item_active();
         let list = ui.get_window_draw_list();
         let fill = if pressed {
-            color::FRAME_ACTIVE
+            color::FRAME_ACTIVE()
         } else if hovered {
-            color::FRAME_HOVER
+            color::FRAME_HOVER()
         } else {
-            color::FRAME
+            color::FRAME()
         };
         list.add_rect(start, [start[0] + tile[0], start[1] + tile[1]], fill)
             .filled(true)
@@ -1577,7 +1606,11 @@ fn panel(
         let font = ui.push_font(fonts.tool);
         let glyph = shape.icon().to_string();
         let size = ui.calc_text_size(&glyph);
-        let tint = if hovered { color::ACCENT } else { color::TEXT };
+        let tint = if hovered {
+            color::ACCENT()
+        } else {
+            color::TEXT()
+        };
         list.add_text(
             [start[0] + (tile[0] - size[0]) / 2.0, start[1] + 8.0],
             tint,
@@ -1588,7 +1621,7 @@ fn panel(
         let size = ui.calc_text_size(shape.name());
         list.add_text(
             [start[0] + (tile[0] - size[0]) / 2.0, start[1] + 36.0],
-            color::MUTED,
+            color::MUTED(),
             shape.name(),
         );
         drop(font);
@@ -1596,62 +1629,6 @@ fn panel(
         if i % 4 == 3 {
             ui.dummy([0.0, 0.0]);
         }
-    }
-    ui.dummy([0.0, 6.0]);
-
-    // Shape settings.
-    let editing = match info.target {
-        Target::Shape(shape) => Some(shape),
-        _ => None,
-    };
-    let title = match info.target {
-        Target::Shape(shape) => shape.name().to_uppercase(),
-        _ => "NEW SHAPE SETTINGS".to_string(),
-    };
-    heading(ui, fonts, &title);
-    if editing.is_none() {
-        // With no shape selected these only matter for the next shape added, so they
-        // stay folded away unless asked for.
-        ui.same_line_with_pos(ui.content_region_max()[0] - 40.0);
-        let font = ui.push_font(fonts.heading);
-        let label = if state.show_defaults { "HIDE" } else { "SHOW" };
-        ui.text_colored(color::ACCENT, label);
-        drop(font);
-        let toggle = ui.is_item_clicked();
-        tooltip(ui, "Settings used by the next shape you add", "");
-        if toggle {
-            state.show_defaults = !state.show_defaults;
-        }
-    }
-    if editing.is_some() {
-        ui.same_line();
-        let font = ui.push_font(fonts.heading);
-        ui.text_colored(color::ACCENT, "LIVE");
-        drop(font);
-        tooltip(ui, "Changes apply to the selected shape", "");
-    }
-    match info.target {
-        Target::Edited(shape) => note(
-            ui,
-            icon::INFO,
-            color::MUTED,
-            &format!(
-                "This {} was reshaped, so these settings are for the next shape.",
-                shape.name().to_lowercase()
-            ),
-        ),
-        Target::Several => note(
-            ui,
-            icon::INFO,
-            color::MUTED,
-            "Several shapes are selected. Select one to change it.",
-        ),
-        _ => {}
-    }
-    let open = editing.is_some() || state.show_defaults;
-    let shows = |setting: Setting| open && editing.is_none_or(|s| s.uses(setting));
-    if open {
-        shape_settings(ui, state, shows);
     }
     ui.dummy([0.0, 6.0]);
 
@@ -1802,7 +1779,7 @@ fn panel(
         two,
     );
     if !two {
-        ui.text_colored(color::FAINT, "Shift+click two or more shapes.");
+        ui.text_colored(color::FAINT(), "Shift+click two or more shapes.");
     }
     modifiers_section(ui, state, info, fonts, action);
 }
@@ -1936,7 +1913,7 @@ fn modifiers_section(
 /// A "Merge" checkbox row for a modifier's weld distance.
 fn merge_row(ui: &Ui, merge: &mut Option<f32>, label: &str, help: &str) {
     ui.align_text_to_frame_padding();
-    ui.text_colored(color::MUTED, "Merge");
+    ui.text_colored(color::MUTED(), "Merge");
     ui.same_line_with_pos(LABEL_COLUMN);
     let mut on = merge.is_some();
     if ui.checkbox(format!("{label}##modifier_merge"), &mut on) {
@@ -1993,15 +1970,15 @@ fn status_bar(ui: &Ui, state: &PanelState, info: &PanelInfo) {
         "Right-drag to orbit  \u{2022}  Hold the wheel to pan  \u{2022}  Scroll to zoom  \u{2022}  Double-click an edge for its loop"
     };
     if state.message.is_empty() {
-        ui.text_colored(color::FAINT, hint);
+        ui.text_colored(color::FAINT(), hint);
     } else {
-        ui.text_colored(color::MUTED, &state.message);
+        ui.text_colored(color::MUTED(), &state.message);
     }
     let mut parts: Vec<(String, [f32; 4])> = Vec::new();
     if info.open_edges > 0 {
         parts.push((
             format!("{}  {} open edges", icon::WARNING, info.open_edges),
-            color::WARNING,
+            color::WARNING(),
         ));
     }
     parts.push((
@@ -2009,15 +1986,19 @@ fn status_bar(ui: &Ui, state: &PanelState, info: &PanelInfo) {
             "{} of {} vertices selected",
             info.selected_vertices, info.vertices
         ),
-        color::MUTED,
+        color::MUTED(),
     ));
-    parts.push((format!("Faces {}", info.faces), color::MUTED));
+    parts.push((format!("Faces {}", info.faces), color::MUTED()));
     let over = info
         .triangle_limit
         .is_some_and(|limit| info.triangles > limit);
     parts.push((
         format!("Triangles {}", info.triangles),
-        if over { color::DANGER } else { color::MUTED },
+        if over {
+            color::DANGER()
+        } else {
+            color::MUTED()
+        },
     ));
     let gap = 24.0;
     let total: f32 = parts
@@ -2081,7 +2062,7 @@ fn gizmo(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>) {
         .max_by(|a, b| a.3.total_cmp(&b.3))
         .map(|(axis, positive, _, _)| (*axis, *positive));
     for (axis, positive, at, _) in &points {
-        let tint = color::AXIS[*axis];
+        let tint = color::AXIS()[*axis];
         let lit = target == Some((*axis, *positive));
         if *positive {
             list.add_line(center, *at, with_alpha(tint, 0.9))
@@ -2142,44 +2123,47 @@ fn gizmo(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>) {
     );
 }
 
-fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
-    let area = viewport_area(display);
+fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2], reserved: f32) {
+    let area = viewport_area(display, reserved);
     let list = ui.get_background_draw_list();
     let center_x = area[0] + area[2] / 2.0;
 
     let mut parts: Vec<(String, [f32; 4])> = Vec::new();
     if let Some(cuts) = info.loop_cut {
-        parts.push(("Loop cut".to_string(), color::ACCENT));
+        parts.push(("Loop cut".to_string(), color::ACCENT()));
         let plural = if cuts == 1 { "cut" } else { "cuts" };
-        parts.push((format!("{cuts} {plural}"), color::TEXT));
-        parts.push(("Scroll or +/- for more".to_string(), color::FAINT));
-        parts.push(("Click an edge to cut".to_string(), color::FAINT));
-        parts.push(("Esc cancel".to_string(), color::FAINT));
+        parts.push((format!("{cuts} {plural}"), color::TEXT()));
+        parts.push(("Scroll or +/- for more".to_string(), color::FAINT()));
+        parts.push(("Click an edge to cut".to_string(), color::FAINT()));
+        parts.push(("Esc cancel".to_string(), color::FAINT()));
     }
     if let Some(through) = info.knife {
-        parts.push(("Knife".to_string(), color::ACCENT));
-        parts.push(("Click to add points".to_string(), color::FAINT));
-        parts.push(("Enter cut".to_string(), color::FAINT));
-        parts.push(("Backspace undo point".to_string(), color::FAINT));
+        parts.push(("Knife".to_string(), color::ACCENT()));
+        parts.push(("Click to add points".to_string(), color::FAINT()));
+        parts.push(("Enter cut".to_string(), color::FAINT()));
+        parts.push(("Backspace undo point".to_string(), color::FAINT()));
         let z = if through {
             "Z: cuts hidden faces too"
         } else {
             "Z: front faces only"
         };
-        parts.push((z.to_string(), color::TEXT));
-        parts.push(("Esc cancel".to_string(), color::FAINT));
+        parts.push((z.to_string(), color::TEXT()));
+        parts.push(("Esc cancel".to_string(), color::FAINT()));
     }
     if info.bisect {
-        parts.push(("Bisect".to_string(), color::ACCENT));
-        parts.push(("Drag a line across the selection".to_string(), color::FAINT));
-        parts.push(("Esc cancel".to_string(), color::FAINT));
+        parts.push(("Bisect".to_string(), color::ACCENT()));
+        parts.push((
+            "Drag a line across the selection".to_string(),
+            color::FAINT(),
+        ));
+        parts.push(("Esc cancel".to_string(), color::FAINT()));
     }
     if info.view_only && parts.is_empty() {
-        parts.push(("View mode".to_string(), color::ACCENT));
-        parts.push(("Tab to edit".to_string(), color::FAINT));
+        parts.push(("View mode".to_string(), color::ACCENT()));
+        parts.push(("Tab to edit".to_string(), color::FAINT()));
     }
     if let Some((kind, axis)) = info.transform_help {
-        parts.push((kind.name().to_string(), color::ACCENT));
+        parts.push((kind.name().to_string(), color::ACCENT()));
         if let Some((width, segments, width_type)) = info.bevel {
             let plural = if segments == 1 { "segment" } else { "segments" };
             let shown = if width_type == WidthType::Percent {
@@ -2187,24 +2171,28 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
             } else {
                 format!("{} {width:.2}", width_type.name())
             };
-            parts.push((shown, color::TEXT));
-            parts.push((format!("{segments} {plural}"), color::TEXT));
-            parts.push(("Scroll for more".to_string(), color::FAINT));
+            parts.push((shown, color::TEXT()));
+            parts.push((format!("{segments} {plural}"), color::TEXT()));
+            parts.push(("Scroll for more".to_string(), color::FAINT()));
         }
         if !matches!(kind, Kind::Inset | Kind::Slide | Kind::Bevel) {
             for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
                 let lit = axis == Some(i);
                 parts.push((
                     name.to_string(),
-                    if lit { color::AXIS[i] } else { color::MUTED },
+                    if lit {
+                        color::AXIS()[i]
+                    } else {
+                        color::MUTED()
+                    },
                 ));
             }
-            parts.push(("lock axis".to_string(), color::FAINT));
+            parts.push(("lock axis".to_string(), color::FAINT()));
         }
         if info.transform_waiting {
-            parts.push(("Hold left click and drag".to_string(), color::TEXT));
+            parts.push(("Hold left click and drag".to_string(), color::TEXT()));
         } else {
-            parts.push(("Ctrl snap".to_string(), color::FAINT));
+            parts.push(("Ctrl snap".to_string(), color::FAINT()));
             parts.push((
                 if info.transform_dragging {
                     "Release to confirm"
@@ -2212,10 +2200,10 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
                     "Click confirm"
                 }
                 .to_string(),
-                color::FAINT,
+                color::FAINT(),
             ));
         }
-        parts.push(("Esc cancel".to_string(), color::FAINT));
+        parts.push(("Esc cancel".to_string(), color::FAINT()));
     }
     if !parts.is_empty() {
         let gap = 12.0;
@@ -2229,7 +2217,7 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
         list.add_rect(
             [left - 16.0, top],
             [left + total + 16.0, top + 34.0],
-            color::OVERLAY,
+            color::OVERLAY(),
         )
         .filled(true)
         .rounding(17.0)
@@ -2239,6 +2227,336 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2]) {
             list.add_text([x, top + 8.0], *tint, text);
             x += ui.calc_text_size(text)[0] + gap;
         }
+    }
+}
+
+/// Lays out and draws the two side panels, and lets them be dragged out, resized, and
+/// docked again.
+#[allow(clippy::too_many_arguments)]
+fn side_panels(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+    rects: &mut Vec<[f32; 4]>,
+    display: [f32; 2],
+) {
+    let dock = &mut state.dock;
+    dock.width = dock.width.clamp(
+        NARROWEST_DOCK,
+        WIDEST_DOCK.min((display[0] * 0.5).max(NARROWEST_DOCK)),
+    );
+    let column_x = display[0] - dock.width - MARGIN;
+    let top = TOP_BAR + MARGIN;
+    let room = (display[1] - TOP_BAR - STATUS_BAR - MARGIN * 2.0).max(80.0);
+    let both = dock.places == [Place::Docked; 2];
+    // Docked heights: the upper panel fits its contents unless its lower edge was
+    // dragged, and never leaves the lower one less than a little.
+    let contents = [state.panel_content, state.props_content];
+    let upper = if both {
+        // Properties gets its contents up to a little over half; Add Shapes the rest.
+        let fitted = contents[0].min(room - MARGIN - contents[1].min(room * 0.55));
+        dock.top_height
+            .unwrap_or(fitted)
+            .clamp(80.0, (room - MARGIN - 80.0).max(80.0))
+    } else {
+        room
+    };
+    let docked_rect = |panel: usize| -> [f32; 4] {
+        if both {
+            if panel == 0 {
+                [column_x, top, dock.width, upper]
+            } else {
+                let y = top + upper + MARGIN;
+                [column_x, y, dock.width, room - upper - MARGIN]
+            }
+        } else {
+            [column_x, top, dock.width, contents[panel].min(room)]
+        }
+    };
+    let rects_wanted: Vec<[f32; 4]> = (0..2)
+        .map(|panel| match dock.places[panel] {
+            Place::Docked => docked_rect(panel),
+            Place::Floating { pos, size } => [pos[0], pos[1], size[0], size[1]],
+        })
+        .collect();
+
+    let mouse = ui.io().mouse_pos;
+    for panel in 0..2 {
+        let [x, y, w, h] = rects_wanted[panel];
+        let docked = state.dock.places[panel] == Place::Docked;
+        let mut flags = WindowFlags::NO_TITLE_BAR
+            | WindowFlags::NO_MOVE
+            | WindowFlags::NO_COLLAPSE
+            | WindowFlags::NO_SAVED_SETTINGS;
+        if docked {
+            flags |= WindowFlags::NO_RESIZE;
+        }
+        let padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 10.0]));
+        let name = ["##panel", "##properties"][panel];
+        let built = ui
+            .window(name)
+            .position([x, y], Condition::Always)
+            .size([w, h.max(60.0)], Condition::Always)
+            .size_constraints([NARROWEST_DOCK, 80.0], [WIDEST_DOCK, room.max(80.0)])
+            .flags(flags)
+            .build(|| {
+                panel_header(ui, state, fonts, panel);
+                if panel == 0 {
+                    tools_panel(ui, state, info, fonts, action);
+                } else {
+                    properties(ui, state, info, fonts, action);
+                }
+                // Where the next item would go, plus the bottom padding, minus the
+                // spacing the last item left below itself.
+                let content = (ui.cursor_pos()[1] + 10.0 - 8.0).max(60.0);
+                if panel == 0 {
+                    state.panel_content = content;
+                } else {
+                    state.props_content = content;
+                }
+                let [px, py] = ui.window_pos();
+                let [pw, ph] = ui.window_size();
+                [px, py, pw, ph]
+            });
+        drop(padding);
+        if let Some(rect) = built {
+            rects.push(rect);
+            // A floating panel keeps the size it was resized to.
+            if let Place::Floating { size, .. } = &mut state.dock.places[panel] {
+                *size = [rect[2], rect[3]];
+            }
+        }
+    }
+
+    // A panel's title being dragged: it follows the mouse; near the right edge it
+    // shows where it would dock.
+    if let Some((panel, grab)) = state.dock.dragging {
+        if ui.is_mouse_down(imgui::MouseButton::Left) {
+            let near_edge = mouse[0] > display[0] - DOCK_REACH;
+            if let Place::Floating { pos, .. } = &mut state.dock.places[panel] {
+                *pos = [
+                    (mouse[0] - grab[0]).clamp(0.0, (display[0] - 60.0).max(0.0)),
+                    (mouse[1] - grab[1])
+                        .clamp(TOP_BAR, (display[1] - STATUS_BAR - 30.0).max(TOP_BAR)),
+                ];
+            }
+            if near_edge {
+                let list = ui.get_foreground_draw_list();
+                let w = state.dock.width;
+                let a = [display[0] - w - MARGIN, top];
+                let b = [display[0] - MARGIN, top + room];
+                list.add_rect(a, b, with_alpha(color::ACCENT(), 0.18))
+                    .filled(true)
+                    .rounding(8.0)
+                    .build();
+                list.add_rect(a, b, color::ACCENT())
+                    .rounding(8.0)
+                    .thickness(2.0)
+                    .build();
+            }
+        } else {
+            if mouse[0] > display[0] - DOCK_REACH {
+                state.dock.places[panel] = Place::Docked;
+            }
+            state.dock.dragging = None;
+        }
+    }
+
+    // Splitters: the column's left edge sets its width; the gap between two docked
+    // panels sets how they share the height.
+    let dock = &state.dock;
+    if dock.any_docked() && dock.dragging.is_none() {
+        let edge = [column_x - 6.0, top, 8.0, room];
+        if let Some(dx) = splitter(ui, "##dock_width", edge, true) {
+            state.dock.width = (state.dock.width - dx).clamp(NARROWEST_DOCK, WIDEST_DOCK);
+        }
+        if both {
+            let gap = [column_x, top + upper, state.dock.width, MARGIN];
+            if let Some(dy) = splitter(ui, "##dock_split", gap, false) {
+                state.dock.top_height = Some(upper + dy);
+            }
+        }
+    }
+}
+
+/// An invisible handle to drag, shown by the mouse cursor. Returns how far it moved.
+fn splitter(ui: &Ui, id: &str, rect: [f32; 4], sideways: bool) -> Option<f32> {
+    let padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
+    let size = ui.push_style_var(StyleVar::WindowMinSize([1.0, 1.0]));
+    let mut moved = None;
+    ui.window(id)
+        .position([rect[0], rect[1]], Condition::Always)
+        .size([rect[2], rect[3]], Condition::Always)
+        .flags(
+            WindowFlags::NO_TITLE_BAR
+                | WindowFlags::NO_RESIZE
+                | WindowFlags::NO_MOVE
+                | WindowFlags::NO_SCROLLBAR
+                | WindowFlags::NO_SAVED_SETTINGS
+                | WindowFlags::NO_BACKGROUND,
+        )
+        .build(|| {
+            ui.invisible_button("##grip", [rect[2], rect[3]]);
+            if ui.is_item_hovered() || ui.is_item_active() {
+                ui.set_mouse_cursor(Some(if sideways {
+                    imgui::MouseCursor::ResizeEW
+                } else {
+                    imgui::MouseCursor::ResizeNS
+                }));
+            }
+            if ui.is_item_active() {
+                let delta = ui.io().mouse_delta;
+                let d = if sideways { delta[0] } else { delta[1] };
+                if d != 0.0 {
+                    moved = Some(d);
+                }
+            }
+        });
+    drop(size);
+    drop(padding);
+    moved
+}
+
+/// A panel's title: drag it to take the panel out or put it back; double-click to
+/// switch between docked and floating.
+fn panel_header(ui: &Ui, state: &mut PanelState, fonts: &Fonts, panel: usize) {
+    let start = ui.cursor_screen_pos();
+    let width = ui.content_region_avail()[0];
+    ui.invisible_button("##panel_title", [width, PANEL_HEADER]);
+    let hovered = ui.is_item_hovered();
+    let window_pos = ui.window_pos();
+    let display = ui.io().display_size;
+    if ui.is_item_active() && state.dock.dragging.is_none() {
+        let drag = ui.mouse_drag_delta();
+        if drag[0].hypot(drag[1]) > UNDOCK_DRAG {
+            let mouse = ui.io().mouse_pos;
+            let grab = [mouse[0] - window_pos[0], mouse[1] - window_pos[1]];
+            if state.dock.places[panel] == Place::Docked {
+                let size = [state.dock.width, ui.window_size()[1].min(display[1] * 0.7)];
+                state.dock.places[panel] = Place::Floating {
+                    pos: window_pos,
+                    size,
+                };
+            }
+            state.dock.dragging = Some((panel, grab));
+        }
+    }
+    if hovered && ui.is_mouse_double_clicked(imgui::MouseButton::Left) {
+        state.dock.places[panel] = match state.dock.places[panel] {
+            Place::Docked => Place::Floating {
+                pos: [display[0] * 0.5 - 160.0, display[1] * 0.25],
+                size: [state.dock.width, display[1] * 0.5],
+            },
+            Place::Floating { .. } => Place::Docked,
+        };
+    }
+    if hovered && state.dock.dragging.is_none() {
+        ui.set_mouse_cursor(Some(imgui::MouseCursor::ResizeAll));
+        tooltip(
+            ui,
+            "Drag to move this panel out; drop it on the right edge to dock it. \
+             Double-click to switch.",
+            "",
+        );
+    }
+    let list = ui.get_window_draw_list();
+    // Six dots, a grip, then the title.
+    for row in 0..3 {
+        for col in 0..2 {
+            list.add_circle(
+                [
+                    start[0] + 4.0 + col as f32 * 5.0,
+                    start[1] + 8.0 + row as f32 * 5.0,
+                ],
+                1.3,
+                if hovered {
+                    color::TEXT()
+                } else {
+                    color::FAINT()
+                },
+            )
+            .filled(true)
+            .build();
+        }
+    }
+    let font = ui.push_font(fonts.heading);
+    list.add_text(
+        [start[0] + 18.0, start[1] + 6.0],
+        color::TEXT(),
+        PANEL_NAMES[panel].to_uppercase(),
+    );
+    drop(font);
+    drop(list);
+}
+
+/// The Properties panel: what the last tool or the selected shape can still change,
+/// as Blender's "Adjust Last Operation" panel and sidebar do.
+fn properties(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+) {
+    if info.bevel_panel {
+        bevel_panel(ui, state, fonts, action);
+        ui.dummy([0.0, 8.0]);
+    }
+    // Shape settings.
+    let editing = match info.target {
+        Target::Shape(shape) => Some(shape),
+        _ => None,
+    };
+    let title = match info.target {
+        Target::Shape(shape) => shape.name().to_uppercase(),
+        _ => "NEW SHAPE SETTINGS".to_string(),
+    };
+    heading(ui, fonts, &title);
+    if editing.is_none() {
+        // With no shape selected these only matter for the next shape added, so they
+        // stay folded away unless asked for.
+        ui.same_line_with_pos(ui.content_region_max()[0] - 40.0);
+        let font = ui.push_font(fonts.heading);
+        let label = if state.show_defaults { "HIDE" } else { "SHOW" };
+        ui.text_colored(color::ACCENT(), label);
+        drop(font);
+        let toggle = ui.is_item_clicked();
+        tooltip(ui, "Settings used by the next shape you add", "");
+        if toggle {
+            state.show_defaults = !state.show_defaults;
+        }
+    }
+    if editing.is_some() {
+        ui.same_line();
+        let font = ui.push_font(fonts.heading);
+        ui.text_colored(color::ACCENT(), "LIVE");
+        drop(font);
+        tooltip(ui, "Changes apply to the selected shape", "");
+    }
+    match info.target {
+        Target::Edited(shape) => note(
+            ui,
+            icon::INFO,
+            color::MUTED(),
+            &format!(
+                "This {} was reshaped, so these settings are for the next shape.",
+                shape.name().to_lowercase()
+            ),
+        ),
+        Target::Several => note(
+            ui,
+            icon::INFO,
+            color::MUTED(),
+            "Several shapes are selected. Select one to change it.",
+        ),
+        _ => {}
+    }
+    let open = editing.is_some() || state.show_defaults;
+    let shows = |setting: Setting| open && editing.is_none_or(|s| s.uses(setting));
+    if open {
+        shape_settings(ui, state, shows);
     }
 }
 
@@ -2252,7 +2570,11 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
     let hovered = ui.is_item_hovered();
     let list = ui.get_window_draw_list();
     // A small arrow pointing down when open and right when folded.
-    let tint = if hovered { color::TEXT } else { color::MUTED };
+    let tint = if hovered {
+        color::TEXT()
+    } else {
+        color::MUTED()
+    };
     let (x, y) = (start[0] + 6.0, start[1] + 12.0);
     let arrow = if state.bevel_folded {
         [[x - 3.0, y - 5.0], [x + 4.0, y], [x - 3.0, y + 5.0]]
@@ -2266,7 +2588,7 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
     let size = ui.calc_text_size("Bevel");
     list.add_text(
         [start[0] + 20.0, start[1] + 12.0 - size[1] / 2.0],
-        color::TEXT,
+        color::TEXT(),
         "Bevel",
     );
     drop(font);
@@ -2440,7 +2762,7 @@ fn bevel_panel(ui: &Ui, state: &mut PanelState, fonts: &Fonts, action: &mut Opti
     if state.bevel_more {
         let check = |ui: &Ui, label: &str, name: &str, value: &mut bool, help: &str| {
             ui.align_text_to_frame_padding();
-            ui.text_colored(color::MUTED, label);
+            ui.text_colored(color::MUTED(), label);
             ui.same_line_with_pos(LABEL_COLUMN);
             ui.checkbox(name, value);
             tooltip(ui, help, "");
@@ -2622,29 +2944,29 @@ fn profile_editor(
 
     let list = ui.get_window_draw_list();
     let (a, b) = ([origin[0], origin[1]], [origin[0] + side, origin[1] + side]);
-    list.add_rect(a, b, color::FRAME)
+    list.add_rect(a, b, color::FRAME())
         .filled(true)
         .rounding(6.0)
         .build();
     // The shape's inside, and the two faces meeting at the old sharp edge.
     let corner = to_screen([0.0, 0.0]);
     let (right, top) = (to_screen([1.0, 0.0]), to_screen([0.0, 1.0]));
-    list.add_line(corner, right, color::MUTED)
+    list.add_line(corner, right, color::MUTED())
         .thickness(2.0)
         .build();
-    list.add_line(corner, top, color::MUTED)
+    list.add_line(corner, top, color::MUTED())
         .thickness(2.0)
         .build();
-    list.add_line(right, top, with_alpha(color::MUTED, 0.25))
+    list.add_line(right, top, with_alpha(color::MUTED(), 0.25))
         .build();
     let (line, _) = profile.line(16);
     let screen: Vec<[f32; 2]> = line.iter().map(|&p| to_screen(p)).collect();
-    list.add_polyline(screen, color::ACCENT)
+    list.add_polyline(screen, color::ACCENT())
         .thickness(2.0)
         .build();
     // Where the bevel's new edges will run.
     for p in profile.sample(segments) {
-        list.add_circle(to_screen(p), 3.0, color::ACCENT_HOVER)
+        list.add_circle(to_screen(p), 3.0, color::ACCENT_HOVER())
             .thickness(1.5)
             .build();
     }
@@ -2652,9 +2974,9 @@ fn profile_editor(
         let s = to_screen([point.x, point.y]);
         let lit = *dragging == Some(i) || (hovered && near_point(mouse) == Some(i));
         let tint = if lit {
-            color::ACCENT_HOVER
+            color::ACCENT_HOVER()
         } else {
-            color::TEXT
+            color::TEXT()
         };
         if point.sharp {
             list.add_rect([s[0] - 4.0, s[1] - 4.0], [s[0] + 4.0, s[1] + 4.0], tint)
@@ -2707,7 +3029,7 @@ pub fn draw_gizmo(ui: &Ui, parts: &[crate::gizmo::Part], hover: Option<crate::gi
     for part in parts {
         let lit = hover == Some(part.handle);
         let base = match part.handle {
-            Handle::Axis(axis) => color::AXIS[axis],
+            Handle::Axis(axis) => color::AXIS()[axis],
             Handle::View => [0.92, 0.92, 0.92, 0.85],
         };
         let tint = if lit {
@@ -3177,25 +3499,32 @@ mod tests {
         context.fonts().build_alpha8_texture();
         context.io_mut().delta_time = 1.0 / 60.0;
         let warnings = Vec::new();
-        let panel_height = |context: &mut imgui::Context, target, height: f32| {
+        // The two docked panels' rectangles and the Properties panel's content height.
+        let layout = |context: &mut imgui::Context, target, height: f32| {
             context.io_mut().display_size = [1280.0, height];
             let info = info(target, &warnings, false);
             let mut state = PanelState::default();
-            let mut rect = [0.0; 4];
+            let mut rects = Vec::new();
             for _ in 0..3 {
                 let ui = context.new_frame();
-                // The panel comes after the two bars and the tool strip.
-                rect = build(ui, &mut state, &info, &fonts).rects[3];
+                // The panels come after the two bars and the tool strip.
+                rects = build(ui, &mut state, &info, &fonts).rects[3..5].to_vec();
                 context.render();
             }
-            rect[3]
+            (rects, state.props_content)
         };
-        let empty = panel_height(&mut context, Target::Nothing, 800.0);
-        let sphere = panel_height(&mut context, Target::Shape(Shape::UvSphere), 800.0);
+        let (_, empty) = layout(&mut context, Target::Nothing, 800.0);
+        let (rects, sphere) = layout(&mut context, Target::Shape(Shape::UvSphere), 800.0);
         assert!(empty < sphere, "{empty} vs {sphere}");
-        assert!(sphere < 800.0 - TOP_BAR - STATUS_BAR - MARGIN * 2.0);
-        let small = panel_height(&mut context, Target::Shape(Shape::UvSphere), 400.0);
-        assert_eq!(small, 400.0 - TOP_BAR - STATUS_BAR - MARGIN * 2.0);
+        // Stacked: Add Shapes above Properties, both inside the column.
+        let bottom = 800.0 - STATUS_BAR - MARGIN;
+        assert!(rects[0][1] + rects[0][3] < rects[1][1]);
+        assert!(
+            (rects[1][1] + rects[1][3] - bottom).abs() <= 2.0,
+            "{rects:?}"
+        );
+        let (small, _) = layout(&mut context, Target::Shape(Shape::UvSphere), 400.0);
+        assert!((small[1][1] + small[1][3] - (400.0 - STATUS_BAR - MARGIN)).abs() <= 2.0);
     }
 
     #[test]
@@ -3259,10 +3588,11 @@ mod tests {
 
     #[test]
     fn the_viewport_area_sits_between_the_panels() {
-        let [x, y, w, h] = viewport_area([1280.0, 800.0]);
+        let reserved = Dock::default().reserved();
+        let [x, y, w, h] = viewport_area([1280.0, 800.0], reserved);
         assert!(x > tool_button_size(800.0) && y == TOP_BAR);
         assert!(x + w < 1280.0 - RIGHT_PANEL && y + h == 800.0 - STATUS_BAR);
-        let tiny = viewport_area([100.0, 50.0]);
+        let tiny = viewport_area([100.0, 50.0], reserved);
         assert!(tiny[2] >= 1.0 && tiny[3] >= 1.0);
     }
 

@@ -91,31 +91,78 @@ static TEXT_RANGES: [u32; 13] = [
     0,
 ];
 
-/// Colors, as red, green, blue and opacity from 0 to 1.
+/// Colors, as red, green, blue and opacity from 0 to 1, from the theme in use
+/// (`palette.rs`, Settings > Theme).
+#[allow(non_snake_case)]
 pub mod color {
-    pub const WINDOW: [f32; 4] = [0.118, 0.125, 0.137, 0.97];
-    pub const BAR: [f32; 4] = [0.090, 0.094, 0.106, 1.0];
-    pub const BORDER: [f32; 4] = [0.20, 0.21, 0.23, 1.0];
-    pub const FRAME: [f32; 4] = [0.165, 0.173, 0.192, 1.0];
-    pub const FRAME_HOVER: [f32; 4] = [0.212, 0.224, 0.247, 1.0];
-    pub const FRAME_ACTIVE: [f32; 4] = [0.255, 0.267, 0.294, 1.0];
-    pub const TEXT: [f32; 4] = [0.91, 0.92, 0.93, 1.0];
-    pub const MUTED: [f32; 4] = [0.58, 0.61, 0.65, 1.0];
-    pub const FAINT: [f32; 4] = [0.40, 0.42, 0.46, 1.0];
-    /// Matches the orange used for selected parts in the viewport.
-    pub const ACCENT: [f32; 4] = [0.957, 0.553, 0.157, 1.0];
-    pub const ACCENT_HOVER: [f32; 4] = [1.0, 0.63, 0.27, 1.0];
-    pub const ACCENT_SOFT: [f32; 4] = [0.957, 0.553, 0.157, 0.20];
-    pub const ON_ACCENT: [f32; 4] = [0.10, 0.07, 0.04, 1.0];
-    pub const WARNING: [f32; 4] = [0.98, 0.76, 0.30, 1.0];
-    pub const SUCCESS: [f32; 4] = [0.50, 0.78, 0.29, 1.0];
-    pub const DANGER: [f32; 4] = [0.95, 0.40, 0.40, 1.0];
-    pub const AXIS: [[f32; 4]; 3] = [
-        [0.93, 0.33, 0.38, 1.0],
-        [0.55, 0.80, 0.25, 1.0],
-        [0.30, 0.56, 0.96, 1.0],
-    ];
-    pub const OVERLAY: [f32; 4] = [0.08, 0.085, 0.095, 0.88];
+    use crate::palette as p;
+
+    pub fn WINDOW() -> [f32; 4] {
+        p::get(p::WINDOW)
+    }
+    pub fn BAR() -> [f32; 4] {
+        p::get(p::BAR)
+    }
+    pub fn BORDER() -> [f32; 4] {
+        p::get(p::BORDER)
+    }
+    pub fn FRAME() -> [f32; 4] {
+        p::get(p::FRAME)
+    }
+    pub fn FRAME_HOVER() -> [f32; 4] {
+        p::get(p::FRAME_HOVER)
+    }
+    pub fn FRAME_ACTIVE() -> [f32; 4] {
+        p::get(p::FRAME_ACTIVE)
+    }
+    pub fn TEXT() -> [f32; 4] {
+        p::get(p::TEXT)
+    }
+    pub fn MUTED() -> [f32; 4] {
+        p::get(p::MUTED)
+    }
+    pub fn FAINT() -> [f32; 4] {
+        p::get(p::FAINT)
+    }
+    pub fn ACCENT() -> [f32; 4] {
+        p::get(p::ACCENT)
+    }
+    pub fn ON_ACCENT() -> [f32; 4] {
+        p::get(p::ON_ACCENT)
+    }
+    pub fn WARNING() -> [f32; 4] {
+        p::get(p::WARNING)
+    }
+    pub fn SUCCESS() -> [f32; 4] {
+        p::get(p::SUCCESS)
+    }
+    pub fn DANGER() -> [f32; 4] {
+        p::get(p::DANGER)
+    }
+    pub fn OVERLAY() -> [f32; 4] {
+        p::get(p::OVERLAY)
+    }
+    pub fn POPUP() -> [f32; 4] {
+        p::get(p::POPUP)
+    }
+    /// The highlight, a little lighter.
+    pub fn ACCENT_HOVER() -> [f32; 4] {
+        let [r, g, b, a] = ACCENT();
+        [
+            r + (1.0 - r) * 0.25,
+            g + (1.0 - g) * 0.25,
+            b + (1.0 - b) * 0.25,
+            a,
+        ]
+    }
+    /// The highlight, faint.
+    pub fn ACCENT_SOFT() -> [f32; 4] {
+        let [r, g, b, _] = ACCENT();
+        [r, g, b, 0.20]
+    }
+    pub fn AXIS() -> [[f32; 4]; 3] {
+        [p::get(p::X_AXIS), p::get(p::Y_AXIS), p::get(p::Z_AXIS)]
+    }
 }
 
 /// ImGui allows one context at a time, so tests that make one take turns.
@@ -194,7 +241,7 @@ pub fn install_fonts(context: &mut imgui::Context, scale: f32) -> Fonts {
     }
 }
 
-fn install_style(context: &mut imgui::Context) {
+pub fn install_style(context: &mut imgui::Context) {
     let style = context.style_mut();
     style.window_rounding = 10.0;
     style.child_rounding = 8.0;
@@ -217,24 +264,23 @@ fn install_style(context: &mut imgui::Context) {
     style.anti_aliased_lines = true;
     style.anti_aliased_fill = true;
 
-    use color::*;
     let set = |style: &mut imgui::Style, which: StyleColor, value: [f32; 4]| {
         style.colors[which as usize] = value;
     };
-    set(style, StyleColor::Text, TEXT);
-    set(style, StyleColor::TextDisabled, FAINT);
-    set(style, StyleColor::WindowBg, WINDOW);
+    set(style, StyleColor::Text, color::TEXT());
+    set(style, StyleColor::TextDisabled, color::FAINT());
+    set(style, StyleColor::WindowBg, color::WINDOW());
     set(style, StyleColor::ChildBg, [0.0; 4]);
-    set(style, StyleColor::PopupBg, [0.13, 0.137, 0.15, 0.99]);
-    set(style, StyleColor::Border, BORDER);
+    set(style, StyleColor::PopupBg, color::POPUP());
+    set(style, StyleColor::Border, color::BORDER());
     set(style, StyleColor::BorderShadow, [0.0; 4]);
-    set(style, StyleColor::FrameBg, FRAME);
-    set(style, StyleColor::FrameBgHovered, FRAME_HOVER);
-    set(style, StyleColor::FrameBgActive, FRAME_ACTIVE);
-    set(style, StyleColor::TitleBg, BAR);
-    set(style, StyleColor::TitleBgActive, BAR);
-    set(style, StyleColor::TitleBgCollapsed, BAR);
-    set(style, StyleColor::MenuBarBg, BAR);
+    set(style, StyleColor::FrameBg, color::FRAME());
+    set(style, StyleColor::FrameBgHovered, color::FRAME_HOVER());
+    set(style, StyleColor::FrameBgActive, color::FRAME_ACTIVE());
+    set(style, StyleColor::TitleBg, color::BAR());
+    set(style, StyleColor::TitleBgActive, color::BAR());
+    set(style, StyleColor::TitleBgCollapsed, color::BAR());
+    set(style, StyleColor::MenuBarBg, color::BAR());
     set(style, StyleColor::ScrollbarBg, [0.0; 4]);
     set(style, StyleColor::ScrollbarGrab, [0.26, 0.27, 0.30, 1.0]);
     set(
@@ -247,23 +293,23 @@ fn install_style(context: &mut imgui::Context) {
         StyleColor::ScrollbarGrabActive,
         [0.40, 0.42, 0.46, 1.0],
     );
-    set(style, StyleColor::CheckMark, ACCENT);
-    set(style, StyleColor::SliderGrab, ACCENT);
-    set(style, StyleColor::SliderGrabActive, ACCENT_HOVER);
-    set(style, StyleColor::Button, FRAME);
-    set(style, StyleColor::ButtonHovered, FRAME_HOVER);
-    set(style, StyleColor::ButtonActive, FRAME_ACTIVE);
-    set(style, StyleColor::Header, FRAME);
-    set(style, StyleColor::HeaderHovered, FRAME_HOVER);
-    set(style, StyleColor::HeaderActive, FRAME_ACTIVE);
-    set(style, StyleColor::Separator, BORDER);
-    set(style, StyleColor::SeparatorHovered, BORDER);
-    set(style, StyleColor::SeparatorActive, BORDER);
+    set(style, StyleColor::CheckMark, color::ACCENT());
+    set(style, StyleColor::SliderGrab, color::ACCENT());
+    set(style, StyleColor::SliderGrabActive, color::ACCENT_HOVER());
+    set(style, StyleColor::Button, color::FRAME());
+    set(style, StyleColor::ButtonHovered, color::FRAME_HOVER());
+    set(style, StyleColor::ButtonActive, color::FRAME_ACTIVE());
+    set(style, StyleColor::Header, color::FRAME());
+    set(style, StyleColor::HeaderHovered, color::FRAME_HOVER());
+    set(style, StyleColor::HeaderActive, color::FRAME_ACTIVE());
+    set(style, StyleColor::Separator, color::BORDER());
+    set(style, StyleColor::SeparatorHovered, color::BORDER());
+    set(style, StyleColor::SeparatorActive, color::BORDER());
     set(style, StyleColor::ResizeGrip, [0.0; 4]);
     set(style, StyleColor::ResizeGripHovered, [0.0; 4]);
     set(style, StyleColor::ResizeGripActive, [0.0; 4]);
-    set(style, StyleColor::TextSelectedBg, ACCENT_SOFT);
-    set(style, StyleColor::NavHighlight, ACCENT);
+    set(style, StyleColor::TextSelectedBg, color::ACCENT_SOFT());
+    set(style, StyleColor::NavHighlight, color::ACCENT());
     set(style, StyleColor::ModalWindowDimBg, [0.0, 0.0, 0.0, 0.45]);
 }
 

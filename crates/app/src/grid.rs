@@ -5,12 +5,9 @@ pub const FLOATS_PER_VERTEX: usize = 6;
 
 const EXTENT: i32 = 50;
 const MAJOR_EVERY: i32 = 10;
-const MINOR: [f32; 3] = [0.31, 0.32, 0.345];
-const MAJOR: [f32; 3] = [0.40, 0.41, 0.44];
-/// The X axis is red, Y green and Z blue, as in Blender.
-const X_AXIS: [f32; 3] = [0.93, 0.33, 0.38];
-const Y_AXIS: [f32; 3] = [0.55, 0.80, 0.25];
-const Z_AXIS: [f32; 3] = [0.30, 0.56, 0.96];
+// The colors come from the theme (palette.rs): by default X red, Y green and Z blue,
+// as in Blender.
+use crate::palette::{self, GRID_MAJOR, GRID_MINOR, X_AXIS, Y_AXIS, Z_AXIS};
 
 /// Which plane the grid lies in. It stays on the ground, except in level views
 /// along an axis, where a flat grid would be seen edge-on as a single line.
@@ -36,9 +33,9 @@ impl GridPlane {
 
     fn axis_colors(self) -> ([f32; 3], [f32; 3]) {
         match self {
-            GridPlane::Ground => (X_AXIS, Y_AXIS),
-            GridPlane::FrontBack => (X_AXIS, Z_AXIS),
-            GridPlane::Side => (Y_AXIS, Z_AXIS),
+            GridPlane::Ground => (palette::rgb(X_AXIS), palette::rgb(Y_AXIS)),
+            GridPlane::FrontBack => (palette::rgb(X_AXIS), palette::rgb(Z_AXIS)),
+            GridPlane::Side => (palette::rgb(Y_AXIS), palette::rgb(Z_AXIS)),
         }
     }
 }
@@ -47,9 +44,9 @@ fn color_for(line: i32, axis_color: [f32; 3]) -> [f32; 3] {
     if line == 0 {
         axis_color
     } else if line % MAJOR_EVERY == 0 {
-        MAJOR
+        palette::rgb(GRID_MAJOR)
     } else {
-        MINOR
+        palette::rgb(GRID_MINOR)
     }
 }
 
@@ -131,6 +128,7 @@ mod tests {
         ] {
             let all = vertices(plane);
             for (color, axis) in axes {
+                let color = palette::rgb(color);
                 let lines: Vec<_> = all.chunks_exact(2).filter(|l| l[0][3..] == color).collect();
                 assert_eq!(lines.len(), 1, "{plane:?}");
                 for other in (0..3).filter(|&i| i != axis) {
@@ -144,9 +142,11 @@ mod tests {
 
     #[test]
     fn major_lines_appear_every_ten_units() {
-        assert_eq!(color_for(10, X_AXIS), MAJOR);
-        assert_eq!(color_for(-20, X_AXIS), MAJOR);
-        assert_eq!(color_for(7, X_AXIS), MINOR);
-        assert_eq!(color_for(0, Y_AXIS), Y_AXIS);
+        let x = palette::rgb(X_AXIS);
+        let y = palette::rgb(Y_AXIS);
+        assert_eq!(color_for(10, x), palette::rgb(GRID_MAJOR));
+        assert_eq!(color_for(-20, x), palette::rgb(GRID_MAJOR));
+        assert_eq!(color_for(7, x), palette::rgb(GRID_MINOR));
+        assert_eq!(color_for(0, y), y);
     }
 }
