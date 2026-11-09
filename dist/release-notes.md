@@ -1,6 +1,4 @@
-Mixer 0.16.1
+Mixer 0.17.0
 
-- Fixed: bevelling a shape again failed after a bevel had been confirmed without dragging, which left points on top of each other. A bevel with no width is now dropped, as in Blender
-- Shapes saved with that problem: the bevel now says to click Merge close vertices, which repairs them
-- Fixed: the Properties panel was squeezed very small after a bevel since the Materials panel came; the panels now share the column fairly
-- Includes 0.16.0: materials
+- New: snapping steps. Click the magnet button in the top bar to set how far Move, Rotate and Scale go per step while Ctrl is held (for example 0.25 units or 5°). They are remembered
+- Includes 0.16.1: bevels with no width are dropped, and the Properties panel has room again

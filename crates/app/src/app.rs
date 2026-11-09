@@ -416,6 +416,7 @@ impl App {
             // What gets exported, modifiers' copies included.
             triangles: self.scene.triangle_count(),
             triangle_limit: self.settings.triangle_limit(),
+            snap: self.settings.snap,
             vertices: mesh.vertex_count(),
             faces: mesh.face_count(),
             warnings: &self.warnings,
@@ -435,6 +436,7 @@ impl App {
                     let input = Input {
                         mouse: self.pointer,
                         snap: self.snapping,
+                        steps: self.settings.snap,
                         camera: self.camera,
                         width: size[0].max(1.0),
                         height: size[1].max(1.0),
@@ -1162,6 +1164,14 @@ impl App {
                 }
                 self.finish_edit(result);
             }
+            Action::ChangeSnap => {
+                if let Some(steps) = self.state.snap_draft.take() {
+                    self.settings.snap = steps.clamped();
+                    if let Err(error) = self.settings.save() {
+                        self.state.message = format!("Could not save the settings: {error}");
+                    }
+                }
+            }
             Action::PreviewMaterial => {
                 self.material_preview = self.state.material_draft;
                 self.stale = Stale::Everything;
@@ -1691,6 +1701,7 @@ impl App {
         let input = Input {
             mouse: self.pointer,
             snap,
+            steps: self.settings.snap,
             camera: self.camera,
             width,
             height,
@@ -1722,6 +1733,7 @@ impl App {
             transform.bevel_width(&Input {
                 mouse: self.pointer,
                 snap: self.snapping,
+                steps: self.settings.snap,
                 camera: self.camera,
                 width,
                 height,

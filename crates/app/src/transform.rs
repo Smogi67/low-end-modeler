@@ -5,9 +5,52 @@ use mixer_mesh::VertexId;
 
 use crate::camera::Camera;
 
-const SNAP_MOVE: f32 = 1.0;
-const SNAP_ROTATE_RADIANS: f32 = 15.0 * std::f32::consts::PI / 180.0;
+/// Snapping for bevel widths, insets and slides.
 const SNAP_SCALE: f32 = 0.1;
+
+/// How far each Ctrl-held step goes when moving, rotating and scaling, as set in the
+/// snapping popup (Blender's snap increments).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnapSteps {
+    /// In model units.
+    pub move_by: f32,
+    /// In degrees.
+    pub rotate_by: f32,
+    /// In scale factor.
+    pub scale_by: f32,
+}
+
+impl Default for SnapSteps {
+    fn default() -> Self {
+        Self {
+            move_by: 1.0,
+            rotate_by: 15.0,
+            scale_by: 0.1,
+        }
+    }
+}
+
+/// The smallest and largest steps allowed for move, rotate and scale.
+pub const SNAP_LIMITS: [(f32, f32); 3] = [(0.001, 1000.0), (0.1, 180.0), (0.001, 10.0)];
+
+impl SnapSteps {
+    /// Brings each step into range; anything unreadable becomes the default.
+    pub fn clamped(self) -> Self {
+        let default = Self::default();
+        let fix = |v: f32, (low, high): (f32, f32), fallback: f32| {
+            if v.is_finite() {
+                v.clamp(low, high)
+            } else {
+                fallback
+            }
+        };
+        Self {
+            move_by: fix(self.move_by, SNAP_LIMITS[0], default.move_by),
+            rotate_by: fix(self.rotate_by, SNAP_LIMITS[1], default.rotate_by),
+            scale_by: fix(self.scale_by, SNAP_LIMITS[2], default.scale_by),
+        }
+    }
+}
 /// Mouse travel for a full inset.
 const INSET_PIXELS: f32 = 300.0;
 /// Stops short of a full inset, so the new face keeps some size.
@@ -76,6 +119,7 @@ fn snapped(value: f32, step: f32) -> f32 {
 pub struct Input {
     pub mouse: [f32; 2],
     pub snap: bool,
+    pub steps: SnapSteps,
     pub camera: Camera,
     pub width: f32,
     pub height: f32,
@@ -278,7 +322,7 @@ impl Transform {
             }
         };
         if input.snap {
-            offset = offset.map(|c| snapped(c, SNAP_MOVE));
+            offset = offset.map(|c| snapped(c, input.steps.move_by));
         }
         offset
     }
@@ -307,7 +351,7 @@ impl Transform {
         // Screen Y runs down, so a growing angle turns clockwise on screen.
         let mut clockwise = angle_of(input.mouse) - angle_of(self.start_mouse);
         if input.snap {
-            clockwise = snapped(clockwise, SNAP_ROTATE_RADIANS);
+            clockwise = snapped(clockwise, input.steps.rotate_by.to_radians());
         }
         let toward_viewer = input.camera.toward_camera();
         let (axis, angle) = match self.axis {
@@ -339,7 +383,7 @@ impl Transform {
             |p: [f32; 2]| ((p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2)).sqrt();
         let mut factor = distance(input.mouse) / distance(self.start_mouse).max(1.0);
         if input.snap {
-            factor = snapped(factor, SNAP_SCALE);
+            factor = snapped(factor, input.steps.scale_by);
         }
         let v = sub(point, self.pivot);
         match self.axis {
@@ -361,6 +405,7 @@ mod tests {
         Input {
             mouse,
             snap: false,
+            steps: SnapSteps::default(),
             camera,
             width: 800.0,
             height: 600.0,
@@ -547,6 +592,55 @@ mod tests {
         let mut with_snap = input(front(), [512.0, 300.0]); // A factor of 1.12.
         with_snap.snap = true;
         near(t.apply([1.0, 0.0, 0.0], &with_snap), [1.1, 0.0, 0.0]);
+    }
+
+    /// The owner's request: the steps can be set (Blender's snap increments).
+    #[test]
+    fn snapping_uses_the_chosen_steps() {
+        let mut camera = front();
+        camera.orthographic = true;
+        let steps = SnapSteps {
+            move_by: 0.25,
+            rotate_by: 5.0,
+            scale_by: 0.5,
+        };
+        let with = |mouse: [f32; 2]| Input {
+            snap: true,
+            steps,
+            ..input(camera, mouse)
+        };
+        // Move: whatever the drag, a whole number of quarter units.
+        let t = transform(Kind::Move, [400.0, 300.0]);
+        for x in [413.0, 437.0, 471.0] {
+            let moved = t.apply([0.0; 3], &with([x, 300.0]));
+            assert!(
+                ((moved[0] / 0.25) - (moved[0] / 0.25).round()).abs() < 1e-4,
+                "{moved:?}"
+            );
+            assert!(moved[0] != 0.0);
+        }
+        // Rotate: about 5.7 degrees snaps to 5 (the front view turns about Y).
+        let t = transform(Kind::Rotate, [500.0, 300.0]);
+        let turned = t.apply([1.0, 0.0, 0.0], &with([500.0, 310.0]));
+        let angle = turned[2].atan2(turned[0]).to_degrees().abs();
+        assert!((angle - 5.0).abs() < 0.01, "{angle}");
+        // Scale: a factor of 1.12 snaps to 1.
+        let t = transform(Kind::Scale, [500.0, 300.0]);
+        near(
+            t.apply([1.0, 0.0, 0.0], &with([512.0, 300.0])),
+            [1.0, 0.0, 0.0],
+        );
+        // Out-of-range steps are brought back.
+        let wild = SnapSteps {
+            move_by: 0.0,
+            rotate_by: f32::NAN,
+            scale_by: 99.0,
+        }
+        .clamped();
+        assert_eq!(
+            (wild.move_by, wild.rotate_by, wild.scale_by),
+            (0.001, 15.0, 10.0)
+        );
     }
 
     #[test]

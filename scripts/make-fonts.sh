@@ -13,7 +13,7 @@ set -euo pipefail
 
 INTER_VERSION=4.1.1
 LUCIDE_VERSION=1.70.0
-ICONS="e4b3 e345 e51d e167 e1c3 e509 e4b0 e1ce e2a1 e2a0 e2e5 e2ea e2eb e45a e60e e09e e35e e43f e2e6 e4ff e18e e0b2 e0f5 e257 e0ba e061 e523 e525 e0e8 e0f3 e0e9 e076 e44c e193 e0f9 e06c e247 e439 e43d e74f e648 e115 e0c9 e14d e284 e2f0 e4e9 e464 e467 e65a e659 e658 e172 e154 e11d e28e e0ed"
+ICONS="e4b3 e345 e51d e167 e1c3 e509 e4b0 e1ce e2a1 e2a0 e2e5 e2ea e2eb e45a e60e e09e e35e e43f e2e6 e4ff e18e e0b2 e0f5 e257 e0ba e061 e523 e525 e0e8 e0f3 e0e9 e076 e44c e193 e0f9 e06c e247 e439 e43d e74f e648 e115 e0c9 e14d e284 e2f0 e4e9 e464 e467 e65a e659 e658 e172 e154 e11d e28e e0ed e2b5"
 LETTERS="U+0020-007E,U+00A0-00FF,U+2013,U+2014,U+2018,U+2019,U+201C,U+201D,U+2022,U+2026,U+2190-2193,U+00D7"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

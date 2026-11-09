@@ -116,7 +116,7 @@ The app is in `crates/app`. The code is on GitHub: https://github.com/Smogi67/mi
 - **Selection:** stored as flags on elements, so undo restores it. A selected face always has its edges selected, and a selected edge its vertices. `validate` checks this.
 - **Mouse:** left click selects, left drag can select with a chosen tool (box, circle, or lasso), Shift adds, and Ctrl removes. A click on nothing clears the selection. This follows the owner's wish to avoid extra keys for common actions.
 - **Hidden parts:** depth is read from the graphics card once per selection, so only visible parts get selected. There is no select-through mode yet.
-- **Transforms:** G, R, and S or panel buttons start a drag around the selection's center. X, Y, or Z locks an axis, Ctrl snaps (1 unit, 15 degrees, or 0.1 scale), a left click confirms, and a right click or Esc cancels. Duplicate is one undo step with its move, so cancelling removes the copy.
+- **Transforms:** G, R, and S or panel buttons start a drag around the selection's center. X, Y, or Z locks an axis, Ctrl snaps (by default 1 unit, 15 degrees, or 0.1 scale; the steps can be changed, see "Snapping steps" below), a left click confirms, and a right click or Esc cancels. Duplicate is one undo step with its move, so cancelling removes the copy.
 - **Mirror:** across the selection's center. Fully selected faces get their winding reversed, so they keep facing outward.
 - **Partial updates:** during a transform only the affected faces, edges, and points are rewritten and sent (section 4, rule 3). Other changes, including selection, still rebuild everything.
 - **Scheduling gaps:** proportional editing, the 3D cursor, other pivot points, and typing exact values have no stage yet. Add them to Stage 8 or 9 unless the owner says otherwise. Loop selection stays in Stage 6.
@@ -232,6 +232,11 @@ Step 4 is done (version 0.13.0); see its decisions below.
 - **Exports:** OBJ gets a `.mtl` file beside it (Kd, d, and the PBR extension's Pm and Pr). glTF/GLB gets one primitive per material with metallic-roughness materials (colors turned from sRGB to linear), plus the same colors as vertex colors (COLOR_0).
 - **Roblox (checked 2026-11-09):** the Importer makes one MeshPart per glTF primitive, so each material becomes its own MeshPart, and it has an "Ignore Vertex Colors" option, so it reads vertex colors. Its docs do not say whether it reads glTF material colors or OBJ `.mtl` colors; the owner's import test will tell. Sources: https://create.roblox.com/docs/en-us/studio/importer.md
 
+### Snapping steps and a faster online build (owner's requests, 2026-11-09)
+
+- **Snapping steps:** a magnet button in the top bar, after Undo and Redo, opens a popup (Blender's snap increments) with the step for Move (model units, 0.001 to 1000), Rotate (degrees, 0.1 to 180) and Scale (0.001 to 10), and a reset to 1, 15° and 0.1. Holding Ctrl while moving, rotating or scaling goes in these steps. Kept in settings.txt as `snapmove`, `snaprotate`, `snapscale`. Bevel widths, insets and slides still snap in tenths. Asked to choose between this, typing a number while moving, and editing the amount afterwards, the owner chose only this.
+- **Online build:** the screenshot step is gone (the owner does not need it); compiled libraries are kept between runs; tests run with light optimization, with checks still on.
+
 ### Bevels with no width (the owner's file, 2026-11-09)
 
 - The owner's project showed why bevelling again kept failing: a bevel had been confirmed at width 0 (a click without dragging), leaving 1,152 edges of no length and 864 faces with no area stacked at the corners. No later bevel could work there.
@@ -308,7 +313,7 @@ The owner sent the Blender 5.2 manual page for Bevel and asked for what is on it
 - **Dialogs:** Windows gets its own Open and Save As dialogs. Elsewhere the app asks for a path in its own box, which is only used in development.
 - **glTF export:** a single `.glb` file. Each separate part becomes its own mesh, so Roblox makes one MeshPart per part. It passes the official Khronos glTF validator with no errors or warnings. OBJ stays the default.
 - **Shortcuts:** Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S and Ctrl+E added. The keyboard button in the top bar shows every shortcut.
-- **Release zip:** GitHub Actions makes the `low-end-modeler` download with `low-end-modeler.exe`, `low-end-modeler-setup.exe`, `README.txt` and the font licenses. It also runs setup on Windows without a window, checks the app loads SDL2.dll late, and screenshots both programs into its log.
+- **Release zip:** GitHub Actions makes the `low-end-modeler` download with `low-end-modeler.exe`, `low-end-modeler-setup.exe`, `README.txt` and the font licenses. It also runs setup on Windows without a window, checks the app loads SDL2.dll late, and used to screenshot both programs into its log (dropped 2026-11-09 to save time).
 
 ## 6. Feature scope
 
@@ -348,6 +353,7 @@ The owner decided this on 2026-11-05.
 - UV seams, unwrapping, and UV editing, then the bevel's Mark Seams option
 - Custom normals, then the bevel's Harden Normals and Face Strength options
 - Mesh checks for bad geometry before export
+- Typing an amount while moving, rotating or scaling (R 45 Enter), and editing the last move, rotate or scale in the Properties panel (offered 2026-11-09; the owner chose snapping steps only)
 - Feature search (owner's request, Stage 10 step 5): a search box, like Blender's F3 menu, that finds any tool or setting by name, shows its shortcut, and runs it
 
 ### Out of scope
@@ -449,6 +455,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-09 | 10 | Version 0.15.1, the owner's report again (bevelling a bevelled shape still failed): the round corner patch where three bevelled edges meet chose each small triangle's facing from its own shape, and on nearly flat corners, such as a cylinder's or cone's rim with many segments, some came out facing the other way. Now the whole patch turns together. New tests bevel again the way the app does (width 0 with the last settings, then moving the points) after every preset, segment count, intersection and width on one edge, a loop and a whole cube, and after round bevels of every shape on cubes, cylinders, cones and spheres | Not yet |
 | 2026-11-09 | 10 | Version 0.16.0, materials (the owner chose color, metal and roughness; per-face assignment; saved in the project; their own panel): the Materials panel, the bevel's Material Index, tools keeping materials, project saving, OBJ+MTL and glTF materials with vertex colors, and both renderers shading metal and roughness. One project-wide list instead of per-part slots (see section 5). 6 new tests: undo, new faces inheriting and the bevel's Material Index, duplicates and booleans, project round trip and old files, both exports, and the app writing the `.mtl` file. Run on Linux with simulated input, on OpenGL 2.1 and Vulkan: adding a gold metal material, selecting it in the list, assigning it to the top face, and undo. Not tried yet: importing the colors into Roblox Studio | Not yet |
 | 2026-11-09 | 10 | Version 0.16.1, the owner's file (bevelling a bevelled cube still failed): the cause was a bevel kept at width 0, not the bevel code. Bevels with no width are now dropped (letting go without a drag, or Width 0 in the panel); damaged shapes get a message pointing to Merge close vertices; Properties gets a fair share of the column again. 2 new tests: a bevel kept at no width is named and merging repairs it; crowded panels share the column. Run on Linux with simulated input on the owner's file: the message, Merge close vertices, bevelling again, a click without a drag, and Width 0 then 0.05 in the panel | Not yet |
+| 2026-11-09 | 10 | Version 0.17.0, at the owner's requests: snapping steps (magnet popup in the top bar, saved in settings), and a faster online build (no screenshots, kept libraries, lightly optimized tests). 2 new tests: the chosen steps used for move, rotate and scale with odd steps brought into range, and the steps read back from settings. Run on Linux with simulated input: the popup, typing 45°, the setting saved, a Ctrl-held rotation, the popup closing with Esc | Not yet |
 
 ## 12. Open questions
 

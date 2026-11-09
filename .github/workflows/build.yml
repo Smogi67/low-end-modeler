@@ -25,7 +25,14 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      # Keeps compiled libraries between runs, so only Mixer's own code is rebuilt.
+      - uses: Swatinem/rust-cache@v2
+
+      # Light optimization makes the long bevel and interface tests several times
+      # faster; overflow checks and debug assertions stay on.
       - name: Run tests
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
         run: cargo test --workspace
 
       - name: Build the app and the launcher
@@ -146,86 +153,6 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "repair failed with code $($process.ExitCode)" }
             if ((Get-Item repairing/mixer.exe).Length -lt 100000) { throw "repair did not put mixer.exe back" }
             if (-not (Test-Path repairing/README.txt)) { throw "repair did not put README.txt back" }
-          }
-
-      # Screenshots of the real windows, printed into this log as text so they can be
-      # checked without downloading anything: the launcher's pages, and the app's
-      # message when SDL2.dll is missing.
-      - name: Take screenshots
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          function Shot($name) {
-            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $bitmap.Size)
-            $bitmap.Save("$name.png", [System.Drawing.Imaging.ImageFormat]::Png)
-            $text = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$name.png"))
-            Write-Output "SHOT $name BEGIN"
-            for ($i = 0; $i -lt $text.Length; $i += 2000) {
-              Write-Output ("SHOT " + $text.Substring($i, [Math]::Min(2000, $text.Length - $i)))
-            }
-            Write-Output "SHOT $name END"
-          }
-          # A fresh folder: the welcome page, with SDL2 still to get.
-          Copy-Item -Recurse release fresh1
-          $first = Start-Process -FilePath fresh1/mixer-launcher.exe -PassThru
-          Start-Sleep -Seconds 8
-          Shot "launcher-welcome"
-          Stop-Process -Id $first.Id -Force
-          # Ready to start, with an update offered (shown without asking GitHub).
-          Copy-Item -Recurse trial ready1
-          $ready = Start-Process -FilePath ready1/mixer-launcher.exe -ArgumentList "--show-update" -PassThru
-          Start-Sleep -Seconds 6
-          Shot "launcher-home"
-          Stop-Process -Id $ready.Id -Force
-          Copy-Item -Recurse trial ready2
-          $advanced = Start-Process -FilePath ready2/mixer-launcher.exe -ArgumentList "--page","advanced" -PassThru
-          Start-Sleep -Seconds 6
-          Shot "launcher-advanced"
-          Stop-Process -Id $advanced.Id -Force
-          # Install and start, as pressed: the steps, then Mixer opens.
-          Copy-Item -Recurse release fresh2
-          $second = Start-Process -FilePath fresh2/mixer-launcher.exe -ArgumentList "--press-continue" -PassThru
-          Start-Sleep -Milliseconds 1500
-          Shot "launcher-working"
-          Start-Sleep -Seconds 10
-          Shot "launcher-started-mixer"
-          Get-Process mixer -ErrorAction SilentlyContinue | Stop-Process -Force
-          Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue
-          # A real update from the newest release, into a copy pretending to be older.
-          Copy-Item -Recurse trial old1
-          $updating = Start-Process -FilePath old1/mixer-launcher.exe -ArgumentList "--pretend-version","0.0.1","--update-now" -PassThru
-          Start-Sleep -Milliseconds 2500
-          Shot "launcher-updating"
-          Start-Sleep -Seconds 8
-          Get-Process mixer -ErrorAction SilentlyContinue | Stop-Process -Force
-          Stop-Process -Id $updating.Id -Force -ErrorAction SilentlyContinue
-          Copy-Item -Recurse release fresh3
-          $app = Start-Process -FilePath fresh3/mixer.exe -PassThru
-          Start-Sleep -Seconds 6
-          Shot "app-without-sdl"
-          Stop-Process -Id $app.Id -Force
-          # The newer rendering engines. GitHub's Windows machine has no graphics card,
-          # but Windows' own software adapter (WARP) runs DirectX 12. The others are
-          # missing there, so Mixer must fall back to OpenGL 2.1, which is too old there
-          # too, and then to DirectX 12.
-          Copy-Item -Recurse trial engines1
-          New-Item -ItemType Directory -Force engineshome | Out-Null
-          $env:MIXER_HOME = (Resolve-Path engineshome).Path
-          Start-Process -FilePath engines1/mixer.exe -ArgumentList "--check-engines" -Wait
-          Get-Content engineshome/engines.txt
-          foreach ($engine in "directx12", "vulkan", "opengl3.3", "opengl2.1") {
-            Set-Content -Encoding ascii engineshome/settings.txt "renderer $engine"
-            $run = Start-Process -FilePath engines1/mixer.exe -PassThru
-            Start-Sleep -Seconds 10
-            Shot "app-$engine"
-            Stop-Process -Id $run.Id -Force -ErrorAction SilentlyContinue
-            Get-Process mixer -ErrorAction SilentlyContinue | Stop-Process -Force
-            Write-Output "--- mixer.log after $engine"
-            Get-Content engines1/mixer.log -Tail 8
           }
 
       - name: Upload the release folder

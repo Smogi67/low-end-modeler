@@ -79,6 +79,8 @@ pub struct Settings {
     pub open_export_folder: bool,
     /// The launcher checks GitHub when it opens.
     pub check_updates: bool,
+    /// How far Ctrl-held moves, turns and scales step.
+    pub snap: crate::transform::SnapSteps,
     /// Lines Mixer does not use itself.
     others: Vec<String>,
 }
@@ -105,6 +107,7 @@ impl Default for Settings {
             triangle_limit: mixer_mesh::DEFAULT_TRIANGLE_LIMIT as u32,
             open_export_folder: false,
             check_updates: true,
+            snap: crate::transform::SnapSteps::default(),
             others: Vec::new(),
         }
     }
@@ -192,6 +195,16 @@ impl Settings {
                     };
                 }
                 "updates" => s.check_updates = on(value),
+                "snapmove" | "snaprotate" | "snapscale" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        match key {
+                            "snapmove" => s.snap.move_by = v,
+                            "snaprotate" => s.snap.rotate_by = v,
+                            _ => s.snap.scale_by = v,
+                        }
+                        s.snap = s.snap.clamped();
+                    }
+                }
                 _ if key.starts_with('#') => {}
                 // A line Mixer does not know, such as one of the launcher's, is kept.
                 _ => s.others.push(line.to_string()),
@@ -231,6 +244,9 @@ impl Settings {
                 },
             ),
             ("updates", word(self.check_updates).to_string()),
+            ("snapmove", format!("{}", self.snap.move_by)),
+            ("snaprotate", format!("{}", self.snap.rotate_by)),
+            ("snapscale", format!("{}", self.snap.scale_by)),
         ];
         for (key, value) in lines {
             text.push_str(&format!("{key} {value}\n"));
@@ -282,6 +298,11 @@ mod tests {
             open_export_folder: true,
             triangle_limit: 0,
             check_updates: false,
+            snap: crate::transform::SnapSteps {
+                move_by: 0.25,
+                rotate_by: 5.0,
+                scale_by: 0.05,
+            },
             ..Settings::default()
         };
         assert_eq!(Settings::parse(&changed.text()), changed);
@@ -300,6 +321,11 @@ mod tests {
         assert_eq!(s.recent, FEWEST_RECENT);
         assert_eq!(s.undo_steps, Settings::default().undo_steps);
         assert_eq!(s.export_scale, 1.0);
+        let snap = Settings::parse("snapmove 0\nsnaprotate 999\nsnapscale nan\n").snap;
+        assert_eq!(
+            (snap.move_by, snap.rotate_by, snap.scale_by),
+            (0.001, 180.0, 0.1)
+        );
         assert_eq!(
             Settings::parse("trianglelimit 5\n").triangle_limit,
             LOWEST_TRIANGLE_LIMIT

@@ -20,7 +20,7 @@ use crate::export::ExportFormat;
 use crate::picking::Region;
 use crate::search::{self, SearchState};
 use crate::theme::{Fonts, color, icon};
-use crate::transform::Kind;
+use crate::transform::{Kind, SNAP_LIMITS, SnapSteps};
 
 pub const TOP_BAR: f32 = 52.0;
 pub const STATUS_BAR: f32 = 30.0;
@@ -173,6 +173,8 @@ pub struct PanelState {
     pub active_material: Option<MaterialId>,
     /// The active material as being edited, before it is saved.
     pub material_draft: Option<(MaterialId, Material)>,
+    /// The snapping popup's steps while they are being changed.
+    pub snap_draft: Option<SnapSteps>,
     /// The name field's text.
     pub material_name: String,
     pub export_format: ExportFormat,
@@ -225,6 +227,7 @@ impl Default for PanelState {
             search: None,
             active_material: None,
             material_draft: None,
+            snap_draft: None,
             material_name: String::new(),
             export_format: ExportFormat::Obj,
             path_prompt: None,
@@ -344,6 +347,8 @@ pub struct PanelInfo<'a> {
     /// Faces with no material, and how many of them are selected.
     pub plain_faces: (usize, usize),
     pub triangles: usize,
+    /// How far Ctrl-held moves, turns and scales step.
+    pub snap: SnapSteps,
     /// The triangle limit from the settings, or `None` when it is off.
     pub triangle_limit: Option<usize>,
     pub vertices: usize,
@@ -479,6 +484,8 @@ pub enum Action {
     /// Shows `PanelState::material_draft` without saving it, while a slider or the color
     /// picker is dragged.
     PreviewMaterial,
+    /// Saves `PanelState::snap_draft` as the snapping steps.
+    ChangeSnap,
     /// Saves `PanelState::material_draft` as an undo step.
     ChangeMaterial,
     /// Gives the selected faces a material, or the default look.
@@ -1065,6 +1072,13 @@ fn top_bar(
         .map_or("Nothing to redo".to_string(), |l| format!("Redo {l}"));
     tooltip(ui, &redo, "Ctrl+Y");
 
+    ui.same_line_with_spacing(0.0, 16.0);
+    if icon_button(ui, "snap", icon::SNAP, false, true, height + 4.0) {
+        ui.open_popup("##snap_popup");
+    }
+    tooltip(ui, "Snapping steps", "Hold Ctrl");
+    snap_popup(ui, state, info, fonts, action);
+
     // Settings, shortcuts, then Export, at the right edge. On a narrow window, or with a
     // big interface size, the two small buttons give way to the ones before them.
     // Settings is in the File menu too.
@@ -1105,6 +1119,69 @@ fn top_bar(
     drop(colors);
     tooltip(ui, "Export as OBJ or glTF", "Ctrl+E");
     export_popup(ui, state, info, fonts, action);
+}
+
+/// Blender's snap increments: how far each step goes while Ctrl is held.
+fn snap_popup(
+    ui: &Ui,
+    state: &mut PanelState,
+    info: &PanelInfo,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+) {
+    let padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 14.0]));
+    if let Some(_popup) = ui.begin_popup("##snap_popup") {
+        ui.dummy([300.0, 0.0]);
+        heading(ui, fonts, "SNAPPING");
+        ui.text_colored(color::MUTED(), "Hold Ctrl while moving, rotating or");
+        ui.text_colored(color::MUTED(), "scaling to go in these steps.");
+        ui.dummy([0.0, 4.0]);
+        let mut steps = state.snap_draft.unwrap_or(info.snap);
+        let mut changed = false;
+        let mut done = false;
+        let fields: [(&str, &str, &str, f32, &mut f32); 3] = [
+            ("Move", "##snap_move", "%.3f", 0.01, &mut steps.move_by),
+            (
+                "Rotate",
+                "##snap_rotate",
+                "%.1f°",
+                0.2,
+                &mut steps.rotate_by,
+            ),
+            ("Scale", "##snap_scale", "%.3f", 0.005, &mut steps.scale_by),
+        ];
+        for (i, (label, id, format, speed, value)) in fields.into_iter().enumerate() {
+            row(ui, label);
+            let (low, high) = SNAP_LIMITS[i];
+            changed |= Drag::new(id)
+                .range(low, high)
+                .speed(speed)
+                .display_format(format)
+                .flags(SliderFlags::ALWAYS_CLAMP)
+                .build(ui, value);
+            done |= ui.is_item_deactivated_after_edit();
+            tooltip(ui, "Drag sideways, or double-click to type", "");
+        }
+        ui.dummy([0.0, 4.0]);
+        if ui.button_with_size("Reset to 1, 15° and 0.1", [-1.0, 0.0]) {
+            steps = SnapSteps::default();
+            changed = true;
+            done = true;
+        }
+        if changed {
+            state.snap_draft = Some(steps);
+        }
+        if done {
+            *action = Some(Action::ChangeSnap);
+        }
+        // Esc, or starting to move something, puts it away.
+        if info.transform_help.is_some()
+            || (ui.is_key_pressed(imgui::Key::Escape) && !ui.is_any_item_active())
+        {
+            ui.close_current_popup();
+        }
+    }
+    drop(padding);
 }
 
 fn export_popup(
@@ -3727,6 +3804,7 @@ mod tests {
                 selected: 2,
             }],
             plain_faces: (8, 1),
+            snap: SnapSteps::default(),
             triangles: 12,
             transform_waiting: false,
             transform_dragging: false,
