@@ -4,7 +4,7 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 10, steps 1 to 4 done: small fixes, the Mixer Launcher with updates from GitHub Releases, the settings page, Blender's bevel options with a shadows setting (0.12.0), and the rendering engines Vulkan, DirectX 12 and OpenGL 3.3 beside OpenGL 2.1, with edge glow (0.13.0). Step 5, feature search, is done too (0.15.0); Stage 10 is complete. Stage 9 added knife, bisect, join, booleans, View mode, the start window, anti-aliasing, smooth shading, and mirror and array modifiers. The owner tries the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Status: **Stage 10 done (0.15.0): small fixes, the Mixer Launcher with updates, the settings page, Blender's bevel options, rendering engines (Vulkan, DirectX 12, OpenGL 3.3 beside OpenGL 2.1), dockable panels, themes, and feature search. Next stage not yet chosen by the owner. The owner tries the app on the laptop and reports problems as they find them; the Roblox import test is on their own time. See section 11.**
 Next step: **Stage 10 step 4: rendering engines (Vulkan, DirectX 12, OpenGL 3.3 through wgpu, beside OpenGL 2.1). Then step 5, feature search.**
 
 ## 1. Goal
