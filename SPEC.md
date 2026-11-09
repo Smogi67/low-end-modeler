@@ -4,7 +4,7 @@ Mixer was called Low-End Modeler until 2026-11-08, when the owner renamed it. Ol
 
 Read this whole file before writing code. It records the decisions made so far, the scope, and how to work with the project owner.
 
-Status: **Stage 10, steps 1 to 4 done: small fixes, the Mixer Launcher with updates from GitHub Releases, the settings page, Blender's bevel options with a shadows setting (0.12.0), and the rendering engines Vulkan, DirectX 12 and OpenGL 3.3 beside OpenGL 2.1, with edge glow (0.13.0). Next: step 5, feature search. Stage 9 added knife, bisect, join, booleans, View mode, the start window, anti-aliasing, smooth shading, and mirror and array modifiers. The owner tries the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
+Status: **Stage 10, steps 1 to 4 done: small fixes, the Mixer Launcher with updates from GitHub Releases, the settings page, Blender's bevel options with a shadows setting (0.12.0), and the rendering engines Vulkan, DirectX 12 and OpenGL 3.3 beside OpenGL 2.1, with edge glow (0.13.0). Step 5, feature search, is done too (0.15.0); Stage 10 is complete. Stage 9 added knife, bisect, join, booleans, View mode, the start window, anti-aliasing, smooth shading, and mirror and array modifiers. The owner tries the app on the laptop and reports problems as they find them. The owner will test the Roblox import later and asked not to wait for it. See section 11.**
 Next step: **Stage 10 step 4: rendering engines (Vulkan, DirectX 12, OpenGL 3.3 through wgpu, beside OpenGL 2.1). Then step 5, feature search.**
 
 ## 1. Goal
@@ -203,6 +203,12 @@ Step 4 is done (version 0.13.0); see its decisions below.
 - **A software stand-in is allowed:** if only a software adapter offers the engine, Mixer still uses it (marked "software, slow" in the title bar and log), since the owner wants the freedom to choose.
 - **Grid lines** are cut into 2-unit pieces for the newer engines: Mesa's drivers drew long lines reaching behind the camera as stray triangles.
 - **Size:** mixer.exe grows by several MB (accepted by the owner when choosing this).
+
+### Decisions made in Stage 10, step 5: feature search
+
+- **Ctrl+F** (and File > Search features) opens a search box at the top of the 3D view, like Blender's F3 menu. F3 stays the right view, as Mixer has used it for views on laptops without a number pad since Stage 3; changing it would break the owner's habit.
+- About 70 commands: every tool, shape, selection command, mode, shading, view, file command and the settings. Each has extra words people might type ("grab" finds Move, "theme" finds Settings) and shows its shortcut. Typed words must all appear; names starting with the text come first.
+- Enter or a click runs the chosen command exactly as its button or key would; the arrow keys choose; Esc or a click outside closes it.
 
 ### Docked panels, Blender-style bevel drag, themes (owner's requests, 2026-11-08)
 
@@ -423,6 +429,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-08 | 10 | Version 0.13.1, at the owner's request: Roblox wording removed from the interface and README; the triangle limit became a setting (the owner chose both neutral wording and a setting). Tests updated for warnings with the limit on and off and for reading the setting. Run on Linux with simulated input: the start window and the new settings section | Not yet |
 | 2026-11-08 | 10 | Version 0.13.2, at the owner's request: bevel only follows a held left-click drag; one Edit/View toggle button. Run on Linux with simulated input: after Ctrl+B, moving the mouse left the width at 0; a drag set it, letting go confirmed it and opened the Bevel panel; the toggle switched to View mode and back | Not yet |
 | 2026-11-09 | 10 | Version 0.14.0, at the owner's requests: bevel-again fix, docked and floating Add Shapes and Properties panels, cursor held during bevel drags, a theme page for every color. New tests: bevelling again after every preset (2), theme files read back, the docked layout stacking inside the column. Run on Linux with simulated input: the bevel options showing as soon as the drag ends, taking Add Shapes out, moving it, the docking outline, docking it again, the theme page, and a light blue theme loaded from theme.txt | Not yet |
+| 2026-11-09 | 10 | Step 5, version 0.15.0: feature search (Ctrl+F). 1 new test (matching and ranking, every name once). Run on Linux with simulated input: Ctrl+F opened the list, typing "sub" left Subdivide and Subtract, Enter subdivided the selected cube | Not yet |
 
 ## 12. Open questions
 

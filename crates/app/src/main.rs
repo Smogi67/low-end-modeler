@@ -20,6 +20,7 @@ mod places;
 mod platform;
 mod renderer;
 mod scene;
+mod search;
 mod settings;
 mod settings_window;
 mod start;

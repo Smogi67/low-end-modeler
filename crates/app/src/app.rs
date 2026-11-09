@@ -884,6 +884,12 @@ impl App {
             }
             Action::New => self.request(Pending::New),
             Action::Settings => self.open_settings(),
+            Action::Search => {
+                self.state.search = Some(crate::search::SearchState {
+                    focus: true,
+                    ..Default::default()
+                });
+            }
             Action::StartWindow => self.request(Pending::Start),
             Action::Open => self.request(Pending::Open(None)),
             Action::Save => self.save(false, None),
@@ -2628,6 +2634,7 @@ fn shortcut(key: Keycode, mods: Modifiers) -> Option<Action> {
             Keycode::R => Some(Action::LoopCut),
             Keycode::J => Some(Action::Join),
             Keycode::Comma => Some(Action::Settings),
+            Keycode::F => Some(Action::Search),
             Keycode::B if mods.shift => Some(Action::BevelVertices),
             Keycode::B => Some(Action::Bevel),
             Keycode::S if mods.shift => Some(Action::SaveAs),

@@ -18,6 +18,7 @@ use mixer_mesh::{
 use crate::editor::Target;
 use crate::export::ExportFormat;
 use crate::picking::Region;
+use crate::search::{self, SearchState};
 use crate::theme::{Fonts, color, icon};
 use crate::transform::Kind;
 
@@ -164,6 +165,8 @@ pub struct PanelState {
     pub props_content: f32,
     /// Where the two side panels are, and how big.
     pub dock: Dock,
+    /// Feature search, while it is open.
+    pub search: Option<SearchState>,
     pub export_format: ExportFormat,
     /// Where there are no system file dialogs, the path being typed.
     pub path_prompt: Option<PathPrompt>,
@@ -210,6 +213,7 @@ impl Default for PanelState {
             panel_content: f32::MAX,
             props_content: f32::MAX,
             dock: Dock::default(),
+            search: None,
             export_format: ExportFormat::Obj,
             path_prompt: None,
             bevel: BevelSettings {
@@ -441,6 +445,8 @@ pub enum Action {
     Boolean(BooleanOp),
     /// Switches between Edit mode and View mode, which hides lines and points.
     ToggleView,
+    /// Opens feature search (Ctrl+F).
+    Search,
     /// Back to the start window, asking about unsaved changes first.
     StartWindow,
     /// Opens the settings window.
@@ -862,6 +868,7 @@ pub fn build(ui: &Ui, state: &mut PanelState, info: &PanelInfo, fonts: &Fonts) -
     }
 
     dialogs(ui, state, info, &mut action);
+    search_window(ui, state, fonts, &mut action, &mut rects, display);
     viewport_overlays(ui, info, display, state.dock.reserved());
     UiOutput { action, rects }
 }
@@ -1152,6 +1159,12 @@ fn file_menu(ui: &Ui, info: &PanelInfo, action: &mut Option<Action>, height: f32
         let items = [
             (icon::MENU, "Start window\u{2026}", "", Action::StartWindow),
             (
+                icon::MENU,
+                "Search features\u{2026}",
+                "Ctrl+F",
+                Action::Search,
+            ),
+            (
                 icon::SETTINGS,
                 "Settings\u{2026}",
                 "Ctrl+,",
@@ -1254,6 +1267,7 @@ fn help_popup(ui: &Ui, fonts: &Fonts) {
                     ("New, open, save", "Ctrl+N, Ctrl+O, Ctrl+S"),
                     ("Save as", "Ctrl+Shift+S"),
                     ("Settings", "Ctrl+comma"),
+                    ("Search features", "Ctrl+F"),
                     ("Export", "Ctrl+E"),
                     ("Undo, redo", "Ctrl+Z, Ctrl+Y"),
                 ],
@@ -2227,6 +2241,137 @@ fn viewport_overlays(ui: &Ui, info: &PanelInfo, display: [f32; 2], reserved: f32
             list.add_text([x, top + 8.0], *tint, text);
             x += ui.calc_text_size(text)[0] + gap;
         }
+    }
+}
+
+/// Feature search: a field to type in and the matching commands below it. Enter or a
+/// click runs one; the arrow keys choose; Esc closes.
+fn search_window(
+    ui: &Ui,
+    state: &mut PanelState,
+    fonts: &Fonts,
+    action: &mut Option<Action>,
+    rects: &mut Vec<[f32; 4]>,
+    display: [f32; 2],
+) {
+    let Some(search) = state.search.as_mut() else {
+        return;
+    };
+    let width = 480.0_f32.min(display[0] - 2.0 * MARGIN);
+    let commands = search::commands();
+    let found = search::matching(&search.query, &commands);
+    search.selected = search.selected.min(found.len().saturating_sub(1));
+    let mut close = false;
+    let padding = ui.push_style_var(StyleVar::WindowPadding([12.0, 12.0]));
+    let built = ui
+        .window("##search")
+        .position(
+            [(display[0] - width) * 0.5, TOP_BAR + 30.0],
+            Condition::Always,
+        )
+        .size([width, 0.0], Condition::Always)
+        .flags(
+            WindowFlags::NO_TITLE_BAR
+                | WindowFlags::NO_RESIZE
+                | WindowFlags::NO_MOVE
+                | WindowFlags::NO_SAVED_SETTINGS
+                | WindowFlags::ALWAYS_AUTO_RESIZE,
+        )
+        .build(|| {
+            if search.focus {
+                ui.set_keyboard_focus_here();
+                search.focus = false;
+            }
+            ui.set_next_item_width(-1.0);
+            let font = ui.push_font(fonts.heading);
+            let typed = ui
+                .input_text("##search_text", &mut search.query)
+                .hint("Search for a feature\u{2026}")
+                .enter_returns_true(true)
+                .build();
+            drop(font);
+            if ui.is_item_edited() {
+                search.selected = 0;
+            }
+            if ui.is_key_pressed(imgui::Key::DownArrow) {
+                search.selected = (search.selected + 1).min(found.len().saturating_sub(1));
+            }
+            if ui.is_key_pressed(imgui::Key::UpArrow) {
+                search.selected = search.selected.saturating_sub(1);
+            }
+            if ui.is_key_pressed(imgui::Key::Escape) {
+                close = true;
+            }
+            if typed && let Some(&i) = found.get(search.selected) {
+                *action = Some(commands[i].action);
+                close = true;
+            }
+            ui.dummy([0.0, 4.0]);
+            if found.is_empty() {
+                ui.text_colored(color::FAINT(), "Nothing matches. Try another word.");
+            }
+            // At most twelve at a time, scrolling with the chosen one.
+            let shown = 12usize;
+            let first = search.selected.saturating_sub(shown - 1);
+            for (row, &i) in found.iter().enumerate().skip(first).take(shown) {
+                let command = &commands[i];
+                let lit = row == search.selected;
+                let colors = if lit {
+                    vec![ui.push_style_color(StyleColor::Button, color::ACCENT_SOFT())]
+                } else {
+                    vec![ui.push_style_color(StyleColor::Button, [0.0; 4])]
+                };
+                let align = ui.push_style_var(StyleVar::ButtonTextAlign([0.0, 0.5]));
+                let start = ui.cursor_screen_pos();
+                if ui.button_with_size(
+                    format!("{}   {}##search{row}", command.icon, command.name),
+                    [-1.0, 30.0],
+                ) {
+                    *action = Some(command.action);
+                    close = true;
+                }
+                if ui.is_item_hovered() && ui.io().mouse_delta != [0.0, 0.0] {
+                    search.selected = row;
+                }
+                drop(align);
+                drop(colors);
+                if !command.keys.is_empty() {
+                    let keys_width = ui.calc_text_size(command.keys)[0];
+                    ui.get_window_draw_list().add_text(
+                        [
+                            start[0] + ui.item_rect_size()[0] - keys_width - 10.0,
+                            start[1] + 7.0,
+                        ],
+                        color::FAINT(),
+                        command.keys,
+                    );
+                }
+            }
+            if found.len() > shown {
+                ui.text_colored(
+                    color::FAINT(),
+                    format!("{} more; type more of the name.", found.len() - shown),
+                );
+            }
+            let [x, y] = ui.window_pos();
+            let [w, h] = ui.window_size();
+            [x, y, w, h]
+        });
+    drop(padding);
+    if let Some(rect) = built {
+        rects.push(rect);
+        // A click outside closes it, as menus do.
+        let mouse = ui.io().mouse_pos;
+        let inside = mouse[0] >= rect[0]
+            && mouse[0] <= rect[0] + rect[2]
+            && mouse[1] >= rect[1]
+            && mouse[1] <= rect[1] + rect[3];
+        if !inside && ui.is_mouse_clicked(imgui::MouseButton::Left) {
+            close = true;
+        }
+    }
+    if close {
+        state.search = None;
     }
 }
 

@@ -1,7 +1,5 @@
-Mixer 0.14.0
+Mixer 0.15.0
 
-- Fixed: bevelling a shape again after a stepped bevel no longer fails
-- Add Shapes and Properties are now panels docked on the right: drag a title to take one out, drop it on the right edge to dock it again
-- The bevel options show in Properties the moment you let go
-- While dragging a bevel the cursor is hidden and held, like in Blender
-- Settings > Theme: change any color, or reset to the default
+- Feature search: press Ctrl+F (or File > Search features), type part of a name, press Enter
+- Finds every tool, shape, selection command, view and setting, and shows each one's shortcut
+- Includes 0.14.0: dockable panels, themes, Blender-style bevel drag
