@@ -1236,7 +1236,10 @@ impl Mesh {
                                 }
                             }
                         }
-                        // Turn each triangle to face the same way as the corner's outline.
+                        // The grid's triangles all wind the same way, so they are turned
+                        // together to face like the corner's outline. Deciding one by one
+                        // from their own facing went wrong on nearly flat corners, such
+                        // as a cylinder's rim, where tiny triangles can seem to flip.
                         let made_here: HashMap<VertexId, V3> = added.iter().copied().collect();
                         let at = |p: VertexId| {
                             made_here
@@ -1245,9 +1248,14 @@ impl Mesh {
                                 .unwrap_or_else(|| step_of_point(&step_of, &inner_steps, p))
                         };
                         let facing = newell(&outline.iter().map(|&p| at(p)).collect::<Vec<_>>());
+                        let agree: f32 = triangles
+                            .iter()
+                            .map(|&[p, q, r]| {
+                                dot(cross(sub(at(q), at(p)), sub(at(r), at(p))), facing)
+                            })
+                            .sum();
                         for [p, q, r] in triangles {
-                            let normal = cross(sub(at(q), at(p)), sub(at(r), at(p)));
-                            if dot(normal, facing) >= 0.0 {
+                            if agree >= 0.0 {
                                 bevel_faces.push(vec![p, q, r]);
                             } else {
                                 bevel_faces.push(vec![p, r, q]);

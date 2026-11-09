@@ -550,3 +550,162 @@ fn a_cube_beveled_everywhere_can_be_beveled_again() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The app's way: bevel at width 0 with the last settings, then move the new points.
+fn app_bevel(
+    mesh: &mut Mesh,
+    settings: &BevelSettings,
+    width: f32,
+    mode: SelectMode,
+) -> Result<(), String> {
+    let made = mesh
+        .bevel_selected(
+            &BevelSettings {
+                width: 0.0,
+                ..*settings
+            },
+            mode,
+        )
+        .map_err(|e| e.to_string())?;
+    let w = width.min(made.max_width);
+    for (v, from, step) in made.moving {
+        let p = [
+            from[0] + step[0] * w,
+            from[1] + step[1] * w,
+            from[2] + step[2] * w,
+        ];
+        mesh.set_vertex_position(v, p).unwrap();
+    }
+    Ok(())
+}
+
+#[test]
+fn bevelling_again_the_way_the_app_does() {
+    let mut failures = Vec::new();
+    let mut profiles: Vec<(String, BevelSettings)> =
+        vec![("round".into(), BevelSettings::default())];
+    for preset in ProfilePreset::ALL {
+        profiles.push((
+            preset.name().into(),
+            BevelSettings {
+                profile_type: ProfileType::Custom,
+                custom: CustomProfile::preset(preset),
+                ..Default::default()
+            },
+        ));
+    }
+    for (name, base) in &profiles {
+        for segments in [1, 2, 3, 5, 8] {
+            for intersection in [Intersection::GridFill, Intersection::Cutoff] {
+                for width in [0.15, 0.5, 2.0] {
+                    for start in 0..3 {
+                        let settings = BevelSettings {
+                            segments,
+                            intersection,
+                            ..*base
+                        };
+                        let mut mesh = match start {
+                            0 => one_edge().0,
+                            1 => top_loop(),
+                            _ => {
+                                let (mut m, _, _) = cube();
+                                m.select_all();
+                                m
+                            }
+                        };
+                        if let Err(e) = app_bevel(&mut mesh, &settings, width, SelectMode::Edge) {
+                            failures.push(format!(
+                                "first {name} {segments} {intersection:?} {width} {start}: {e}"
+                            ));
+                            continue;
+                        }
+                        for mode in [SelectMode::Edge, SelectMode::Face, SelectMode::Vertex] {
+                            let mut copy = mesh.clone();
+                            copy.select_all();
+                            if let Err(e) = app_bevel(&mut copy, &settings, 0.03, mode) {
+                                failures.push(format!("{name} {segments} {intersection:?} {width} {start} {mode:?}: {e}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures: {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(30)]
+    );
+}
+
+/// The owner's report, again: a cylinder's rim bevelled with many segments made corner
+/// patches that faced different ways, so the next bevel refused the shape.
+#[test]
+fn bevelling_again_with_every_shape_and_primitive() {
+    use mixer_mesh::Primitive;
+    let mut failures = Vec::new();
+    let shapes = [
+        Primitive::Cube { size: 2.0 },
+        Primitive::Cylinder {
+            radius: 1.0,
+            height: 2.0,
+            segments: 16,
+        },
+        Primitive::Cone {
+            radius: 1.0,
+            height: 2.0,
+            segments: 12,
+        },
+        Primitive::UvSphere {
+            radius: 1.0,
+            segments: 12,
+            rings: 6,
+        },
+    ];
+    for primitive in shapes {
+        for shape in [0.05, 0.5, 1.0] {
+            for segments in [2, 10] {
+                for width in [0.1, 1.5] {
+                    for which in 0..2 {
+                        let mut mesh = Mesh::new();
+                        mesh.add_primitive(primitive, [0.0; 3]).unwrap();
+                        if which == 0 {
+                            // One edge.
+                            let (e, _) = mesh.edges().next().unwrap();
+                            select_edges(&mut mesh, &[e]);
+                        } else {
+                            mesh.select_all();
+                        }
+                        let settings = BevelSettings {
+                            shape,
+                            segments,
+                            ..Default::default()
+                        };
+                        if let Err(e) = app_bevel(&mut mesh, &settings, width, SelectMode::Edge) {
+                            failures.push(format!(
+                                "first {primitive:?} {shape} {segments} {width} {which}: {e}"
+                            ));
+                            continue;
+                        }
+                        for mode in [SelectMode::Edge, SelectMode::Face] {
+                            let mut copy = mesh.clone();
+                            copy.select_all();
+                            if let Err(e) = app_bevel(&mut copy, &settings, 0.02, mode) {
+                                failures.push(format!(
+                                    "{primitive:?} {shape} {segments} {width} {which} {mode:?}: {e}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures: {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(30)]
+    );
+}

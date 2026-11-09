@@ -1,5 +1,4 @@
-Mixer 0.15.0
+Mixer 0.15.1
 
-- Feature search: press Ctrl+F (or File > Search features), type part of a name, press Enter
-- Finds every tool, shape, selection command, view and setting, and shows each one's shortcut
-- Includes 0.14.0: dockable panels, themes, Blender-style bevel drag
+- Fixed: bevelling a shape that was already bevelled failed with "only edges with a face on each side can be beveled". Round corners on cylinders, cones and other gently curved shapes now come out right, so they can be bevelled again
+- Includes 0.15.0: feature search (Ctrl+F)
