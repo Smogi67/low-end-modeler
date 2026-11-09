@@ -51,6 +51,8 @@ const CIRCLE_BRUSH_RADIUS: f32 = 30.0;
 const DEPTH_TOLERANCE: f32 = 0.004;
 /// "Merge close vertices" joins vertices closer together than this, in model units.
 const MERGE_DISTANCE: f32 = 0.001;
+/// A bevel narrower than this, in model units, is dropped rather than kept.
+const MIN_BEVEL_WIDTH: f32 = 1e-4;
 /// How near the pointer an edge must be to choose it for a loop cut, in pixels.
 const LOOP_CUT_REACH: f32 = 40.0;
 /// How near the pointer an edge must be for double-click loop selection, in pixels.
@@ -195,6 +197,9 @@ pub struct App {
     /// The history version right after the last bevel, while its panel may still
     /// change it.
     last_bevel: Option<u64>,
+    /// The panel's width is 0, so the last bevel is undone for now; a wider width
+    /// bevels again.
+    bevel_removed: bool,
     /// How far the bevel being dragged moves points per unit of its width type.
     bevel_per_unit: f32,
     /// The version after the last modifier change, and which modifier, so that a
@@ -293,6 +298,7 @@ impl App {
             view_only: false,
             gizmo_hover: None,
             last_bevel: None,
+            bevel_removed: false,
             bevel_per_unit: 1.0,
             last_modifier_edit: None,
             snapping: false,
@@ -1710,7 +1716,7 @@ impl App {
         else {
             return;
         };
-        let keep = !confirm && transform.keep_on_cancel;
+        let mut confirm = confirm;
         let bevel_width = (confirm && transform.kind == Kind::Bevel).then(|| {
             let (width, height) = self.viewport();
             transform.bevel_width(&Input {
@@ -1721,6 +1727,15 @@ impl App {
                 height,
             })
         });
+        // A bevel let go without being dragged has no width. Kept, it would leave points
+        // on top of each other that later bevels cannot work with, so it is dropped, as
+        // Blender does.
+        if bevel_width.is_some_and(|w| w < MIN_BEVEL_WIDTH) {
+            confirm = false;
+            self.state.message = "No bevel: hold left click and drag to bevel.".into();
+        }
+        let bevel_width = bevel_width.filter(|_| confirm);
+        let keep = !confirm && transform.keep_on_cancel && transform.kind != Kind::Bevel;
         if keep && let Some(mesh) = self.editor.active_mesh() {
             for &(id, position) in &transform.originals {
                 let _ = mesh.set_vertex_position(id, position);
@@ -1738,6 +1753,7 @@ impl App {
             // The panel shows the width as its type measures it.
             self.state.bevel.width = width / self.bevel_per_unit.max(1e-9);
             self.last_bevel = Some(self.editor.document().version());
+            self.bevel_removed = false;
         }
         self.request_frames();
     }
@@ -1750,9 +1766,19 @@ impl App {
             return;
         }
         let settings = self.state.bevel;
-        if !self.editor.undo() {
+        // While the width is 0 the bevel is taken away (it would only leave points on
+        // top of each other), so there is nothing to undo first.
+        if !self.bevel_removed && !self.editor.undo() {
             return;
         }
+        if settings.width <= 0.0 {
+            self.bevel_removed = true;
+            self.last_bevel = Some(self.editor.document().version());
+            self.stale = Stale::Everything;
+            self.request_frames();
+            return;
+        }
+        let was_removed = std::mem::take(&mut self.bevel_removed);
         let mut made_width = None;
         let result = self.editor.run("Bevel", |mesh, mode| {
             mesh.bevel_selected(&settings, mode)
@@ -1770,7 +1796,11 @@ impl App {
             }
             Err(error) => {
                 // Puts the previous bevel back.
-                self.editor.redo();
+                if was_removed {
+                    self.bevel_removed = true;
+                } else {
+                    self.editor.redo();
+                }
                 self.last_bevel = Some(self.editor.document().version());
                 self.state.message = format!("Could not bevel: {error}");
             }

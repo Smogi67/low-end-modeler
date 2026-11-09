@@ -93,6 +93,8 @@ pub enum MeshError {
     /// An edge to bevel needs a face on each side, and its ends need simple fans of
     /// faces that wind the same way.
     CannotBevel,
+    /// Points sit on top of each other where a bevel would go.
+    StackedPoints,
     /// A modifier's settings are out of range.
     InvalidModifier,
     /// The modifier no longer exists.
@@ -187,6 +189,10 @@ impl fmt::Display for MeshError {
             Self::CannotBevel => write!(
                 f,
                 "only edges with a face on each side can be beveled, on a surface whose faces all face the same way"
+            ),
+            Self::StackedPoints => write!(
+                f,
+                "points sit on top of each other here. Click Merge close vertices, then bevel again"
             ),
             Self::InvalidModifier => write!(f, "a modifier setting is out of range"),
             Self::StaleModifier => write!(f, "that modifier no longer exists"),

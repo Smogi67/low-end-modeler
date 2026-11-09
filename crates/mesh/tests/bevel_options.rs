@@ -709,3 +709,28 @@ fn bevelling_again_with_every_shape_and_primitive() {
         &failures[..failures.len().min(30)]
     );
 }
+
+/// The owner's file: a bevel kept at width 0 left points on top of each other, and no
+/// later bevel worked. The bevel now says so, and merging close points repairs it.
+#[test]
+fn a_bevel_kept_at_no_width_is_named_and_merging_repairs_it() {
+    let (mut mesh, _, _) = cube();
+    mesh.select_all();
+    app_bevel(&mut mesh, &BevelSettings::default(), 0.0, SelectMode::Edge).unwrap();
+    for mode in [SelectMode::Edge, SelectMode::Face] {
+        let mut again = mesh.clone();
+        again.select_all();
+        let error = app_bevel(&mut again, &BevelSettings::default(), 0.1, mode).unwrap_err();
+        assert!(error.contains("Merge close vertices"), "{error}");
+    }
+    mesh.select_all();
+    mesh.merge_selected_by_distance(0.001, SelectMode::Vertex)
+        .unwrap();
+    assert_eq!(mesh.face_count(), 6);
+    let edges: Vec<_> = mesh.edges().map(|(e, _)| e).collect();
+    for e in edges {
+        let mut copy = mesh.clone();
+        select_edges(&mut copy, &[e]);
+        app_bevel(&mut copy, &BevelSettings::default(), 0.1, SelectMode::Edge).unwrap();
+    }
+}

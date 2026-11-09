@@ -1,7 +1,6 @@
-Mixer 0.16.0
+Mixer 0.16.1
 
-- New: materials. A Materials panel (docked on the right) to make materials with a name, color, Metal and Roughness, and give them to selected faces with Assign
-- Shapes show their materials' colors and shine, in every engine
-- Tools keep materials: extrude, bevel, duplicate, mirror, join and others. The bevel's More options has Material, for a different material on the bevel
-- Materials are saved in projects and exported: OBJ gets a .mtl file beside it; glTF/GLB gets materials and vertex colors
-- Includes 0.15.1: bevelling a bevelled shape works again
+- Fixed: bevelling a shape again failed after a bevel had been confirmed without dragging, which left points on top of each other. A bevel with no width is now dropped, as in Blender
+- Shapes saved with that problem: the bevel now says to click Merge close vertices, which repairs them
+- Fixed: the Properties panel was squeezed very small after a bevel since the Materials panel came; the panels now share the column fairly
+- Includes 0.16.0: materials

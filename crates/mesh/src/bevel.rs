@@ -553,6 +553,24 @@ impl Mesh {
         settings: &BevelSettings,
         mode: SelectMode,
     ) -> Result<Bevel, MeshError> {
+        // Points sitting on top of each other, as a bevel kept at no width leaves,
+        // cannot be bevelled; saying so points to the fix.
+        let stacked = self.edges().any(|(_, e)| {
+            let [a, b] = e.vertices;
+            (self.vertices[a].selected || self.vertices[b].selected)
+                && length(sub(self.vertices[a].position, self.vertices[b].position)) < 1e-6
+        });
+        match self.bevel_selected_as_is(settings, mode) {
+            Err(MeshError::CannotBevel) if stacked => Err(MeshError::StackedPoints),
+            other => other,
+        }
+    }
+
+    fn bevel_selected_as_is(
+        &mut self,
+        settings: &BevelSettings,
+        mode: SelectMode,
+    ) -> Result<Bevel, MeshError> {
         let BevelSettings {
             width: value,
             segments,

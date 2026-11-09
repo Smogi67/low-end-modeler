@@ -575,8 +575,6 @@ pub const PANELS: usize = 3;
 pub const PANEL_NAMES: [&str; PANELS] = ["Add Shapes", "Properties", "Materials"];
 /// Top to bottom when docked.
 const DOCK_ORDER: [usize; PANELS] = [0, 2, 1];
-/// The most of the column a panel fits itself to, before it scrolls.
-const FIT_SHARE: [f32; PANELS] = [0.6, 0.55, 0.3];
 const NARROWEST_DOCK: f32 = 240.0;
 const WIDEST_DOCK: f32 = 640.0;
 /// How far a title must be dragged before its panel comes out of the column.
@@ -2420,6 +2418,57 @@ fn search_window(
     }
 }
 
+/// How tall each docked panel is when it fits its contents. When they do not all fit,
+/// the tallest give way first, down to the same height, so that a short panel stays
+/// whole and the bevel options in Properties still get their share beside a long
+/// Add Shapes panel. Panels whose edge was dragged keep their height.
+fn fit_heights(
+    docked: &[usize],
+    contents: &[f32; PANELS],
+    dragged: &[Option<f32>; PANELS],
+    room: f32,
+) -> [f32; PANELS] {
+    let mut heights = [0.0f32; PANELS];
+    let gaps = MARGIN * docked.len().saturating_sub(1) as f32;
+    let mut left = room - gaps;
+    let mut free: Vec<usize> = Vec::new();
+    for (k, &panel) in docked.iter().enumerate() {
+        match dragged[panel] {
+            // The lowest panel always takes what is left, dragged or not.
+            Some(h) if k + 1 < docked.len() => {
+                heights[panel] = h;
+                left -= h;
+            }
+            _ => free.push(panel),
+        }
+    }
+    let want = |p: usize| contents[p].max(80.0);
+    let total: f32 = free.iter().map(|&p| want(p)).sum();
+    if total <= left {
+        for &p in &free {
+            heights[p] = want(p);
+        }
+        return heights;
+    }
+    // The cap c where the panels, each the smaller of its contents and c, fill the room.
+    let mut sizes: Vec<f32> = free.iter().map(|&p| want(p)).collect();
+    sizes.sort_by(f32::total_cmp);
+    let mut cap = (left / free.len().max(1) as f32).max(80.0);
+    let mut used = 0.0;
+    for (i, &size) in sizes.iter().enumerate() {
+        let rest = (sizes.len() - i) as f32;
+        if used + size * rest >= left {
+            cap = ((left - used) / rest).max(80.0);
+            break;
+        }
+        used += size;
+    }
+    for &p in &free {
+        heights[p] = want(p).min(cap);
+    }
+    heights
+}
+
 /// Lays out and draws the two side panels, and lets them be dragged out, resized, and
 /// docked again.
 #[allow(clippy::too_many_arguments)]
@@ -2440,8 +2489,8 @@ fn side_panels(
     let column_x = display[0] - dock.width - MARGIN;
     let top = TOP_BAR + MARGIN;
     let room = (display[1] - TOP_BAR - STATUS_BAR - MARGIN * 2.0).max(80.0);
-    // Docked panels stack in DOCK_ORDER. Each fits its contents (up to a share of the
-    // column) unless its lower edge was dragged; the lowest takes what is left.
+    // Docked panels stack in DOCK_ORDER. Each fits its contents unless its lower edge
+    // was dragged; the lowest takes what is left.
     let contents = [
         state.panel_content,
         state.props_content,
@@ -2451,6 +2500,7 @@ fn side_panels(
         .into_iter()
         .filter(|&p| dock.places[p] == Place::Docked)
         .collect();
+    let fitted = fit_heights(&docked, &contents, &dock.heights, room);
     let mut docked_rects = [[0.0f32; 4]; PANELS];
     let mut y = top;
     let bottom = top + room;
@@ -2461,10 +2511,9 @@ fn side_panels(
         } else if below == 0 {
             bottom - y
         } else {
-            let fitted = contents[panel].min(room * FIT_SHARE[panel]);
             let most = (bottom - y - below as f32 * (80.0 + MARGIN)).max(80.0);
             dock.heights[panel]
-                .unwrap_or(fitted)
+                .unwrap_or(fitted[panel])
                 .clamp(80.0_f32.min(most), most)
         };
         docked_rects[panel] = [column_x, y, dock.width, h.max(60.0)];
@@ -3574,6 +3623,25 @@ pub fn draw_region(ui: &Ui, region: &Region) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crowded_panels_share_the_column_and_short_ones_stay_whole() {
+        let all = [0, 2, 1];
+        let none = [None; PANELS];
+        // Add Shapes 900 tall, Materials 180, Properties with bevel options 500, in 700.
+        let h = fit_heights(&all, &[900.0, 500.0, 180.0], &none, 700.0);
+        assert_eq!(h[2], 180.0);
+        assert!((h[0] - h[1]).abs() < 0.5 && h[1] > 230.0, "{h:?}");
+        assert!((h.iter().sum::<f32>() + 2.0 * MARGIN - 700.0).abs() < 0.5);
+        // Room for everything: each fits.
+        let h = fit_heights(&all, &[300.0, 120.0, 180.0], &none, 900.0);
+        assert_eq!(h, [300.0, 120.0, 180.0]);
+        // A dragged panel keeps its height.
+        let mut dragged = none;
+        dragged[0] = Some(200.0);
+        let h = fit_heights(&all, &[900.0, 500.0, 180.0], &dragged, 700.0);
+        assert_eq!(h[0], 200.0);
+    }
     use mixer_mesh::Mesh;
 
     #[test]
