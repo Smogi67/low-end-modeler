@@ -246,16 +246,20 @@ impl Transform {
         self.apply(start, input)
     }
 
-    /// The bevel width: how far the mouse has moved from where it started, in model
-    /// units at the selection's distance, up to the widest allowed.
+    /// The bevel width, as Blender works it out: how much farther the mouse is from the
+    /// selection's center than where the drag started, in model units at the
+    /// selection's distance, up to the widest allowed. Moving back toward the center
+    /// narrows it, which the dashed line from the center shows.
     pub fn bevel_width(&self, input: &Input) -> f32 {
         if self.waiting {
             return 0.0;
         }
-        let dx = input.mouse[0] - self.start_mouse[0];
-        let dy = input.mouse[1] - self.start_mouse[1];
+        let center = self.pivot_on_screen(input);
+        let distance =
+            |p: [f32; 2]| ((p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2)).sqrt();
+        let pixels = (distance(input.mouse) - distance(self.start_mouse)).max(0.0);
         let per_pixel = input.camera.world_per_pixel_at(self.pivot, input.height);
-        let mut width = (dx * dx + dy * dy).sqrt() * per_pixel;
+        let mut width = pixels * per_pixel;
         if input.snap {
             width = snapped(width, SNAP_SCALE);
         }
@@ -327,7 +331,8 @@ impl Transform {
         offset
     }
 
-    fn pivot_on_screen(&self, input: &Input) -> [f32; 2] {
+    /// Where the selection's center is in the view, in pixels.
+    pub fn pivot_on_screen(&self, input: &Input) -> [f32; 2] {
         self.screen_point(self.pivot, input)
     }
 
@@ -777,6 +782,16 @@ mod tests {
         with_snap.snap = true;
         assert!((t.bevel_width(&with_snap) - 0.2).abs() < 1e-5);
         assert_eq!(Kind::Bevel.name(), "Bevel");
+        // As in Blender, it is the distance from the center that counts: starting
+        // 100 pixels out, going farther widens, going back toward the center narrows.
+        let from_side = Transform {
+            start_mouse: [500.0, 300.0],
+            ..t.clone()
+        };
+        let width_at = |x: f32, y: f32| from_side.bevel_width(&input(camera, [x, y]));
+        assert!((width_at(500.0 + pixels, 300.0) - 0.2).abs() < 1e-4);
+        assert!((width_at(400.0, 400.0 + pixels) - 0.2).abs() < 1e-4);
+        assert_eq!(width_at(450.0, 300.0), 0.0);
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use mixer_mesh::{EdgeId, FaceId, Mesh, SelectMode, ShadingNormals, VertexId};
 
 use crate::palette;
-use crate::picking::face_dot;
 
 /// Position, normal, selected (0 or 1), the material's color, metal and roughness, for
 /// each corner of each triangle.
@@ -43,15 +42,18 @@ pub struct Scene {
     face_spans: HashMap<FaceId, Range>,
     edge_offsets: HashMap<EdgeId, usize>,
     vertex_points: HashMap<VertexId, usize>,
-    face_points: HashMap<FaceId, usize>,
 }
 
-fn color(selected: bool) -> [f32; 3] {
-    if selected {
-        palette::rgb(palette::EDGE_SELECTED)
-    } else {
-        palette::rgb(palette::EDGE)
+/// Blender's colors: selected edges are orange, but yellow in Edge mode, where edges are
+/// what is being picked; selected points are a deeper orange.
+fn color(selected: bool, mode: SelectMode) -> [f32; 3] {
+    if !selected {
+        return palette::rgb(palette::EDGE);
     }
+    palette::rgb(match mode {
+        SelectMode::Edge => palette::EDGE_MODE_SELECTED,
+        _ => palette::EDGE_SELECTED,
+    })
 }
 
 fn write_face(mesh: &Mesh, normals: &ShadingNormals, face: FaceId, out: &mut [f32]) {
@@ -81,14 +83,14 @@ fn write_face(mesh: &Mesh, normals: &ShadingNormals, face: FaceId, out: &mut [f3
     }
 }
 
-fn write_edge(mesh: &Mesh, edge: EdgeId, out: &mut [f32]) {
+fn write_edge(mesh: &Mesh, edge: EdgeId, mode: SelectMode, out: &mut [f32]) {
     let Some(data) = mesh.edge(edge) else {
         return;
     };
     let tint = if data.is_sharp() && !data.is_selected() {
         palette::rgb(palette::EDGE_SHARP)
     } else {
-        color(data.is_selected())
+        color(data.is_selected(), mode)
     };
     for (chunk, vertex) in out
         .chunks_exact_mut(FLOATS_PER_LINE_VERTEX)
@@ -160,6 +162,7 @@ impl Scene {
             write_edge(
                 mesh,
                 edge,
+                mode,
                 &mut self.edges[at..at + 2 * FLOATS_PER_LINE_VERTEX],
             );
             self.edge_offsets.insert(edge, at);
@@ -170,17 +173,15 @@ impl Scene {
                 for (vertex, data) in mesh.vertices() {
                     self.vertex_points.insert(vertex, self.points.len());
                     self.points.extend_from_slice(&data.position());
-                    self.points.extend_from_slice(&color(data.is_selected()));
+                    self.points.extend_from_slice(&if data.is_selected() {
+                        palette::rgb(palette::VERTEX_SELECTED)
+                    } else {
+                        palette::rgb(palette::EDGE)
+                    });
                 }
             }
-            SelectMode::Edge => {}
-            SelectMode::Face => {
-                for (face, data) in mesh.faces() {
-                    self.face_points.insert(face, self.points.len());
-                    self.points.extend_from_slice(&face_dot(mesh, face));
-                    self.points.extend_from_slice(&color(data.is_selected()));
-                }
-            }
+            // As in Blender, faces show no center dots (Blender has them only in X-ray).
+            SelectMode::Edge | SelectMode::Face => {}
         }
     }
 
@@ -233,31 +234,21 @@ impl Scene {
         for edge in &parts.edges {
             if let Some(&at) = self.edge_offsets.get(edge) {
                 let span = at..at + 2 * FLOATS_PER_LINE_VERTEX;
-                write_edge(mesh, *edge, &mut self.edges[span.clone()]);
+                let mode = self.mode.unwrap_or(SelectMode::Vertex);
+                write_edge(mesh, *edge, mode, &mut self.edges[span.clone()]);
                 edges.push(span);
             }
         }
         let mut points = Vec::new();
-        match self.mode {
-            Some(SelectMode::Vertex) => {
-                for vertex in &parts.vertices {
-                    if let (Some(&at), Some(data)) =
-                        (self.vertex_points.get(vertex), mesh.vertex(*vertex))
-                    {
-                        self.points[at..at + 3].copy_from_slice(&data.position());
-                        points.push(at..at + 3);
-                    }
+        if self.mode == Some(SelectMode::Vertex) {
+            for vertex in &parts.vertices {
+                if let (Some(&at), Some(data)) =
+                    (self.vertex_points.get(vertex), mesh.vertex(*vertex))
+                {
+                    self.points[at..at + 3].copy_from_slice(&data.position());
+                    points.push(at..at + 3);
                 }
             }
-            Some(SelectMode::Face) => {
-                for face in &parts.faces {
-                    if let Some(&at) = self.face_points.get(face) {
-                        self.points[at..at + 3].copy_from_slice(&face_dot(mesh, *face));
-                        points.push(at..at + 3);
-                    }
-                }
-            }
-            _ => {}
         }
         Changed {
             triangles: merged(triangles),
@@ -306,10 +297,8 @@ mod tests {
             built(&mesh, SelectMode::Vertex).points.len(),
             8 * FLOATS_PER_LINE_VERTEX
         );
-        assert_eq!(
-            built(&mesh, SelectMode::Face).points.len(),
-            6 * FLOATS_PER_LINE_VERTEX
-        );
+        // No face dots, as in Blender outside X-ray.
+        assert!(built(&mesh, SelectMode::Face).points.is_empty());
     }
 
     #[test]
@@ -353,7 +342,14 @@ mod tests {
             scene
                 .points
                 .chunks_exact(FLOATS_PER_LINE_VERTEX)
-                .all(|v| v[3..] == palette::rgb(palette::EDGE_SELECTED))
+                .all(|v| v[3..] == palette::rgb(palette::VERTEX_SELECTED))
+        );
+        // In Edge mode, selected edges are yellow, as in Blender.
+        assert!(
+            built(&mesh, SelectMode::Edge)
+                .edges
+                .chunks_exact(FLOATS_PER_LINE_VERTEX)
+                .all(|v| v[3..] == palette::rgb(palette::EDGE_MODE_SELECTED))
         );
     }
 

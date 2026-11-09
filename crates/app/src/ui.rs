@@ -3657,6 +3657,55 @@ pub fn draw_knife(ui: &Ui, path: &[[f32; 2]], cuts: &[[f32; 2]]) {
     }
 }
 
+/// Blender's dashed line from the selection's center to the mouse, during a bevel,
+/// rotation or scale. While a bevel drag holds the real cursor still, a crosshair
+/// stands in for it where the mouse would be.
+pub fn draw_guide(ui: &Ui, center: [f32; 2], pointer: [f32; 2], crosshair: bool) {
+    let at = pixels_to_ui(ui);
+    let list = ui.get_foreground_draw_list();
+    let (a, b) = (at(center), at(pointer));
+    let length = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+    let dash = 5.0;
+    if length > 1.0 {
+        let step = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+        let point = |d: f32| [a[0] + step[0] * d, a[1] + step[1] * d];
+        // Light under dark, so the line shows on both light faces and the dark grid.
+        list.add_line(a, b, [1.0, 1.0, 1.0, 0.35])
+            .thickness(1.0)
+            .build();
+        let mut d = 0.0;
+        while d < length {
+            list.add_line(
+                point(d),
+                point((d + dash).min(length)),
+                [0.0, 0.0, 0.0, 0.85],
+            )
+            .thickness(1.5)
+            .build();
+            d += dash * 2.0;
+        }
+    }
+    if crosshair {
+        let (arm, gap) = (9.0, 3.0);
+        for (dark, width) in [(true, 3.5), (false, 1.5)] {
+            let tint = if dark {
+                [0.0, 0.0, 0.0, 0.8]
+            } else {
+                [1.0, 1.0, 1.0, 1.0]
+            };
+            for [dx, dy] in [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]] {
+                list.add_line(
+                    [b[0] + dx * gap, b[1] + dy * gap],
+                    [b[0] + dx * arm, b[1] + dy * arm],
+                    tint,
+                )
+                .thickness(width)
+                .build();
+            }
+        }
+    }
+}
+
 /// Lines on top of the 3D view, such as where a loop cut will go.
 pub fn draw_lines(ui: &Ui, lines: &[[[f32; 2]; 2]]) {
     let at = pixels_to_ui(ui);

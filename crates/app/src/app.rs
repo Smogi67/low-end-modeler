@@ -37,7 +37,7 @@ use crate::theme::{self, Fonts};
 use crate::transform::{Input, Kind, Transform};
 use crate::ui::{
     Action, DragTool, ModeChoice, ModifierKind, PanelInfo, PanelState, PathPurpose, Shape,
-    ViewState, build as build_ui, draw_gizmo, draw_knife, draw_lines, draw_region,
+    ViewState, build as build_ui, draw_gizmo, draw_guide, draw_knife, draw_lines, draw_region,
 };
 
 const VIEW_STEP_DEGREES: f32 = 15.0;
@@ -485,6 +485,28 @@ impl App {
             },
         };
         let gizmo_parts = self.gizmo_parts();
+        // Blender's dashed line from the selection's center to the mouse, while a bevel,
+        // a rotation or a scale follows the mouse (not while a handle is dragged).
+        let guide = match &self.mouse_state {
+            Mouse::Transforming { transform, .. }
+                if !transform.waiting
+                    && (transform.kind == Kind::Bevel
+                        || (matches!(transform.kind, Kind::Rotate | Kind::Scale)
+                            && !transform.release_confirms)) =>
+            {
+                let (width, height) = self.viewport();
+                let center = transform.pivot_on_screen(&Input {
+                    mouse: self.pointer,
+                    snap: false,
+                    steps: self.settings.snap,
+                    camera: self.camera,
+                    width,
+                    height,
+                });
+                Some((center, self.pointer, self.held_cursor.is_some()))
+            }
+            _ => None,
+        };
         let ui = self.imgui.new_frame();
         let mut start_action = None;
         let mut settings_action = None;
@@ -528,6 +550,9 @@ impl App {
                 }
             }
             _ => {}
+        }
+        if let Some((center, pointer, held)) = guide {
+            draw_guide(ui, center, pointer, held);
         }
         self.ui_rects = output.rects;
         let draw_data = self.imgui.render();

@@ -1,4 +1,6 @@
-Mixer 0.17.0
+Mixer 0.18.0
 
-- New: snapping steps. Click the magnet button in the top bar to set how far Move, Rotate and Scale go per step while Ctrl is held (for example 0.25 units or 5°). They are remembered
-- Includes 0.16.1: bevels with no width are dropped, and the Properties panel has room again
+- Selection looks like Blender's: orange edges, yellow edges in Edge mode, and a light orange tint on selected faces. Faces no longer show dots in their centers
+- A dashed line from the selection's center to the mouse while bevelling, rotating or scaling, as in Blender
+- The bevel width now follows the distance from the center, as in Blender: move away to widen, back toward the center to narrow
+- Includes 0.17.0: snapping steps (magnet button in the top bar)

@@ -61,7 +61,9 @@ pub const EDGE: usize = 26;
 pub const EDGE_SELECTED: usize = 27;
 pub const EDGE_SHARP: usize = 28;
 pub const EDGE_PLAIN: usize = 29;
-pub const COUNT: usize = 30;
+pub const EDGE_MODE_SELECTED: usize = 30;
+pub const VERTEX_SELECTED: usize = 31;
+pub const COUNT: usize = 32;
 
 /// The default theme: Mixer's dark look.
 pub const ENTRIES: [Entry; COUNT] = [
@@ -144,14 +146,14 @@ pub const ENTRIES: [Entry; COUNT] = [
         "faceselected",
         "Selected faces (strength in opacity)",
         SHAPES,
-        [1.0, 0.64, 0.30, 0.40],
+        [1.0, 0.68, 0.05, 0.25],
     ),
     e("edge", "Edges", SHAPES, [0.11, 0.115, 0.13, 1.0]),
     e(
         "edgeselected",
-        "Selected edges and points",
+        "Selected edges",
         SHAPES,
-        [1.0, 0.62, 0.18, 1.0],
+        [1.0, 0.60, 0.0, 1.0],
     ),
     e("edgesharp", "Sharp edges", SHAPES, [0.15, 0.72, 0.95, 1.0]),
     e(
@@ -159,6 +161,18 @@ pub const ENTRIES: [Entry; COUNT] = [
         "Edge lines in View mode",
         SHAPES,
         [0.30, 0.31, 0.34, 1.0],
+    ),
+    e(
+        "edgemodeselected",
+        "Selected edges in Edge mode",
+        SHAPES,
+        [1.0, 0.847, 0.0, 1.0],
+    ),
+    e(
+        "vertexselected",
+        "Selected points",
+        SHAPES,
+        [1.0, 0.478, 0.0, 1.0],
     ),
 ];
 
