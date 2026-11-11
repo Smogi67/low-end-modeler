@@ -74,6 +74,7 @@
 
 mod bevel;
 mod boolean;
+mod corner;
 mod cut;
 mod error;
 mod gltf;

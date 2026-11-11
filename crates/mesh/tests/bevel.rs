@@ -79,14 +79,28 @@ fn hole_count(mesh: &Mesh) -> usize {
 
 /// True if no vertex lies outside any face's plane, for a shape that should be convex.
 fn is_convex(mesh: &Mesh) -> bool {
+    bulges_at_most(mesh, 1e-4)
+}
+
+/// True if no vertex lies more than `slack` outside any face's plane, taken through
+/// the middle of the face. A four-sided face on a round corner is not flat, so its own
+/// corners sit a little to either side of its plane.
+fn bulges_at_most(mesh: &Mesh, slack: f32) -> bool {
     mesh.faces().all(|(face, _)| {
         let Some(normal) = mesh.face_normal(face).unwrap() else {
             return false;
         };
-        let on = position(mesh, mesh.face_vertices(face).unwrap().next().unwrap());
+        let corners: Vec<[f32; 3]> = mesh
+            .face_vertices(face)
+            .unwrap()
+            .map(|v| position(mesh, v))
+            .collect();
+        let on: [f32; 3] = std::array::from_fn(|i| {
+            corners.iter().map(|p| p[i]).sum::<f32>() / corners.len() as f32
+        });
         mesh.vertices().all(|(_, v)| {
             let p = v.position();
-            (0..3).map(|i| (p[i] - on[i]) * normal[i]).sum::<f32>() < 1e-4
+            (0..3).map(|i| (p[i] - on[i]) * normal[i]).sum::<f32>() < slack
         })
     })
 }
@@ -218,7 +232,25 @@ fn all_cube_edges_round_make_a_closed_rounded_cube() {
             .unwrap();
         mesh.validate().unwrap();
         assert!(is_closed_and_consistent(&mesh), "segments {segments}");
-        assert!(is_convex(&mesh), "a rounded cube must be convex");
+        // Convex but for its corners' four-sided faces not being flat.
+        assert!(
+            bulges_at_most(&mesh, 0.03 * 0.25),
+            "a rounded cube must be convex"
+        );
+        // Each corner is a grid of four-sided faces, as in Blender: with 2 segments,
+        // 3 around a middle point; with 3, a triangle with 6 around it.
+        let (quads, triangles) =
+            mesh.faces()
+                .fold((0, 0), |(q, t), (_, f)| match f.corner_count() {
+                    4 => (q + 1, t),
+                    3 => (q, t + 1),
+                    _ => (q, t),
+                });
+        if segments == 2 {
+            assert_eq!((quads, triangles), (6 + 12 * 2 + 8 * 3, 0));
+        } else {
+            assert_eq!((quads, triangles), (6 + 12 * 3 + 8 * 6, 8));
+        }
         let v = volume(&mesh);
         assert!(v < 1.0 && v > 1.0 - 12.0 * 0.25 * 0.25 / 2.0, "{v}");
         assert!(!result.moving.is_empty());
@@ -716,10 +748,11 @@ fn vertex_bevel_at_a_border_cuts_the_corner_off() {
         copy.validate().unwrap();
         assert!(winding_agrees(&copy));
         assert_eq!(hole_count(&copy), holes);
-        // The middle vertex gets a corner face; the border corner does not.
+        // The middle vertex gets a corner face; the border corner does not. With 3
+        // segments that corner is a four-sided middle face with 8 faces around it.
         assert_eq!(
             copy.face_count(),
-            faces + if segments == 1 { 1 } else { 4 * 3 }
+            faces + if segments == 1 { 1 } else { 4 * 2 + 1 }
         );
     }
 }
@@ -793,4 +826,143 @@ fn random_vertex_bevels_stay_valid_and_undo_exactly() {
         assert_eq!(*doc.mesh(), start, "seed {seed}");
     }
     assert!(worked >= 30, "only {worked} worked");
+}
+
+/// Where a rounded edge is crossed by other beveled edges, it runs straight through,
+/// as Blender's "pipe": the crossing's faces lie on the edge's own round.
+#[test]
+fn a_round_edge_runs_straight_through_a_crossing() {
+    // A box twice as tall as wide, with a loop of flat edges round its middle.
+    let (mut mesh, _, faces) = cube();
+    mesh.select_elements(
+        SelectMode::Face,
+        &[Element::Face(faces[1])],
+        SelectOp::Replace,
+    )
+    .unwrap();
+    mesh.extrude_selected_faces(SelectMode::Face).unwrap();
+    let top: Vec<VertexId> = mesh
+        .vertices()
+        .filter(|(_, v)| v.is_selected())
+        .map(|(id, _)| id)
+        .collect();
+    for v in top {
+        let p = position(&mesh, v);
+        mesh.set_vertex_position(v, [p[0], p[1], p[2] + 1.0])
+            .unwrap();
+    }
+    let w = 0.15f32;
+    for segments in [2, 3, 4, 5] {
+        let mut copy = mesh.clone();
+        copy.select_all();
+        bevel(&mut copy, w, segments);
+        assert!(is_closed_and_consistent(&copy), "{segments}");
+        // Away from the two ends, every point near an upright edge is on that edge's
+        // round: `w` from the line `w` inside both of its faces.
+        let mut checked = 0;
+        for (_, v) in copy.vertices() {
+            let p = v.position();
+            if !(0.3..=1.7).contains(&p[2]) {
+                continue;
+            }
+            let near = |c: f32| c < w - 1e-4 || c > 1.0 - w + 1e-4;
+            if !(near(p[0]) && near(p[1])) {
+                continue;
+            }
+            let axis = |c: f32| if c < 0.5 { w } else { 1.0 - w };
+            let from = ((p[0] - axis(p[0])).powi(2) + (p[1] - axis(p[1])).powi(2)).sqrt();
+            assert!(
+                (from - w).abs() < 1e-4,
+                "{segments}: {p:?} is {from} from the axis"
+            );
+            checked += 1;
+        }
+        // Each of the four crossings has points of its own inside.
+        assert!(
+            checked >= 4 * (segments - 1) * (segments - 1),
+            "{segments}: {checked}"
+        );
+    }
+}
+
+/// Where one beveled edge ends among other edges, the vertex stays, and the band ends
+/// in triangles from it, one per segment, as in Blender.
+#[test]
+fn a_single_edge_among_others_ends_in_a_fan_from_the_vertex() {
+    let mut mesh = Mesh::new();
+    mesh.add_primitive(
+        Primitive::Icosphere {
+            radius: 1.0,
+            subdivisions: 1,
+        },
+        [0.0; 3],
+    )
+    .unwrap();
+    let (first, data) = mesh.edges().next().unwrap();
+    let ends = data.vertices();
+    let around: Vec<usize> = ends
+        .iter()
+        .map(|&v| mesh.vertex_faces(v).unwrap().count())
+        .collect();
+    let places: Vec<[f32; 3]> = ends.iter().map(|&v| position(&mesh, v)).collect();
+    for segments in [2, 3, 5] {
+        let mut copy = mesh.clone();
+        select_edges(&mut copy, &[first]);
+        bevel(&mut copy, 0.05, segments);
+        assert!(is_closed_and_consistent(&copy));
+        for (k, &v) in ends.iter().enumerate() {
+            assert_eq!(position(&copy, v), places[k]);
+            // The two faces beside the edge let go of the vertex; the fan takes hold.
+            let faces: Vec<_> = copy.vertex_faces(v).unwrap().collect();
+            assert_eq!(faces.len(), around[k] - 2 + segments, "{segments}");
+        }
+    }
+}
+
+/// A corner's flat side is cut into segments like its round ones, and the face beside
+/// it takes the new points, so the corner is four-sided faces only.
+#[test]
+fn a_turn_in_a_flat_grid_gets_a_flat_grid_corner() {
+    let (mesh, v) = grid(2, 2);
+    let at = |x: usize, y: usize| v[y * 3 + x];
+    let turn = [
+        edge(&mesh, at(1, 0), at(1, 1)),
+        edge(&mesh, at(1, 1), at(2, 1)),
+    ];
+    for segments in [2, 3, 4] {
+        let mut copy = mesh.clone();
+        select_edges(&mut copy, &turn);
+        bevel(&mut copy, 0.2, segments);
+        copy.validate().unwrap();
+        assert!(winding_agrees(&copy));
+        assert_eq!(hole_count(&copy), 1);
+        assert!(copy.vertices().all(|(_, v)| v.position()[2].abs() < 1e-6));
+        // Two bands, and the corner between three points: a grid as in `corner.rs`.
+        let h = segments / 2;
+        let corner = if segments % 2 == 0 {
+            3 * h * h
+        } else {
+            3 * h * (h + 1) + 1
+        };
+        assert_eq!(copy.face_count(), 4 + 2 * segments + corner, "{segments}");
+        // Nothing overlaps: the faces' areas add up to the grid's.
+        let area: f32 = copy
+            .faces()
+            .map(|(f, _)| {
+                let p: Vec<[f32; 3]> = copy
+                    .face_vertices(f)
+                    .unwrap()
+                    .map(|v| position(&copy, v))
+                    .collect();
+                (0..p.len())
+                    .map(|k| {
+                        let (a, b) = (p[k], p[(k + 1) % p.len()]);
+                        (a[0] * b[1] - b[0] * a[1]) / 2.0
+                    })
+                    .sum::<f32>()
+            })
+            .map(f32::abs)
+            .sum();
+        assert!((area - 4.0).abs() < 1e-4, "{segments}: {area}");
+    }
 }

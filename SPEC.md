@@ -156,7 +156,7 @@ The mesh code is in `crates/mesh/src/bevel.rs`, whose top comment explains the m
 
 - **Edge bevel only.** Selected edges are beveled; in face mode that means every edge of the selected faces, as in Blender. Vertex-only bevel and Blender's profile shape slider were added later at the owner's request, with a Bevel panel; see the progress log.
 - **Using it (Ctrl + B or the tool button):** move the mouse away from where the bevel started to widen it, scroll or press + and - for 1 to 16 segments, Ctrl snaps the width to tenths, click to confirm, and Esc or right-click to cancel. The number of segments is remembered.
-- **Shape:** more than one segment gives a round profile: an exact quarter circle on a right-angled edge. Where three beveled edges meet, as at a cube corner, the corner becomes a triangle of a sphere divided into small triangles, so a fully rounded cube stays convex. Other corners with three or more points get a flat face (one segment) or a fan of triangles around a raised center.
+- **Shape:** more than one segment gives a round profile: an exact quarter circle on a right-angled edge. Corners with three or more points get a flat face (one segment) or a grid of four-sided faces as in Blender (see "Bevel corners as in Blender" below; until 2026-11-11 they were triangles).
 - **Width limit:** the width stops before any new point passes the middle of an edge it moves along, so the shape cannot fold over itself. This replaces Blender's "clamp overlap" option.
 - **Refused:** edges without a face on each side (borders and loose edges), and vertices whose faces do not form one simple fan facing the same way. The message says why.
 - **Drag speed:** every new point is its original vertex plus the width times a fixed direction, so dragging only moves points. Changing segments rebuilds the bevel.
@@ -236,7 +236,31 @@ Step 4 is done (version 0.13.0); see its decisions below.
 
 - Asked again, the owner chose Blender's exact way over the hold-and-drag from 2026-11-08: after Ctrl+B (or the Bevel button) the bevel follows the mouse at once, with the dashed line from the center; left click or Enter confirms, right click or Esc cancels. This replaces "Bevel by dragging" and the held cursor below. The cursor stays visible; it is not wrapped at the window's edge as Blender does.
 - A click before the mouse has moved makes no bevel.
-- **Next, chosen by the owner:** corners where three or more bevelled edges meet built from four-sided faces in a grid, as Blender does, instead of small triangles. Not started; Aufwand Extra hoch.
+
+### Bevel corners as in Blender (owner's choice, 2026-11-10; built 2026-11-11)
+
+- **Corners are grids of four-sided faces**, laid out as Blender lays them out: one small grid per corner point. An even number of segments meets in one middle point; an odd number leaves one middle face (a triangle on a cube's corner) with a strip of faces between the grids. This goes for corners where edges meet, for the patches of Patch and Arc miters, and for the caps of vertex bevels.
+- **No code from Blender.** Blender's bevel is under the GPL and Mixer has no license chosen, so nothing was copied or translated: the layout is Blender's, the way the points are placed is Mixer's own (`crates/mesh/src/corner.rs`). Each corner is split into one four-cornered sector per corner point and each sector blended from its edges; the lines from the sides' middles to the corner's center curve the way the profile does; round profiles are worked out as distances from a center of curvature. Checked by tests: a round cube corner lies exactly on its sphere, straight and sharp profiles stay exactly flat, and shapes in between stay within 3 % of the width of their true surface.
+- **Shape means what it means in Blender:** the profile crosses the diagonal of its corner at the square root of the Shape value. 0.5 is a quarter circle and 0.25 a straight line, as before; values in between and beyond now give Blender's curves (before, they were a little flatter).
+- **Segments are all the same length** along the profile, as in Blender (before, sharp and hollow shapes had uneven ones).
+- **A straight run through a crossing stays straight** (Blender's "pipe"): where two beveled edges lie in one line, as where a rounded edge is crossed by a loop of flat edges, the crossing's points lie on the rounded edge's own surface.
+- **A flat side of a corner is cut into segments too**, and the face beside it takes the new points, as in Blender.
+- **Where one beveled edge ends among other edges**, the vertex stays and the band ends in a fan of triangles from it, one per segment. Blender moves a third point along the edge opposite instead; Mixer keeps the vertex where it is.
+- **Fixed on the way:** with a Patch or Arc miter where the whole outer side is one face, that face skipped the patch's corner point, leaving a slit. It now runs along the patch or the arc.
+- **Still different from Blender:** where two or more unbeveled edges lie between two beveled ones, Blender joins them all to one new point; Mixer puts a point on each of the two outermost, which gives one more small corner face. The Cutoff corner type is unchanged.
+
+### More from Blender: what the owner chose (2026-11-10)
+
+Asked which of Blender's missing features to add, the owner chose, in this order after the corners:
+
+1. **Cleanup tools:** Dissolve, Triangulate, Triangles to Quads, Poke, Connect points (J), Flip and Recalculate normals, Split, Rip (V).
+2. **Shape tools:** Solidify, Spin, Shrink/Fatten (Alt+S), To Sphere, Shear, Grid Fill, Extrude along normals, Extrude individual faces.
+3. **Exact numbers:** typing values while moving, rotating and scaling (G X 2 Enter), Shift for fine control, the last tool's numbers in Properties.
+4. **Bevel extras:** Blender's keys while bevelling (S, P, M, C), a Bevel modifier, Harden Normals.
+5. **View and picking** (the owner said "you decide"): see-through view (X-ray) and Hide/Show first, then shortest-path picking, then soft move (proportional editing).
+6. **Later, bigger:** more modifiers (Subdivision Surface, Solidify, Decimate, Triangulate, Weld), then UVs and textures.
+
+Not chosen: real objects with an Outliner, more file formats.
 
 ### Blender's selection colors and bevel guide line (owner's request, 2026-11-09)
 
@@ -470,6 +494,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 | 2026-11-09 | 10 | Version 0.17.0, at the owner's requests: snapping steps (magnet popup in the top bar, saved in settings), and a faster online build (no screenshots, kept libraries, lightly optimized tests). 2 new tests: the chosen steps used for move, rotate and scale with odd steps brought into range, and the steps read back from settings. Run on Linux with simulated input: the popup, typing 45°, the setting saved, a Ctrl-held rotation, the popup closing with Esc | Not yet |
 | 2026-11-09 | 10 | Version 0.18.0, at the owner's request from a Blender screenshot: Blender 4's selection colors (mode-aware edges, points, face tint, no face dots), the dashed guide line with a crosshair during bevel, rotate and scale, and the bevel width measured from the center. New and changed tests: edge colors by mode, point colors, no face dots, the bevel width growing and shrinking with distance from the center. Run on Linux with simulated input: a selected face in Face, Edge and Vertex mode, a rotation and a bevel with the line | Not yet |
 | 2026-11-09 | 10 | Version 0.18.1, the owner's choice: the bevel follows the mouse straight after Ctrl+B and a click confirms, as in Blender; the held cursor is gone. Run on Linux with simulated input: Ctrl+B and moving without a button widened the bevel with the dashed line, a click confirmed it, and a click without moving left the shape alone | Not yet |
+| 2026-11-11 | 10 | Version 0.19.0, the owner's choice: bevel corners as grids of four-sided faces as in Blender, for edge corners, miter patches and vertex bevel caps; Blender's meaning of Shape and even segment lengths; straight runs through crossings; fans where one edge ends. Written without Blender's code. 10 new tests: the grid's layout, winding and holes for 2 to 9 segments, a round cube corner on its sphere, flat outlines staying flat, other shapes close to their true surface, even profile spacing, a crossing on its edge's cylinder (two tests), the fan at an edge's end, a flat grid corner with matching areas; the rounded cube test now counts the four-sided faces. Run on Linux with simulated input: all cube edges beveled with the mouse and the wheel in the app, and pictures of cubes with 2 to 8 segments, five shapes, vertex bevels, miters, a cylinder, a cone and a crossing | Not yet |
 
 ## 12. Open questions
 
@@ -484,6 +509,7 @@ Small changes, such as a button or a label, only need Mittel. Keep Maximal for b
 - [x] The mesh crate compiles and its tests pass on Windows (GitHub Actions)
 - [x] Approve the picture of the new Mixer Launcher before it is built (Stage 10 step 2): approved 2026-11-08
 - [ ] Save the side panels' layout between runs?
+- [ ] Mixer has no license file. Until the owner picks one, no code from GPL programs such as Blender can be copied in (their behavior can be matched)
 - [ ] Does Roblox Studio show exported material colors (glTF materials, vertex colors, or OBJ's .mtl)? To try with the owner's import test
 - [ ] Try the newer engines on a PC with a modern graphics card (the laptop only has OpenGL 2.1; GitHub's Windows machine only has DirectX 12 in software)
 - [x] With shadows off, should View mode look flat? Owner: let people choose; fully flat by default, edge lines as an option
